@@ -15,6 +15,7 @@ const Login = ({ onLoginSuccess }) => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     localStorage.removeItem('sellerSessionMode');
+    localStorage.removeItem('entryConfig');
 
     try {
       const response = await authService.login(username, password);

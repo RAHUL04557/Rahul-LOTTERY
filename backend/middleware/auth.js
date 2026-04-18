@@ -16,7 +16,7 @@ const authenticateToken = (req, res, next) => {
 
     try {
       const userResult = await query(
-        'SELECT id, username, role, parent_id, rate_amount_6, rate_amount_12 FROM users WHERE id = $1 LIMIT 1',
+        'SELECT id, username, keyword, role, seller_type, parent_id, can_login, rate_amount_6, rate_amount_12 FROM users WHERE id = $1 LIMIT 1',
         [user.id]
       );
 
@@ -28,8 +28,11 @@ const authenticateToken = (req, res, next) => {
       req.user = {
         id: currentUser.id,
         username: currentUser.username,
+        keyword: currentUser.keyword || '',
         role: currentUser.role,
+        sellerType: currentUser.seller_type || (currentUser.role === 'seller' ? 'seller' : 'admin'),
         parentId: currentUser.parent_id,
+        canLogin: currentUser.can_login !== undefined ? Boolean(currentUser.can_login) : true,
         rateAmount6: currentUser.rate_amount_6 !== undefined ? Number(currentUser.rate_amount_6) : 0,
         rateAmount12: currentUser.rate_amount_12 !== undefined ? Number(currentUser.rate_amount_12) : 0
       };

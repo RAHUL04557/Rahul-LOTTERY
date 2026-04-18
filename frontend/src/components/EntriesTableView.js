@@ -241,14 +241,14 @@ const EntriesTableView = ({
     );
   }
 
-  const amount6Entries = entries.filter((entry) => String(entry.amount) === '6');
+  const amount6Entries = entries.filter((entry) => String(entry.amount) === '7');
   const amount12Entries = entries.filter((entry) => String(entry.amount) === '12');
   const combinedPieceCount = [...amount6Entries, ...amount12Entries].reduce((sum, entry) => sum + Number(entry.sem || 0), 0);
 
   return (
     <div className="entries-list-block">
       {title && <h3>{title}</h3>}
-      {amount6Entries.length > 0 && renderTable(amount6Entries, 'Amount 6')}
+      {amount6Entries.length > 0 && renderTable(amount6Entries, 'Amount 7')}
       {amount12Entries.length > 0 && renderTable(amount12Entries, 'Amount 12')}
       {(amount6Entries.length > 0 || amount12Entries.length > 0) && (
         <div

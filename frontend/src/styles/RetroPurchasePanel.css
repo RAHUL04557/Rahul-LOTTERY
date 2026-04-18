@@ -1,0 +1,499 @@
+.retro-purchase-shell {
+  margin-bottom: 12px;
+}
+
+.retro-purchase-hidden-form {
+  display: none;
+}
+
+.retro-purchase-window {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 3px solid #173f6d;
+  box-shadow: 0 18px 36px rgba(16, 47, 77, 0.18);
+  background: #2db3dd;
+  overflow: hidden;
+  font-family: 'Tahoma', 'Segoe UI', sans-serif;
+}
+
+.retro-purchase-window.full-page {
+  width: 100%;
+  height: calc(100vh - 118px);
+  min-height: 0;
+  max-height: calc(100vh - 118px);
+}
+
+.retro-purchase-window.warning-active {
+  user-select: none;
+}
+
+.retro-purchase-titlebar {
+  display: none;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 12px;
+  align-items: center;
+  background: linear-gradient(180deg, #c31717 0%, #901010 100%);
+  color: #f6e89a;
+  padding: 6px 10px;
+  font-size: 18px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.retro-purchase-titlebar strong {
+  justify-self: center;
+  font-size: 20px;
+  letter-spacing: 0.4px;
+}
+
+.retro-purchase-titlebar span:last-child {
+  justify-self: end;
+}
+
+.retro-purchase-shortcuts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: center;
+  background: #113c69;
+  color: #f6e89a;
+  padding: 6px 10px;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.retro-purchase-panel-title {
+  min-width: 170px;
+  color: #ffffff;
+  font-size: 21px;
+}
+
+.retro-purchase-shortcut-btn {
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.retro-purchase-shortcut-btn:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.retro-purchase-shortcut-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.retro-purchase-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #59cff4;
+  padding: 8px;
+}
+
+.retro-purchase-formbar {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 7px;
+  margin-bottom: 6px;
+  align-items: end;
+}
+
+.retro-purchase-field {
+  grid-column: span 2;
+}
+
+.retro-purchase-field.wide {
+  grid-column: span 4;
+}
+
+.retro-purchase-field.medium {
+  grid-column: span 3;
+}
+
+.retro-purchase-field.small {
+  grid-column: span 1;
+}
+
+.retro-purchase-field-checkbox,
+.retro-purchase-field-memo {
+  grid-column: span 2;
+}
+
+.retro-purchase-field label {
+  display: block;
+  margin-bottom: 3px;
+  font-size: 20px;
+  font-weight: 700;
+  color: #123c64;
+}
+
+.retro-purchase-field-control {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.retro-purchase-memo-shell {
+  position: relative;
+}
+
+.retro-purchase-field-control input,
+.retro-purchase-field-control select {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 11px;
+  border: 1px solid #23557d;
+  background: #d9f6ff;
+  color: #102f4c;
+  font-size: 22px;
+  border-radius: 0;
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.85);
+}
+
+.retro-purchase-field-control input:focus,
+.retro-purchase-field-control select:focus {
+  outline: 2px solid #c28200;
+  border-color: #7f5700;
+  box-shadow: none;
+}
+
+.retro-purchase-readonly {
+  justify-content: flex-end;
+  padding: 4px 7px;
+  border: 1px solid #23557d;
+  background: #d9f6ff;
+  color: #102f4c;
+  font-weight: 700;
+  cursor: default;
+}
+
+.retro-purchase-memo-popup {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  width: min(280px, 92vw);
+  border: 2px solid #173f6d;
+  background: #f6fbff;
+  box-shadow: 0 18px 36px rgba(16, 47, 77, 0.28);
+}
+
+.retro-purchase-memo-table-wrap {
+  max-height: 520px;
+  overflow-y: auto;
+  background: #f5f5ef;
+}
+
+.retro-purchase-memo-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.retro-purchase-memo-table th,
+.retro-purchase-memo-table td {
+  border: 1px solid #8c9aa5;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: #101010;
+  text-align: left;
+}
+
+.retro-purchase-memo-table th {
+  background: #d7aa10;
+  color: #201500;
+  font-weight: 800;
+}
+
+.retro-purchase-memo-table td {
+  height: 24px;
+  background: #f5f5ef;
+}
+
+.retro-purchase-memo-table tfoot td {
+  background: #e4dcc3;
+  font-weight: 800;
+}
+
+.retro-purchase-memo-table tr.active td {
+  background: #0039d6;
+  color: #ffffff;
+}
+.retro-purchase-memo-list {
+  background: #e7f1ff;
+  border-right: 1px solid #9ab7d6;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.retro-purchase-memo-option {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: none;
+  border-bottom: 1px solid #bfd1ec;
+  background: #f7fbff;
+  color: #143c64;
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.retro-purchase-memo-option.active {
+  background: #0f58b6;
+  color: #ffffff;
+}
+
+.retro-purchase-memo-option strong {
+  font-size: 12px;
+}
+
+.retro-purchase-memo-details {
+  padding: 12px;
+  background: #ffffff;
+  color: #143c64;
+}
+
+.retro-purchase-memo-details table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 8px;
+}
+
+.retro-purchase-memo-details th,
+.retro-purchase-memo-details td {
+  border: 1px solid #c8d8ef;
+  padding: 6px 8px;
+  font-size: 12px;
+  text-align: left;
+}
+
+.retro-purchase-memo-details th {
+  background: #edf4ff;
+  font-weight: 800;
+}
+
+.retro-purchase-status-indicator {
+  width: 16px;
+  height: 16px;
+  border: 1px solid #23557d;
+  background: #b8ecff;
+  display: inline-block;
+}
+
+.retro-purchase-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-x: auto;
+  border: 2px solid #3d8f83;
+  background: #a4e5af;
+}
+
+.retro-purchase-grid table {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  border-collapse: collapse;
+}
+
+.retro-purchase-grid th,
+.retro-purchase-grid td {
+  border: 1px solid #5f8e65;
+  padding: 4px 6px;
+  font-size: 18px;
+  color: #143635;
+}
+
+.retro-purchase-grid th {
+  background: #daa322;
+  color: #3f2b00;
+  font-weight: 800;
+  text-align: left;
+}
+
+.retro-purchase-grid td {
+  height: 32px;
+  background: rgba(189, 244, 193, 0.82);
+}
+
+.retro-purchase-grid tr.retro-purchase-grid-row-active td {
+  background: #d3ebff;
+  color: #0c3765;
+}
+
+.retro-purchase-grid td input,
+.retro-purchase-grid td select {
+  width: 100%;
+  min-height: 30px;
+  border: none;
+  background: #dff7ff;
+  color: #123c64;
+  padding: 3px 7px;
+  font-size: 23px;
+  outline: none;
+}
+
+.retro-purchase-grid td input.retro-grid-autofill {
+  background: #c7e6ff;
+  color: #0f4690;
+  font-weight: 700;
+}
+
+.retro-purchase-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.retro-purchase-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  color: #143c64;
+  font-size: 30px;
+  font-weight: 700;
+}
+
+.retro-purchase-summary strong {
+  color: #0a2f99;
+}
+
+.retro-purchase-actionbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.retro-purchase-action {
+  min-width: 112px;
+  padding: 9px 12px;
+  border: 1px solid #987100;
+  border-radius: 0;
+  background: linear-gradient(180deg, #f5df9b 0%, #dbb44f 100%);
+  color: #503800;
+  font-size: 20px;
+  font-weight: 800;
+  text-transform: none;
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, 0.7);
+}
+
+.retro-purchase-action:hover {
+  background: linear-gradient(180deg, #ffe8a7 0%, #d8ab3d 100%);
+  color: #503800;
+}
+
+.retro-purchase-action:disabled {
+  color: #8f8570;
+  background: linear-gradient(180deg, #f1ead1 0%, #d2c7a4 100%);
+}
+
+.retro-purchase-action.primary {
+  background: linear-gradient(180deg, #f8ecb7 0%, #ca9a2f 100%);
+}
+
+.retro-purchase-action.secondary {
+  background: linear-gradient(180deg, #f9f0c8 0%, #b5aa7e 100%);
+}
+
+.retro-purchase-warning-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  background: rgba(7, 26, 48, 0.14);
+  z-index: 35;
+}
+
+.retro-purchase-warning-bar {
+  width: 100%;
+  border-top: 1px solid #a8c7ff;
+  background: linear-gradient(180deg, #f5f8ff 0 26px, #0f3fa0 26px 100%);
+  box-shadow: 0 -8px 20px rgba(9, 35, 77, 0.28);
+}
+
+.retro-purchase-warning-hint {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 5px 10px;
+  color: #5f6d82;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.retro-purchase-warning-hint:hover {
+  color: #263b64;
+}
+
+.retro-purchase-warning-content {
+  min-height: 72px;
+  padding: 10px 14px 12px;
+  color: #ffffff;
+}
+
+.retro-purchase-warning-content strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 18px;
+}
+
+.retro-purchase-warning-content p {
+  margin: 2px 0;
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+@media (max-width: 900px) {
+  .retro-purchase-titlebar {
+    grid-template-columns: 1fr;
+    text-align: center;
+  }
+
+  .retro-purchase-titlebar strong,
+  .retro-purchase-titlebar span:last-child {
+    justify-self: center;
+  }
+
+  .retro-purchase-formbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .retro-purchase-field,
+  .retro-purchase-field.wide,
+  .retro-purchase-field.medium,
+  .retro-purchase-field.small,
+  .retro-purchase-field-checkbox,
+  .retro-purchase-field-memo {
+    grid-column: span 1;
+  }
+
+  .retro-purchase-summary {
+    font-size: 18px;
+    gap: 12px;
+  }
+
+  .retro-purchase-memo-popup {
+    left: 0;
+    right: auto;
+    width: min(100vw - 32px, 280px);
+  }
+
+  .retro-purchase-memo-list {
+    border-right: none;
+    border-bottom: 1px solid #9ab7d6;
+  }
+}

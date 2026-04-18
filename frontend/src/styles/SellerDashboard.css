@@ -1,1 +1,89 @@
 /* Seller Dashboard specific styles */
+
+.seller-dashboard {
+  position: relative;
+  min-height: 100vh;
+}
+
+.seller-dashboard .dashboard-accordion {
+  max-width: none;
+  width: 100%;
+  padding-top: 0;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+
+.seller-dashboard .dashboard-content {
+  max-width: none;
+  width: 100%;
+  padding: 14px 12px;
+}
+
+.seller-dashboard .tab-content h2 {
+  margin-bottom: 14px;
+}
+
+.seller-dashboard .accordion-content {
+  padding: 12px;
+}
+
+.seller-dashboard .upload-form,
+.seller-dashboard .seller-form,
+.seller-dashboard .lottery-form {
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.seller-dashboard .checkbox-label:focus-within {
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.14);
+}
+
+.seller-dashboard .accordion-item:has(.retro-purchase-shell) > .accordion-header.active {
+  display: none;
+}
+
+.seller-dashboard-actions {
+  position: absolute;
+  top: 76px;
+  right: 22px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 45;
+}
+
+.seller-dashboard-actions .settings-icon-btn {
+  border-color: rgba(255, 255, 255, 0.72);
+  background: rgba(27, 86, 122, 0.52);
+  color: #ffffff;
+}
+
+.seller-dashboard-actions .settings-icon-btn:hover {
+  background: rgba(27, 86, 122, 0.72);
+}
+
+.seller-dashboard-actions .settings-dropdown {
+  top: calc(100% + 10px);
+  right: 0;
+  left: auto;
+}
+
+.seller-dashboard-actions .logout-btn {
+  padding: 10px 18px;
+  background: #d84034;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+
+.seller-dashboard-actions .logout-btn:hover {
+  background: #b82f24;
+}
+
+@media (max-width: 768px) {
+  .seller-dashboard-actions {
+    top: 68px;
+    right: 14px;
+    gap: 8px;
+  }
+}

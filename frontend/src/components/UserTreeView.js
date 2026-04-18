@@ -1,5 +1,11 @@
 import React from 'react';
 
+const SELLER_TYPE_LABELS = {
+  seller: 'SELLER',
+  sub_seller: 'SUB SELLER',
+  normal_seller: 'NORMAL SELLER'
+};
+
 const TreeNode = ({ node, onDelete, deletingUserId }) => {
   if (!node) {
     return null;
@@ -9,9 +15,13 @@ const TreeNode = ({ node, onDelete, deletingUserId }) => {
     <li className="tree-node">
       <div className="tree-card">
         <div className="tree-title-row">
-          <strong>{node.username}</strong>
+          <strong>{node.username}{node.keyword ? ` [${node.keyword}]` : ''}</strong>
           <div className="tree-actions">
-            <span className="tree-role">{String(node.role || '').toUpperCase()}</span>
+            <span className="tree-role">
+              {node.role === 'seller'
+                ? `${SELLER_TYPE_LABELS[node.sellerType] || 'SELLER'}${node.canLogin === false ? ' / NO LOGIN' : ''}`
+                : String(node.role || '').toUpperCase()}
+            </span>
             {node.canDelete && onDelete && (
               <button
                 type="button"
@@ -27,7 +37,7 @@ const TreeNode = ({ node, onDelete, deletingUserId }) => {
         <div className="tree-meta">
           <span>Direct: {node.directChildrenCount || 0}</span>
           <span>Total Downline: {node.totalDescendants || 0}</span>
-          <span>Rate 6: {Number(node.rateAmount6 || 0)}</span>
+          <span>Rate 7: {Number(node.rateAmount6 || 0)}</span>
           <span>Rate 12: {Number(node.rateAmount12 || 0)}</span>
         </div>
       </div>

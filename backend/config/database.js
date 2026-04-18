@@ -49,14 +49,104 @@ const initDB = async () => {
     CREATE TABLE IF NOT EXISTS users (
       id SERIAL PRIMARY KEY,
       username VARCHAR(255) UNIQUE NOT NULL,
+      keyword VARCHAR(30),
       password VARCHAR(255) NOT NULL,
       role VARCHAR(20) NOT NULL DEFAULT 'seller',
+      seller_type VARCHAR(30) NOT NULL DEFAULT 'seller',
       parent_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
       rate NUMERIC(12, 2) NOT NULL DEFAULT 0,
       rate_amount_6 NUMERIC(12, 2) NOT NULL DEFAULT 0,
       rate_amount_12 NUMERIC(12, 2) NOT NULL DEFAULT 0,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
+  `);
+
+  await query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS keyword VARCHAR(30)
+  `);
+
+  await query(`
+    UPDATE users
+    SET keyword = 'RA'
+    WHERE username = 'Rahu12'
+      AND (keyword IS NULL OR TRIM(keyword) = '')
+  `);
+
+  await query(`
+    UPDATE users
+    SET keyword = 'RU'
+    WHERE username = 'rahu12'
+  `);
+
+  await query(`
+    UPDATE users
+    SET keyword = 'SA'
+    WHERE LOWER(username) = 'sandesh'
+      AND (keyword IS NULL OR TRIM(keyword) = '')
+  `);
+
+  await query(`
+    UPDATE users
+    SET keyword = 'ST'
+    WHERE LOWER(username) = 'satya'
+      AND (keyword IS NULL OR TRIM(keyword) = '')
+  `);
+
+  await query(`
+    UPDATE users
+    SET keyword = 'TA'
+    WHERE LOWER(username) = 'tanay'
+      AND (keyword IS NULL OR TRIM(keyword) = '')
+  `);
+
+  await query(`
+    UPDATE users
+    SET keyword = 'SN'
+    WHERE LOWER(username) = 'snehan'
+      AND (keyword IS NULL OR TRIM(keyword) = '')
+  `);
+
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_keyword_unique
+    ON users (UPPER(keyword))
+    WHERE keyword IS NOT NULL AND TRIM(keyword) <> ''
+  `);
+
+  await query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS seller_type VARCHAR(30) NOT NULL DEFAULT 'seller'
+  `);
+
+  await query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS can_login BOOLEAN NOT NULL DEFAULT TRUE
+  `);
+
+  await query(`
+    UPDATE users
+    SET seller_type = 'seller'
+    WHERE role = 'seller' AND (seller_type IS NULL OR TRIM(seller_type) = '')
+  `);
+
+  await query(`
+    UPDATE users
+    SET seller_type = 'admin'
+    WHERE role = 'admin'
+  `);
+
+  await query(`
+    UPDATE users
+    SET can_login = CASE
+      WHEN role = 'admin' THEN TRUE
+      WHEN seller_type = 'normal_seller' THEN FALSE
+      ELSE TRUE
+    END
+    WHERE can_login IS DISTINCT FROM CASE
+      WHEN role = 'admin' THEN TRUE
+      WHEN seller_type = 'normal_seller' THEN FALSE
+      ELSE TRUE
+    END
   `);
 
   await query(`
@@ -156,6 +246,16 @@ const initDB = async () => {
   `);
 
   await query(`
+    ALTER TABLE lottery_entries
+    ADD COLUMN IF NOT EXISTS entry_source VARCHAR(20) NOT NULL DEFAULT 'booking'
+  `);
+
+  await query(`
+    ALTER TABLE lottery_entries
+    ADD COLUMN IF NOT EXISTS memo_number INTEGER
+  `);
+
+  await query(`
     UPDATE lottery_entries
     SET session_mode = CASE
       WHEN EXTRACT(HOUR FROM COALESCE(sent_at, created_at)) < 15 THEN 'MORNING'
@@ -168,6 +268,39 @@ const initDB = async () => {
     UPDATE lottery_entries
     SET booking_date = DATE(created_at)
     WHERE booking_date IS NULL
+  `);
+
+  await query(`
+    UPDATE lottery_entries
+    SET entry_source = 'booking'
+    WHERE entry_source IS NULL OR TRIM(entry_source) = ''
+  `);
+
+  await query(`
+    ALTER TABLE lottery_entries
+    ADD COLUMN IF NOT EXISTS purchase_category VARCHAR(1)
+  `);
+
+  await query(`
+    UPDATE lottery_entries
+    SET purchase_category = CASE
+      WHEN session_mode = 'NIGHT' THEN 'E'
+      ELSE 'M'
+    END
+    WHERE purchase_category IS NULL OR TRIM(purchase_category) = ''
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_lottery_entries_purchase_uniqueness_lookup
+    ON lottery_entries (
+      entry_source,
+      booking_date,
+      session_mode,
+      purchase_category,
+      amount,
+      box_value,
+      number
+    )
   `);
 
   await query(`
@@ -201,6 +334,11 @@ const initDB = async () => {
   await query(`
     ALTER TABLE lottery_entry_history
     ADD COLUMN IF NOT EXISTS booking_date DATE NOT NULL DEFAULT CURRENT_DATE
+  `);
+
+  await query(`
+    ALTER TABLE lottery_entry_history
+    ADD COLUMN IF NOT EXISTS memo_number INTEGER
   `);
 
   await query(`

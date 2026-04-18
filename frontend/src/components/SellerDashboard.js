@@ -1,10 +1,15 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { lotteryService, priceService, userService } from '../services/api';
 import UserTreeView from './UserTreeView';
 import EntriesTableView from './EntriesTableView';
 import PasswordSettingsMenu from './PasswordSettingsMenu';
-import { buildBillData, formatDisplayDate, formatDisplayDateTime, formatSignedRupees, getAllowedAmountsLabel, groupTransferHistoryByActor, openTransferBill } from '../utils/transferBill';
+import RetroPurchasePanel from './RetroPurchasePanel';
+import DashboardLauncher from './DashboardLauncher';
+import ExitConfirmPrompt from './ExitConfirmPrompt';
+import SearchableSellerSelect from './SearchableSellerSelect';
+import { buildBillAmountSummariesWithPrize, buildBillData, buildBillSummaryWithPrize, formatDisplayDate, formatDisplayDateTime, formatSignedRupees, getAllowedAmountsLabel, groupTransferHistoryByActor, openTransferBill } from '../utils/transferBill';
 import { groupConsecutiveNumberRows, sortRowsForConsecutiveNumbers } from '../utils/numberRanges';
+import { useFunctionShortcuts } from '../utils/functionShortcuts';
 import '../styles/SellerDashboard.css';
 
 const getTodayDateValue = () => {
@@ -26,19 +31,42 @@ const isSameDateValue = (dateValue, isoDateValue) => {
   return new Date(dateValue).toISOString().slice(0, 10) === isoDateValue;
 };
 
+const getDateOnlyValue = (dateValue) => {
+  if (!dateValue) {
+    return '';
+  }
+
+  const normalized = String(dateValue).trim();
+  const isoMatch = normalized.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoMatch) {
+    return isoMatch[1];
+  }
+
+  const parsedDate = new Date(normalized);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return normalized;
+  }
+
+  return parsedDate.toISOString().slice(0, 10);
+};
+
 const mapApiEntry = (entry) => ({
   id: entry.id,
   userId: entry.userId,
   username: entry.username,
   displaySeller: entry.forwardedByUsername || entry.username,
   forwardedBy: entry.forwardedBy,
+  sentToParent: entry.sentToParent,
   uniqueCode: entry.uniqueCode,
   sem: entry.boxValue,
   amount: String(entry.amount),
   number: entry.number,
   price: Number(entry.boxValue || 0) * Number(entry.amount || 0),
+  memoNumber: entry.memoNumber ?? entry.memo_number ?? null,
+  purchaseMemoNumber: entry.purchaseMemoNumber ?? entry.purchase_memo_number ?? entry.memoNumber ?? entry.memo_number ?? null,
   bookingDate: entry.bookingDate || entry.booking_date || null,
   sessionMode: entry.sessionMode,
+  purchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M'),
   createdAt: entry.createdAt,
   sentAt: entry.sentAt,
   status: entry.status
@@ -52,18 +80,38 @@ const mapHistoryRecord = (record) => ({
   boxValue: record.boxValue || record.box_value,
   amount: String(record.amount),
   bookingDate: record.bookingDate || record.booking_date || null,
+  fromUserId: record.fromUserId || record.from_user_id,
   fromUsername: record.fromUsername || record.from_username,
+  toUserId: record.toUserId || record.to_user_id,
   toUsername: record.toUsername || record.to_username,
+  actorUserId: record.actorUserId || record.actor_user_id,
   actorUsername: record.actorUsername || record.actor_username,
   actionType: record.actionType || record.action_type,
   statusAfter: record.statusAfter || record.status_after,
+  memoNumber: record.memoNumber ?? record.memo_number ?? null,
   sessionMode: record.sessionMode || record.session_mode,
+  purchaseCategory: record.purchaseCategory || record.purchase_category || ((record.sessionMode || record.session_mode) === 'NIGHT' ? 'E' : 'M'),
   createdAt: record.createdAt || record.created_at
 });
 
 const splitEntriesByAmount = (entries = []) => ({
-  amount6: entries.filter((entry) => String(entry.amount) === '6'),
+  amount6: entries.filter((entry) => String(entry.amount) === '7'),
   amount12: entries.filter((entry) => String(entry.amount) === '12')
+});
+
+const normalizeSeePurchaseEntry = (entry = {}) => ({
+  id: entry.id || entry._id || `${entry.number || ''}-${entry.bookingDate || ''}-${entry.sem || entry.boxValue || ''}`,
+  number: String(entry.number || '').trim(),
+  boxValue: String(entry.sem || entry.boxValue || '').trim(),
+  amount: String(entry.amount || '').trim(),
+  bookingDate: entry.bookingDate || entry.booking_date || '',
+  sessionMode: entry.sessionMode || entry.session_mode || '',
+  purchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' || entry.session_mode === 'NIGHT' ? 'E' : 'M'),
+  memoNumber: entry.memoNumber ?? entry.memo_number ?? '',
+  sellerName: entry.displaySeller || entry.forwardedByUsername || entry.username || entry.fromUsername || entry.actorUsername || '',
+  fromUsername: entry.fromUsername || entry.from_username || '',
+  toUsername: entry.toUsername || entry.to_username || '',
+  status: entry.status || ''
 });
 
 const groupPrizeResultsBySeller = (entries = []) => entries.reduce((groups, entry) => {
@@ -87,6 +135,423 @@ const compareEntryNumbers = (leftValue, rightValue) => {
 };
 
 const sanitizeFiveDigitInput = (value) => String(value ?? '').replace(/[^0-9]/g, '').slice(0, 5);
+const SELLER_PURCHASE_SEND_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F4-Stock', 'F8-Clear', 'Esc-Exit'];
+const SELLER_UNSOLD_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F4-View', 'F8-Clear', 'Esc-Exit'];
+const REMOVABLE_UNSOLD_STATUSES = new Set(['unsold_saved', 'unsold']);
+const SELLER_TYPE_LABELS = {
+  seller: 'Seller',
+  sub_seller: 'Sub Seller',
+  normal_seller: 'Normal Seller'
+};
+
+const normalizeSellerType = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return SELLER_TYPE_LABELS[normalized] ? normalized : 'seller';
+};
+
+const isRemovableUnsoldEntry = (entry) => REMOVABLE_UNSOLD_STATUSES.has(String(entry.status || '').trim().toLowerCase());
+
+const getAllowedChildSellerTypes = (currentUser) => {
+  if (!currentUser) {
+    return [];
+  }
+  if (currentUser.role === 'admin') {
+    return ['seller', 'sub_seller', 'normal_seller'];
+  }
+  const sellerType = normalizeSellerType(currentUser.sellerType);
+  if (sellerType === 'seller') {
+    return ['sub_seller', 'normal_seller'];
+  }
+  if (sellerType === 'sub_seller') {
+    return ['normal_seller'];
+  }
+  return [];
+};
+
+const getPartyKeyword = (sellerOrUsername = '', fallbackKeyword = '') => {
+  if (sellerOrUsername && typeof sellerOrUsername === 'object') {
+    const explicitKeyword = String(sellerOrUsername.keyword || '').trim().toUpperCase();
+    if (explicitKeyword) {
+      return explicitKeyword;
+    }
+
+    return String(sellerOrUsername.username || '').trim().slice(0, 2).toUpperCase();
+  }
+
+  const explicitKeyword = String(fallbackKeyword || '').trim().toUpperCase();
+  if (explicitKeyword) {
+    return explicitKeyword;
+  }
+
+  return String(sellerOrUsername || '').trim().slice(0, 2).toUpperCase();
+};
+
+const formatDateOnly = (value) => {
+  if (!value) {
+    return '';
+  }
+
+  const normalized = String(value);
+  const isoDateMatch = normalized.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (isoDateMatch) {
+    return isoDateMatch[1];
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return normalized;
+  }
+
+  return date.toISOString().slice(0, 10);
+};
+
+const getDisplayDay = (value) => {
+  if (!value) {
+    return '';
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return '';
+  }
+
+  return date.toLocaleDateString('en-IN', { weekday: 'short' }).toUpperCase();
+};
+
+const buildRetroTicketCode = (sessionMode, semValue, purchaseCategory = '') => {
+  const normalizedSem = String(semValue || '').replace(/[^0-9]/g, '');
+  if (!normalizedSem) {
+    return '';
+  }
+
+  const prefix = String(purchaseCategory || '').trim().toUpperCase() || (sessionMode === 'NIGHT' ? 'E' : 'M');
+  return `${prefix}${normalizedSem}`;
+};
+
+const getRetroItemName = (sessionMode, semValue) => `${sessionMode === 'NIGHT' ? 'RAM' : 'RAHUL'} ${semValue}`.trim();
+
+const getPurchaseCategoryLabel = (purchaseCategory) => {
+  if (purchaseCategory === 'D') {
+    return 'DAY';
+  }
+
+  if (purchaseCategory === 'E') {
+    return 'EVENING';
+  }
+
+  return 'MORNING';
+};
+
+const getInitialBillShift = (sessionMode, purchaseCategory = '') => {
+  const normalizedCategory = String(purchaseCategory || '').trim().toUpperCase();
+  if (normalizedCategory === 'D') {
+    return 'DAY';
+  }
+
+  return sessionMode === 'NIGHT' ? 'EVENING' : 'MORNING';
+};
+
+const getBillPurchaseCategory = (shift) => {
+  if (!shift || shift === 'ALL') {
+    return '';
+  }
+
+  if (shift === 'DAY') {
+    return 'D';
+  }
+
+  if (shift === 'EVENING' || shift === 'NIGHT') {
+    return 'E';
+  }
+
+  return 'M';
+};
+
+const getBillApiShift = (shift) => {
+  if (!shift || shift === 'ALL') {
+    return '';
+  }
+
+  return shift === 'EVENING' || shift === 'NIGHT' ? 'NIGHT' : 'MORNING';
+};
+
+const openSelectPicker = (selectElement) => {
+  if (!selectElement) {
+    return;
+  }
+
+  selectElement.focus();
+  if (typeof selectElement.showPicker === 'function') {
+    try {
+      selectElement.showPicker();
+      return;
+    } catch (error) {
+      // Some browsers block showPicker after synthetic events; click is the fallback.
+    }
+  }
+
+  selectElement.click();
+};
+
+const focusElementReliably = (getElement) => {
+  const focusElement = () => {
+    const element = getElement();
+    if (!element) {
+      return;
+    }
+
+    element.focus();
+    element.select?.();
+  };
+
+  const animationFrameId = window.requestAnimationFrame(focusElement);
+  const firstTimeoutId = window.setTimeout(focusElement, 0);
+  const secondTimeoutId = window.setTimeout(focusElement, 80);
+
+  return () => {
+    window.cancelAnimationFrame(animationFrameId);
+    window.clearTimeout(firstTimeoutId);
+    window.clearTimeout(secondTimeoutId);
+  };
+};
+
+const focusNextOnEnter = (event) => {
+  if (
+    event.defaultPrevented
+    || event.key !== 'Enter'
+    || event.ctrlKey
+    || event.altKey
+    || event.metaKey
+    || event.isComposing
+  ) {
+    return;
+  }
+
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return;
+  }
+
+  const tagName = target.tagName.toLowerCase();
+  const inputType = String(target.getAttribute('type') || '').toLowerCase();
+  const root = target.closest('[data-enter-navigation-root]') || document;
+  const focusableElements = Array.from(root.querySelectorAll('input, select, textarea, button'))
+    .filter((element) => (
+      element instanceof HTMLElement
+      && !element.disabled
+      && element.tabIndex !== -1
+      && element.offsetParent !== null
+      && element.getAttribute('type') !== 'hidden'
+    ));
+  const currentIndex = focusableElements.indexOf(target);
+  const focusNextElement = () => {
+    if (currentIndex === -1) {
+      return;
+    }
+
+    const nextElement = focusableElements[currentIndex + 1] || focusableElements[0];
+    if (nextElement && nextElement !== target) {
+      nextElement.focus();
+      if (typeof nextElement.select === 'function' && nextElement.tagName.toLowerCase() === 'input') {
+        nextElement.select();
+      }
+    }
+  };
+
+  if (tagName === 'button') {
+    event.preventDefault();
+    target.click();
+    return;
+  }
+
+  if (tagName === 'select' && !target.value) {
+    event.preventDefault();
+    openSelectPicker(target);
+    return;
+  }
+
+  if (tagName === 'input' && ['checkbox', 'radio'].includes(inputType)) {
+    event.preventDefault();
+    target.click();
+    window.requestAnimationFrame(focusNextElement);
+    return;
+  }
+
+  const canMoveFromTarget = tagName === 'select'
+    || tagName === 'textarea'
+    || (tagName === 'input' && !['button', 'submit', 'reset', 'hidden', 'file'].includes(inputType));
+
+  if (!canMoveFromTarget) {
+    return;
+  }
+
+  event.preventDefault();
+  focusNextElement();
+};
+
+const parseRetroCodeValue = (value, fallbackSessionMode, fallbackPurchaseCategory = '') => {
+  const normalized = String(value || '').trim().toUpperCase();
+  const explicitFallbackCategory = String(fallbackPurchaseCategory || '').trim().toUpperCase();
+  const fallbackCategory = fallbackSessionMode === 'NIGHT' ? 'E' : (explicitFallbackCategory || 'M');
+
+  if (!normalized) {
+    return {
+      semValue: '',
+      resolvedSessionMode: fallbackSessionMode,
+      resolvedPurchaseCategory: fallbackCategory
+    };
+  }
+
+  const compactValue = normalized.replace(/[^A-Z0-9/]/g, '');
+  const primaryToken = compactValue.split('/').find(Boolean) || compactValue;
+  const plainSemMatch = primaryToken.match(/^(\d{1,2})$/);
+  if (plainSemMatch) {
+    return {
+      semValue: plainSemMatch[1],
+      resolvedSessionMode: fallbackCategory === 'E' ? 'NIGHT' : 'MORNING',
+      resolvedPurchaseCategory: fallbackCategory
+    };
+  }
+
+  const matched = primaryToken.match(/^([MDE])(\d{1,2})$/) || compactValue.match(/^([MDE])(\d{1,2})(?:\/\d{1,2})?$/);
+  if (!matched) {
+    return { error: 'Code mein sirf 5 / 10 / M5 / D10 / E10 jaise value do' };
+  }
+
+  const resolvedPurchaseCategory = matched[1] || fallbackCategory;
+  if (fallbackCategory && resolvedPurchaseCategory !== fallbackCategory) {
+    return { error: `${matched[1]}${matched[2]} is not allowed. Is company me sirf ${fallbackCategory}${matched[2]} chalega` };
+  }
+
+  const resolvedSessionMode = resolvedPurchaseCategory === 'E' ? 'NIGHT' : 'MORNING';
+
+  return {
+    semValue: matched[2],
+    resolvedSessionMode,
+    resolvedPurchaseCategory
+  };
+};
+
+const createRetroGridRows = (rows = []) => rows.map((row, index) => ({
+  id: row.id || `retro-row-${index}`,
+  serial: index + 1,
+  code: row.code || '',
+  itemName: row.itemName || '',
+  drawDate: row.drawDate || '',
+  day: row.day || '',
+  prefix: row.prefix || '',
+  series: row.series || '',
+  from: row.from || '',
+  to: row.to || '',
+  quantity: row.quantity || '',
+  rate: row.rate || '',
+  amount: row.amount || ''
+}));
+
+const buildPurchaseMemoSummaries = (entries = []) => {
+  const memoMap = new Map();
+
+  entries.forEach((entry) => {
+    const memoNumber = Number(entry.purchaseMemoNumber || entry.memoNumber || 0);
+    const pieceCount = Number(entry.sem || entry.boxValue || 0);
+    if (!Number.isInteger(memoNumber) || memoNumber <= 0) {
+      return;
+    }
+
+    const sentAtKey = entry.sentAt || entry.createdAt || `${entry.bookingDate || ''}-${memoNumber}`;
+    const memoEntry = memoMap.get(memoNumber) || {
+      memoNumber,
+      totalPieceCount: 0,
+      batches: new Map()
+    };
+    const normalizedBookingDate = getDateOnlyValue(entry.bookingDate || entry.booking_date || '');
+    const existingBatch = memoEntry.batches.get(sentAtKey) || {
+      id: sentAtKey,
+      drawDate: normalizedBookingDate,
+      sentAt: entry.sentAt || entry.createdAt || '',
+      quantity: 0,
+      rowCount: 0
+    };
+
+    existingBatch.quantity += pieceCount;
+    existingBatch.rowCount += 1;
+    memoEntry.totalPieceCount += pieceCount;
+    memoEntry.batches.set(sentAtKey, existingBatch);
+    memoMap.set(memoNumber, memoEntry);
+  });
+
+  return Array.from(memoMap.values())
+    .sort((left, right) => left.memoNumber - right.memoNumber)
+    .map((memoEntry) => ({
+      memoNumber: memoEntry.memoNumber,
+      totalPieceCount: memoEntry.totalPieceCount,
+      drawDate: Array.from(memoEntry.batches.values())[0]?.drawDate || '',
+      batches: Array.from(memoEntry.batches.values()).sort(
+        (left, right) => new Date(left.sentAt || 0).getTime() - new Date(right.sentAt || 0).getTime()
+      )
+    }));
+};
+
+const buildCurrentMemoSummaries = (entries = []) => {
+  const normalizedEntries = entries.map((entry) => ({
+    ...entry,
+    purchaseMemoNumber: entry.memoNumber ?? entry.memo_number ?? null
+  }));
+
+  return buildPurchaseMemoSummaries(normalizedEntries);
+};
+
+const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, options = {}) => (
+  groupConsecutiveNumberRows(
+    sortRowsForConsecutiveNumbers(
+      [...entries],
+      (entry) => [
+        entry.bookingDate,
+        entry.sessionMode,
+        entry.purchaseCategory,
+        entry.amount,
+        entry.sem
+      ]
+    ),
+    (entry) => [
+      entry.bookingDate,
+      entry.sessionMode,
+      entry.purchaseCategory,
+      entry.amount,
+      entry.sem
+    ].join('|')
+  ).map((group, index) => {
+    const entry = group.firstRow || {};
+    const count = group.rows.length;
+    const semValue = Number(entry.sem || 0);
+    const rateValue = Number(entry.amount || amountValue || 0);
+
+    return {
+      id: `seller-purchase-send-memo-${entry.id || index}`,
+      code: buildRetroTicketCode(entry.sessionMode || 'MORNING', entry.sem, entry.purchaseCategory),
+      itemName: String(entry.username || entry.displaySeller || '').toUpperCase(),
+      drawDate: formatDateOnly(entry.bookingDate || ''),
+      day: getDisplayDay(entry.bookingDate || ''),
+      prefix: '',
+      series: '',
+      from: entry.number || '',
+      to: group.lastRow?.number || entry.number || '',
+      quantity: semValue * count,
+      rate: rateValue.toFixed(2),
+      amount: (semValue * count * rateValue).toFixed(2),
+      semValue: String(entry.sem || ''),
+      bookingAmount: String(entry.amount || amountValue || ''),
+      resolvedSessionMode: entry.sessionMode || 'MORNING',
+      resolvedPurchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M'),
+      partyId: String(entry.userId || ''),
+      partyName: entry.username || entry.displaySeller || '',
+      numberStart: entry.number || '',
+      numberEnd: group.lastRow?.number || entry.number || '',
+      isExistingUnsoldMemoRow: Boolean(options.existingUnsoldMemo),
+      entryIds: group.rows.map((row) => row.id).filter(Boolean)
+    };
+  })
+);
 
 const normalizeRangeEndNumber = (startValue, endValue) => {
   const startNumber = sanitizeFiveDigitInput(startValue);
@@ -121,6 +586,80 @@ const normalizeRangeEndNumber = (startValue, endValue) => {
   return { value: String(candidateValue).padStart(5, '0') };
 };
 
+const normalizeRangeStartNumber = (fromValue, referenceFromValue = '') => {
+  const fromDigits = String(fromValue ?? '').replace(/[^0-9]/g, '').slice(0, 5);
+
+  if (fromDigits.length === 5) {
+    return { value: fromDigits };
+  }
+
+  if (fromDigits.length === 0) {
+    return { value: '' };
+  }
+
+  const referenceDigits = sanitizeFiveDigitInput(referenceFromValue);
+  if (referenceDigits.length !== 5) {
+    return { error: 'From Number must be 5 digits' };
+  }
+
+  return { value: `${referenceDigits.slice(0, 5 - fromDigits.length)}${fromDigits}` };
+};
+
+const getFiveDigitRangeMetrics = (fromValue, toValue, referenceFromValue = '') => {
+  const normalizedStart = normalizeRangeStartNumber(fromValue, referenceFromValue);
+
+  if (normalizedStart.error) {
+    return { fromNumber: '', toNumber: '', count: 0, error: normalizedStart.error };
+  }
+
+  const fromNumber = normalizedStart.value;
+  const normalizedEnd = normalizeRangeEndNumber(fromNumber, toValue || fromNumber);
+
+  if (!fromNumber) {
+    return { fromNumber: '', toNumber: '', count: 0 };
+  }
+
+  if (normalizedEnd.error) {
+    return { fromNumber, toNumber: '', count: 0, error: normalizedEnd.error };
+  }
+
+  const toNumber = normalizedEnd.value;
+  const count = Math.max((Number(toNumber) - Number(fromNumber)) + 1, 1);
+
+  return { fromNumber, toNumber, count };
+};
+
+const shouldMoveFocusLeft = (event) => {
+  const cursorAtStart = typeof event.target?.selectionStart === 'number'
+    ? event.target.selectionStart === 0 && event.target.selectionEnd === 0
+    : true;
+
+  return event.key === 'ArrowLeft' && cursorAtStart;
+};
+
+const shouldMoveFocusVertical = (event, direction) => event.key === direction;
+const shouldMoveFocusRight = (event) => {
+  const cursorAtEnd = typeof event.target?.selectionStart === 'number'
+    ? event.target.selectionStart === String(event.target?.value || '').length
+      && event.target.selectionEnd === String(event.target?.value || '').length
+    : true;
+
+  return event.key === 'ArrowRight' && cursorAtEnd;
+};
+
+const rangesOverlap = (startA, endA, startB, endB) => {
+  const normalizedStartA = Number(sanitizeFiveDigitInput(startA));
+  const normalizedEndA = Number(sanitizeFiveDigitInput(endA || startA));
+  const normalizedStartB = Number(sanitizeFiveDigitInput(startB));
+  const normalizedEndB = Number(sanitizeFiveDigitInput(endB || startB));
+
+  if ([normalizedStartA, normalizedEndA, normalizedStartB, normalizedEndB].some(Number.isNaN)) {
+    return false;
+  }
+
+  return normalizedStartA <= normalizedEndB && normalizedStartB <= normalizedEndA;
+};
+
 const buildConsecutiveNumbers = (startValue, endValue) => {
   const startNumber = sanitizeFiveDigitInput(startValue);
   const normalizedEnd = normalizeRangeEndNumber(startValue, endValue);
@@ -151,13 +690,30 @@ const buildConsecutiveNumbers = (startValue, endValue) => {
   };
 };
 
-const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialActiveTab = '', billOnlyMode = false }) => {
+const formatMissingNumberLabel = (numbers = []) => (
+  numbers.length > 5
+    ? `${numbers.slice(0, 5).join(', ')} +${numbers.length - 5} more`
+    : numbers.join(', ')
+);
+
+const SellerDashboard = ({
+  user,
+  onLogout,
+  sessionMode,
+  purchaseCategory = '',
+  onExitSession,
+  initialActiveTab = '',
+  initialAmount = '',
+  initialBillAmount = '',
+  billOnlyMode = false,
+  entryCompanyLabel = ''
+}) => {
   const [activeTab, setActiveTab] = useState(initialActiveTab);
   const [bookingMode, setBookingMode] = useState('single');
   const [number, setNumber] = useState('');
   const [rangeEndNumber, setRangeEndNumber] = useState('');
   const [selectedBox, setSelectedBox] = useState('');
-  const [amount, setAmount] = useState('');
+  const [amount, setAmount] = useState(initialAmount || '');
   const [bookingDate, setBookingDate] = useState(getTodayDateValue());
   const [yourLotDate, setYourLotDate] = useState(getTodayDateValue());
   const [entries, setEntries] = useState([]);
@@ -165,13 +721,18 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
   const [receivedEntries, setReceivedEntries] = useState([]);
   const [acceptedBookEntries, setAcceptedBookEntries] = useState([]);
   const [transferHistory, setTransferHistory] = useState([]);
+  const [purchaseBillRows, setPurchaseBillRows] = useState([]);
   const [billPrizeResults, setBillPrizeResults] = useState([]);
   const [historyFilterMode, setHistoryFilterMode] = useState('single');
   const [historyDate, setHistoryDate] = useState(getTodayDateValue());
   const [historyFromDate, setHistoryFromDate] = useState(getTodayDateValue());
   const [historyToDate, setHistoryToDate] = useState(getTodayDateValue());
-  const [historyShift, setHistoryShift] = useState('');
+  const [historyShift, setHistoryShift] = useState(getInitialBillShift(sessionMode, purchaseCategory));
   const [historySellerFilter, setHistorySellerFilter] = useState('');
+  const [historyAmountFilter, setHistoryAmountFilter] = useState(initialBillAmount || initialAmount || '7');
+  const [historyPurchaseCategoryFilter, setHistoryPurchaseCategoryFilter] = useState(
+    String(purchaseCategory || '').trim().toUpperCase() || (sessionMode === 'NIGHT' ? 'E' : 'M')
+  );
   const [treeData, setTreeData] = useState(null);
   const [totalAmount, setTotalAmount] = useState(0);
   const [sendingEntries, setSendingEntries] = useState(false);
@@ -179,27 +740,36 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
   const [deletingUserId, setDeletingUserId] = useState(null);
   const [error, setError] = useState('');
   const [bookingError, setBookingError] = useState('');
+  const [blockingWarning, setBlockingWarning] = useState(null);
   const [success, setSuccess] = useState('');
+  const [pieceSummaryOpen, setPieceSummaryOpen] = useState(false);
+  const [pieceSummaryDate, setPieceSummaryDate] = useState(getTodayDateValue());
+  const [pieceSummaryRows, setPieceSummaryRows] = useState([]);
+  const [pieceSummaryLoading, setPieceSummaryLoading] = useState(false);
+  const [unsoldSendOpen, setUnsoldSendOpen] = useState(false);
+  const [unsoldSendSummary, setUnsoldSendSummary] = useState(null);
+  const [unsoldSendLoading, setUnsoldSendLoading] = useState(false);
+  const [unsoldSendSaving, setUnsoldSendSaving] = useState(false);
   const [currentDateTime, setCurrentDateTime] = useState(new Date());
   const [traceDate, setTraceDate] = useState(getTodayDateValue());
   const [traceNumber, setTraceNumber] = useState('');
   const [traceMode, setTraceMode] = useState('single');
   const [traceRangeEndNumber, setTraceRangeEndNumber] = useState('');
-  const [traceAmount, setTraceAmount] = useState('');
+  const [traceAmount, setTraceAmount] = useState(initialAmount || '7');
   const [traceSem, setTraceSem] = useState('');
   const [traceResults, setTraceResults] = useState([]);
   const [traceLoading, setTraceLoading] = useState(false);
   const [sellerPrizeDate, setSellerPrizeDate] = useState(getTodayDateValue());
   const [sellerPrizeSessionMode, setSellerPrizeSessionMode] = useState(sessionMode);
   const [sellerPrizeNumber, setSellerPrizeNumber] = useState('');
-  const [sellerPrizeAmount, setSellerPrizeAmount] = useState('');
+  const [sellerPrizeAmount, setSellerPrizeAmount] = useState(initialAmount || '7');
   const [sellerPrizeSem, setSellerPrizeSem] = useState('');
   const [sellerPrizeSearchPerformed, setSellerPrizeSearchPerformed] = useState(false);
   const [sellerPrizeResults, setSellerPrizeResults] = useState([]);
   const [sellerPrizeLoading, setSellerPrizeLoading] = useState(false);
   const [sellerPrizeResultType, setSellerPrizeResultType] = useState('');
   const [sellerPrizeMessage, setSellerPrizeMessage] = useState('');
-  const [myPrizeAmount, setMyPrizeAmount] = useState('');
+  const [myPrizeAmount, setMyPrizeAmount] = useState(initialAmount || '7');
   const [myPrizeSem, setMyPrizeSem] = useState('');
   const [myPrizeAllResults, setMyPrizeAllResults] = useState([]);
   const [myPrizeResults, setMyPrizeResults] = useState([]);
@@ -207,16 +777,130 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
   const [myPrizeMessage, setMyPrizeMessage] = useState('');
   const [myPrizeSearchPerformed, setMyPrizeSearchPerformed] = useState(false);
   const [myPrizeTotal, setMyPrizeTotal] = useState(0);
+  const [purchaseEntries, setPurchaseEntries] = useState([]);
+  const [purchaseSendMemoEntries, setPurchaseSendMemoEntries] = useState([]);
+  const [unsoldMemoEntries, setUnsoldMemoEntries] = useState([]);
+  const [unsoldRemoveMemoEntries, setUnsoldRemoveMemoEntries] = useState([]);
+  const [seePurchaseLoading, setSeePurchaseLoading] = useState(false);
+  const [seePurchaseReceivedEntries, setSeePurchaseReceivedEntries] = useState([]);
+  const [seePurchaseSentEntries, setSeePurchaseSentEntries] = useState([]);
+  const [seePurchaseAvailableEntries, setSeePurchaseAvailableEntries] = useState([]);
+  const [seePurchaseDate, setSeePurchaseDate] = useState(getTodayDateValue());
+  const [seePurchaseShift, setSeePurchaseShift] = useState(getInitialBillShift(sessionMode, purchaseCategory));
+  const [seePurchaseSellerId, setSeePurchaseSellerId] = useState(String(user?.id || ''));
+  const [unsoldEntries, setUnsoldEntries] = useState([]);
+  const [stockTransferDate, setStockTransferDate] = useState(getTodayDateValue());
+  const [stockTransferTargetId, setStockTransferTargetId] = useState('');
+  const [stockTransferEntries, setStockTransferEntries] = useState([]);
+  const [stockTransferLoading, setStockTransferLoading] = useState(false);
+  const [purchaseSendSellerId, setPurchaseSendSellerId] = useState('');
+  const [activePurchaseCategory, setActivePurchaseCategory] = useState(
+    String(purchaseCategory || '').trim().toUpperCase() || (sessionMode === 'NIGHT' ? 'E' : 'M')
+  );
+  const [unsoldMode, setUnsoldMode] = useState('single');
+  const [unsoldNumber, setUnsoldNumber] = useState('');
+  const [unsoldRangeEndNumber, setUnsoldRangeEndNumber] = useState('');
+  const [unsoldLoading, setUnsoldLoading] = useState(false);
+  const [unsoldPartyId, setUnsoldPartyId] = useState(String(user?.id || ''));
+  const [unsoldDraftRows, setUnsoldDraftRows] = useState([]);
+  const [unsoldActiveRowIndex, setUnsoldActiveRowIndex] = useState(0);
+  const [unsoldEditorVisible, setUnsoldEditorVisible] = useState(true);
+  const [partyKeyword, setPartyKeyword] = useState('');
+  const [selectedPartyName, setSelectedPartyName] = useState('');
+  const [retroCodeInput, setRetroCodeInput] = useState('');
+  const [retroFromInput, setRetroFromInput] = useState('');
+  const [retroToInput, setRetroToInput] = useState('');
+  const [retroDraftRows, setRetroDraftRows] = useState([]);
+  const [retroActiveRowIndex, setRetroActiveRowIndex] = useState(0);
+  const [retroEditorVisible, setRetroEditorVisible] = useState(true);
+  const [retroSaving, setRetroSaving] = useState(false);
+  const [purchaseSendMemoNumber, setPurchaseSendMemoNumber] = useState(null);
+  const [purchaseSendMemoPopupOpen, setPurchaseSendMemoPopupOpen] = useState(false);
+  const [purchaseSendMemoSelectionIndex, setPurchaseSendMemoSelectionIndex] = useState(0);
+  const [unsoldMemoNumber, setUnsoldMemoNumber] = useState(null);
+  const [unsoldRemoveMemoNumber, setUnsoldRemoveMemoNumber] = useState(null);
+  const [unsoldMemoPopupOpen, setUnsoldMemoPopupOpen] = useState(false);
+  const [unsoldMemoSelectionIndex, setUnsoldMemoSelectionIndex] = useState(0);
+  const [unsoldCodeInput, setUnsoldCodeInput] = useState('');
+  const [unsoldTableFromInput, setUnsoldTableFromInput] = useState('');
+  const [unsoldTableToInput, setUnsoldTableToInput] = useState('');
+  const [stockLookupLoading, setStockLookupLoading] = useState(false);
+  const purchaseDateInputRef = useRef(null);
+  const purchaseSellerSelectRef = useRef(null);
+  const purchaseMemoRef = useRef(null);
+  const unsoldDateInputRef = useRef(null);
+  const unsoldPartySelectRef = useRef(null);
+  const unsoldMemoRef = useRef(null);
+  const purchaseCodeInputRef = useRef(null);
+  const purchaseFromInputRef = useRef(null);
+  const purchaseToInputRef = useRef(null);
+  const purchaseGridDateInputRef = useRef(null);
+  const unsoldCodeInputRef = useRef(null);
+  const unsoldFromInputRef = useRef(null);
+  const unsoldToInputRef = useRef(null);
+  const dashboardRef = useRef(null);
+  const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
+  const [exitConfirmSelected, setExitConfirmSelected] = useState('no');
+  const [exitReadyFromFirstControl, setExitReadyFromFirstControl] = useState(false);
+  const blockingWarningActionRef = useRef(null);
 
-  const AMOUNT_OPTIONS = ['6', '12'];
+  const clearBlockingWarning = () => {
+    const action = blockingWarningActionRef.current;
+    blockingWarningActionRef.current = null;
+    setBlockingWarning(null);
+    action?.();
+  };
+  const openBlockingWarning = (message, details = [], title = 'Warning', onClear = null) => {
+    blockingWarningActionRef.current = onClear;
+    setBlockingWarning({
+      title,
+      message,
+      details
+    });
+  };
+  const focusUnsoldFromInput = () => {
+    window.requestAnimationFrame(() => {
+      unsoldFromInputRef.current?.focus();
+      unsoldFromInputRef.current?.select?.();
+    });
+  };
+  const resetDateFieldsToToday = () => {
+    const today = getTodayDateValue();
+    setBookingDate(today);
+    setYourLotDate(today);
+    setHistoryDate(today);
+    setHistoryFromDate(today);
+    setHistoryToDate(today);
+    setPieceSummaryDate(today);
+    setTraceDate(today);
+    setSellerPrizeDate(today);
+    setStockTransferDate(today);
+    setSeePurchaseDate(today);
+  };
+  const closePieceSummary = () => {
+    setPieceSummaryOpen(false);
+    setPieceSummaryDate(getTodayDateValue());
+  };
+  const numberFallsWithinRange = (numberValue, fromValue, toValue) => {
+    const normalizedNumber = Number(String(numberValue || '').replace(/[^0-9]/g, ''));
+    const normalizedFrom = Number(String(fromValue || '').replace(/[^0-9]/g, ''));
+    const normalizedTo = Number(String(toValue || '').replace(/[^0-9]/g, ''));
+
+    if ([normalizedNumber, normalizedFrom, normalizedTo].some(Number.isNaN)) {
+      return false;
+    }
+
+    return normalizedNumber >= normalizedFrom && normalizedNumber <= normalizedTo;
+  };
+
+  const AMOUNT_OPTIONS = ['7', '12'];
   const sellerRateAmount6 = Number(user?.rateAmount6 || 0);
   const sellerRateAmount12 = Number(user?.rateAmount12 || 0);
   const amountBookingAvailability = {
-    '6': sellerRateAmount6 > 0,
+    '7': sellerRateAmount6 > 0,
     '12': sellerRateAmount12 > 0
   };
   const availableAmountOptions = AMOUNT_OPTIONS.filter((amountOption) => amountBookingAvailability[amountOption]);
-  const hasMultipleAvailableAmounts = availableAmountOptions.length > 1;
   const sessionDeadline = new Date(currentDateTime);
   sessionDeadline.setHours(sessionMode === 'MORNING' ? 13 : 20, 0, 0, 0);
   const isSendDeadlinePassed = currentDateTime > sessionDeadline;
@@ -231,7 +915,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
   const sendCountdownLabel = `${String(remainingHours).padStart(2, '0')}:${String(remainingMinutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
 
   const getAvailableSemOptions = () => {
-    if (amount === '6') {
+    if (amount === '7') {
       return ['5', '10', '25'];
     }
     if (amount === '12') {
@@ -243,7 +927,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
   const getAvailableTraceSemOptions = () => {
     if (traceAmount === '') {
       const semOptions = new Set();
-      if (amountBookingAvailability['6']) {
+      if (amountBookingAvailability['7']) {
         ['5', '10', '25'].forEach((option) => semOptions.add(option));
       }
       if (amountBookingAvailability['12']) {
@@ -251,7 +935,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
       }
       return Array.from(semOptions);
     }
-    if (traceAmount === '6') {
+    if (traceAmount === '7') {
       return ['5', '10', '25'];
     }
     if (traceAmount === '12') {
@@ -263,7 +947,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
   const getAvailableSellerPrizeSemOptions = () => {
     if (sellerPrizeAmount === '') {
       const semOptions = new Set();
-      if (amountBookingAvailability['6']) {
+      if (amountBookingAvailability['7']) {
         ['5', '10', '25'].forEach((option) => semOptions.add(option));
       }
       if (amountBookingAvailability['12']) {
@@ -271,7 +955,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
       }
       return Array.from(semOptions);
     }
-    if (sellerPrizeAmount === '6') {
+    if (sellerPrizeAmount === '7') {
       return ['5', '10', '25'];
     }
     if (sellerPrizeAmount === '12') {
@@ -283,7 +967,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
   const getAvailableMyPrizeSemOptions = () => {
     if (myPrizeAmount === '') {
       const semOptions = new Set();
-      if (amountBookingAvailability['6']) {
+      if (amountBookingAvailability['7']) {
         ['5', '10', '25'].forEach((option) => semOptions.add(option));
       }
       if (amountBookingAvailability['12']) {
@@ -291,7 +975,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
       }
       return Array.from(semOptions);
     }
-    if (myPrizeAmount === '6') {
+    if (myPrizeAmount === '7') {
       return ['5', '10', '25'];
     }
     if (myPrizeAmount === '12') {
@@ -300,20 +984,191 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
     return [];
   };
 
-  const amount6Entries = entries.filter((entry) => entry.amount === '6');
+  const amount6Entries = entries.filter((entry) => entry.amount === '7');
   const amount12Entries = entries.filter((entry) => entry.amount === '12');
   const totalAcceptedBookEntries = acceptedBookEntries.length;
-  const isFutureBookingDate = bookingDate > getTodayDateValue();
-  const isEntryDeadlinePassed = !isFutureBookingDate && isSendDeadlinePassed;
+  const isTodayBookingDate = bookingDate === getTodayDateValue();
+  const isEntryDeadlinePassed = isTodayBookingDate && isSendDeadlinePassed;
   const selectedAmountBookingDisabled = amount ? !amountBookingAvailability[amount] : false;
+  const currentSellerType = normalizeSellerType(user?.sellerType);
+  const allowedChildSellerTypes = getAllowedChildSellerTypes(user);
+  const directChildSellers = (treeData?.children || []).filter((node) => (
+    node.role === 'seller' && allowedChildSellerTypes.includes(normalizeSellerType(node.sellerType))
+  ));
+  const canCreateChildSeller = allowedChildSellerTypes.length > 0;
+  const canForwardPurchase = currentSellerType !== 'normal_seller';
+  const canUseStockTransfer = currentSellerType === 'seller' || currentSellerType === 'sub_seller';
+  const selfPartyOption = user?.id ? {
+    id: user.id,
+    username: user.username,
+    keyword: user.keyword || '',
+    rateAmount6: user.rateAmount6 || 0,
+    rateAmount12: user.rateAmount12 || 0
+  } : null;
+  const retroPartyOptions = [
+    selfPartyOption,
+    ...directChildSellers.filter((seller) => seller.id).map((seller) => ({
+      id: seller.id,
+      username: seller.username,
+      keyword: seller.keyword || '',
+      rateAmount6: seller.rateAmount6 || 0,
+      rateAmount12: seller.rateAmount12 || 0
+    }))
+  ].filter((party) => party?.id);
+  const stockTransferTargetOptions = [
+    selfPartyOption,
+    ...directChildSellers.filter((seller) => (
+      currentSellerType === 'sub_seller'
+        ? true
+        : normalizeSellerType(seller.sellerType) !== 'normal_seller'
+    ) && seller.id).map((seller) => ({
+      id: seller.id,
+      username: seller.username,
+      keyword: seller.keyword || '',
+      rateAmount6: seller.rateAmount6 || 0,
+      rateAmount12: seller.rateAmount12 || 0
+    }))
+  ].filter((seller) => seller?.id);
+  const selectedParty = retroPartyOptions.find((party) => String(party.id) === String(purchaseSendSellerId))
+    || retroPartyOptions.find((party) => party.username === selectedPartyName)
+    || retroPartyOptions[0]
+    || null;
+  const unsoldPartyOptions = [
+    {
+      id: user?.id,
+      username: user?.username,
+      keyword: user?.keyword || '',
+      rateAmount6: user?.rateAmount6 || 0,
+      rateAmount12: user?.rateAmount12 || 0
+    },
+    ...directChildSellers
+  ].filter((party) => party.id);
+  const selectedUnsoldParty = unsoldPartyOptions.find((party) => String(party.id) === String(unsoldPartyId))
+    || unsoldPartyOptions[0]
+    || null;
+  const seePurchaseSellerOptions = [
+    selfPartyOption,
+    ...directChildSellers.filter((seller) => seller.id).map((seller) => ({
+      id: seller.id,
+      username: seller.username,
+      keyword: seller.keyword || '',
+      rateAmount6: seller.rateAmount6 || 0,
+      rateAmount12: seller.rateAmount12 || 0
+    }))
+  ].filter((seller, index, allSellers) => seller?.id && allSellers.findIndex((entry) => String(entry.id) === String(seller.id)) === index);
+  const selectedSeePurchaseSeller = seePurchaseSellerOptions.find((seller) => String(seller.id) === String(seePurchaseSellerId))
+    || seePurchaseSellerOptions[0]
+    || null;
+  const loadPieceSummary = async (dateOverride = '') => {
+    const summaryDateValue = dateOverride || pieceSummaryDate || getTodayDateValue();
+
+    setPieceSummaryLoading(true);
+    setPieceSummaryOpen(true);
+    setPieceSummaryDate(summaryDateValue);
+    setError('');
+
+    try {
+      const response = await lotteryService.getPurchasePieceSummary({
+        bookingDate: summaryDateValue,
+        sessionMode,
+        purchaseCategory: activePurchaseCategory,
+        amount
+      });
+
+      setPieceSummaryRows((response.data || []).map((row) => ({
+        id: row.sellerId || row.seller_id,
+        sellerName: `${row.sellerName || row.seller_name || ''}${row.isSelf || row.is_self ? ' (Self)' : ''}`,
+        totalPiece: Number(row.totalPiece || row.total_piece || 0),
+        unsoldPiece: Number(row.unsoldPiece || row.unsold_piece || 0),
+        stockNotTransferredPiece: Number(row.stockNotTransferredPiece || row.stock_not_transferred_piece || 0)
+      })));
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error loading piece summary');
+      setPieceSummaryRows([]);
+    } finally {
+      setPieceSummaryLoading(false);
+    }
+  };
+
+  const loadUnsoldSendSummary = async () => {
+    setUnsoldSendLoading(true);
+    setUnsoldSendOpen(true);
+    setError('');
+
+    try {
+      const response = await lotteryService.getPurchaseUnsoldSendSummary({
+        bookingDate,
+        sessionMode
+      });
+      setUnsoldSendSummary(response.data || null);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error loading unsold send summary');
+      setUnsoldSendSummary(null);
+    } finally {
+      setUnsoldSendLoading(false);
+    }
+  };
+
+  const sendUnsoldToParent = async () => {
+    setUnsoldSendSaving(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      const response = await lotteryService.sendPurchaseUnsold({
+        bookingDate,
+        sessionMode
+      });
+      setSuccess(response.data?.message || 'Unsold sent successfully');
+      await Promise.all([
+        loadUnsoldSendSummary(),
+        loadPurchaseEntries(),
+        loadUnsoldMemoEntries(),
+        loadReceivedEntries()
+      ]);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error sending unsold');
+    } finally {
+      setUnsoldSendSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!pieceSummaryOpen) {
+      return undefined;
+    }
+
+    const handleKeyDown = (event) => {
+      if (String(event.key || '').toUpperCase() === 'ESCAPE') {
+        event.preventDefault();
+        closePieceSummary();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [pieceSummaryOpen]);
 
   const getHistoryFilters = () => (
     historyFilterMode === 'range'
-      ? { fromDate: historyFromDate, toDate: historyToDate, shift: historyShift }
-      : { date: historyDate, shift: historyShift }
+      ? { fromDate: historyFromDate, toDate: historyToDate, shift: getBillApiShift(historyShift), purchaseCategory: getBillPurchaseCategory(historyShift) }
+      : { date: historyDate, shift: getBillApiShift(historyShift), purchaseCategory: getBillPurchaseCategory(historyShift) }
   );
 
-  const loadBillPreviewData = async (filters = getHistoryFilters()) => {
+  const getBillFilters = () => ({
+    fromDate: historyFromDate,
+    toDate: historyToDate,
+    shift: getBillApiShift(historyShift),
+    amount: historyAmountFilter || '7',
+    purchaseCategory: getBillPurchaseCategory(historyShift)
+  });
+
+  const handleBillShiftChange = (nextShift) => {
+    setHistoryShift(nextShift);
+    setHistoryPurchaseCategoryFilter(getBillPurchaseCategory(nextShift));
+  };
+
+  const loadBillPreviewData = async (filters = getBillFilters()) => {
     try {
       if (filters.fromDate && filters.toDate && filters.fromDate > filters.toDate) {
         setError('From date cannot be after to date');
@@ -321,11 +1176,13 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
       }
 
       setError('');
-      const [historyResponse, prizeResponse] = await Promise.all([
+      const [historyResponse, purchaseBillResponse, prizeResponse] = await Promise.all([
         lotteryService.getTransferHistory(filters),
+        lotteryService.getPurchaseBillSummary(filters),
         priceService.getBillPrizes(filters)
       ]);
       setTransferHistory(historyResponse.data.map(mapHistoryRecord));
+      setPurchaseBillRows(purchaseBillResponse.data);
       setBillPrizeResults(prizeResponse.data);
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading bill data');
@@ -340,7 +1197,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
       return;
     }
 
-    loadPendingEntries();
+    loadPurchaseEntries();
     loadMySentEntries();
     loadReceivedEntries();
     loadAcceptedBookEntries();
@@ -359,15 +1216,18 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
 
   useEffect(() => {
     if (amount && !amountBookingAvailability[amount]) {
-      setAmount('');
+      setAmount(initialAmount || availableAmountOptions[0] || '7');
       setSelectedBox('');
     }
-  }, [amount, sellerRateAmount6, sellerRateAmount12]);
+  }, [amount, initialAmount, availableAmountOptions, sellerRateAmount6, sellerRateAmount12]);
 
   useEffect(() => {
     if (availableAmountOptions.length === 1 && amount !== availableAmountOptions[0]) {
       setAmount(availableAmountOptions[0]);
       setSelectedBox('');
+    }
+    if (availableAmountOptions.length > 0 && !amount) {
+      setAmount(availableAmountOptions[0]);
     }
   }, [availableAmountOptions, amount]);
 
@@ -387,24 +1247,24 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
 
   useEffect(() => {
     if (traceAmount && !amountBookingAvailability[traceAmount]) {
-      setTraceAmount('');
+      setTraceAmount(initialAmount || availableAmountOptions[0] || '7');
       setTraceSem('');
     }
-  }, [traceAmount, sellerRateAmount6, sellerRateAmount12]);
+  }, [traceAmount, initialAmount, availableAmountOptions, sellerRateAmount6, sellerRateAmount12]);
 
   useEffect(() => {
     if (sellerPrizeAmount && !amountBookingAvailability[sellerPrizeAmount]) {
-      setSellerPrizeAmount('');
+      setSellerPrizeAmount(initialAmount || availableAmountOptions[0] || '7');
       setSellerPrizeSem('');
     }
-  }, [sellerPrizeAmount, sellerRateAmount6, sellerRateAmount12]);
+  }, [sellerPrizeAmount, initialAmount, availableAmountOptions, sellerRateAmount6, sellerRateAmount12]);
 
   useEffect(() => {
     if (myPrizeAmount && !amountBookingAvailability[myPrizeAmount]) {
-      setMyPrizeAmount('');
+      setMyPrizeAmount(initialAmount || availableAmountOptions[0] || '7');
       setMyPrizeSem('');
     }
-  }, [myPrizeAmount, sellerRateAmount6, sellerRateAmount12]);
+  }, [myPrizeAmount, initialAmount, availableAmountOptions, sellerRateAmount6, sellerRateAmount12]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -415,9 +1275,51 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
   }, []);
 
   useEffect(() => {
+    setRetroActiveRowIndex((currentIndex) => Math.min(currentIndex, retroDraftRows.length));
+  }, [retroDraftRows.length]);
+
+  useEffect(() => {
+    setUnsoldActiveRowIndex((currentIndex) => Math.min(currentIndex, unsoldDraftRows.length));
+  }, [unsoldDraftRows.length]);
+
+  useEffect(() => {
+    if (activeTab === 'purchase-send') {
+      return focusElementReliably(() => purchaseSellerSelectRef.current || purchaseDateInputRef.current);
+    }
+
+    if (activeTab === 'unsold' || activeTab === 'unsold-remove') {
+      return focusElementReliably(() => unsoldPartySelectRef.current || unsoldDateInputRef.current);
+    }
+
+    return focusElementReliably(() => (
+      dashboardRef.current?.querySelector('.accordion-content input:not([type="hidden"]):not(:disabled), .accordion-content select:not(:disabled), .accordion-content textarea:not(:disabled), .accordion-content button:not(:disabled)')
+    ));
+  }, [activeTab]);
+
+  useEffect(() => {
+    setExitReadyFromFirstControl(false);
+    setExitConfirmOpen(false);
+    setExitConfirmSelected('no');
+  }, [activeTab]);
+
+  useEffect(() => {
+    if (activeTab === 'purchase-send') {
+      loadPurchaseSendMemoEntries();
+    }
+
+    if (activeTab === 'unsold') {
+      loadUnsoldMemoEntries();
+    }
+  }, [activeTab, purchaseSendSellerId, unsoldPartyId, bookingDate, sessionMode, activePurchaseCategory, amount]);
+
+  useEffect(() => {
     const handlePopState = (event) => {
       if (event.state?.sellerDashboardRoot) {
-        setActiveTab(event.state.sellerTab || '');
+        const nextTab = event.state.sellerTab || '';
+        if (!nextTab) {
+          resetDateFieldsToToday();
+        }
+        setActiveTab(nextTab);
         return;
       }
 
@@ -438,8 +1340,84 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
   }, [onExitSession]);
 
   useEffect(() => {
+    if (!['purchase-send', 'unsold', 'unsold-remove'].includes(activeTab)) {
+      if (blockingWarning) {
+        clearBlockingWarning();
+      }
+      return;
+    }
+
+    if (bookingError) {
+      openBlockingWarning(bookingError);
+      setBookingError('');
+      return;
+    }
+
+    if (error) {
+      openBlockingWarning(error);
+      setError('');
+    }
+  }, [activeTab, bookingError, error, blockingWarning]);
+
+  useEffect(() => {
+    if (!activeTab) {
+      return undefined;
+    }
+
+    const handleGlobalEscape = (event) => {
+      const key = String(event.key || '').toUpperCase();
+
+      if (blockingWarning && key !== 'ESCAPE') {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+
+      if (key !== 'ESCAPE') {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      if (blockingWarning) {
+        clearBlockingWarning();
+        return;
+      }
+      requestExitConfirmation();
+    };
+
+    window.addEventListener('keydown', handleGlobalEscape, true);
+    return () => window.removeEventListener('keydown', handleGlobalEscape, true);
+  }, [activeTab, billOnlyMode, blockingWarning]);
+
+  useEffect(() => {
+    if (billOnlyMode) {
+      setActiveTab('generate-bill');
+      return;
+    }
+
     setActiveTab(initialActiveTab);
-  }, [initialActiveTab]);
+  }, [billOnlyMode, initialActiveTab]);
+
+  useEffect(() => {
+    if (initialAmount) {
+      setAmount(initialAmount);
+      setTraceAmount(initialAmount);
+      setSellerPrizeAmount(initialAmount);
+      setMyPrizeAmount(initialAmount);
+    }
+  }, [initialAmount]);
+
+  useEffect(() => {
+    setActivePurchaseCategory(String(purchaseCategory || '').trim().toUpperCase() || (sessionMode === 'NIGHT' ? 'E' : 'M'));
+    const nextBillShift = getInitialBillShift(sessionMode, purchaseCategory);
+    setHistoryShift(nextBillShift);
+    setHistoryPurchaseCategoryFilter(getBillPurchaseCategory(nextBillShift));
+  }, [purchaseCategory, sessionMode]);
+
+  useEffect(() => {
+    setHistoryAmountFilter(initialBillAmount || initialAmount || '7');
+  }, [initialBillAmount, initialAmount]);
 
   const loadTree = async () => {
     try {
@@ -465,6 +1443,198 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
       setReceivedEntries(response.data.map(mapApiEntry));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading seller lot');
+    }
+  };
+
+  const loadPurchaseEntries = async () => {
+    try {
+      if (user?.role === 'admin') {
+        const response = await lotteryService.getAdminPurchases({ bookingDate, amount });
+        setPurchaseEntries(response.data.map(mapApiEntry));
+        setUnsoldEntries([]);
+        return;
+      }
+
+      const [assignedResponse, unsoldResponse] = await Promise.all([
+        lotteryService.getPurchases({ bookingDate, status: 'accepted', amount }),
+        lotteryService.getPurchases({ bookingDate, status: 'unsold', amount })
+      ]);
+      setPurchaseEntries(assignedResponse.data.map(mapApiEntry));
+      setUnsoldEntries(unsoldResponse.data.map(mapApiEntry));
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error loading purchase entries');
+    }
+  };
+
+  const refreshUnsoldDerivedViews = async () => {
+    const refreshTasks = [];
+
+    if (pieceSummaryOpen) {
+      refreshTasks.push(loadPieceSummary());
+    }
+
+    if (unsoldSendOpen) {
+      refreshTasks.push(loadUnsoldSendSummary());
+    }
+
+    if (billOnlyMode || activeTab === 'generate-bill') {
+      refreshTasks.push(loadBillPreviewData(getBillFilters()));
+    }
+
+    if (refreshTasks.length > 0) {
+      await Promise.all(refreshTasks);
+    }
+  };
+
+  const loadPurchaseSendMemoEntries = async (targetSellerId = purchaseSendSellerId, selectedBookingDate = bookingDate) => {
+    if (!targetSellerId) {
+      setPurchaseSendMemoEntries([]);
+      return [];
+    }
+
+    try {
+      const [assignedResponse, unsoldResponse] = await Promise.all([
+        lotteryService.getPurchases({
+          bookingDate: selectedBookingDate,
+          sessionMode,
+          sellerId: targetSellerId,
+          status: 'accepted',
+          purchaseCategory: activePurchaseCategory,
+          amount
+        }),
+        lotteryService.getPurchases({
+          bookingDate: selectedBookingDate,
+          sessionMode,
+          sellerId: targetSellerId,
+          status: 'unsold',
+          purchaseCategory: activePurchaseCategory,
+          amount
+        })
+      ]);
+
+      const mappedEntries = [
+        ...assignedResponse.data.map(mapApiEntry),
+        ...unsoldResponse.data.map(mapApiEntry)
+      ].filter((entry) => getDateOnlyValue(entry.bookingDate) === selectedBookingDate);
+      setPurchaseSendMemoEntries(mappedEntries);
+      return mappedEntries;
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error loading purchase memo entries');
+      setPurchaseSendMemoEntries([]);
+      return [];
+    }
+  };
+
+  const loadUnsoldMemoEntries = async (targetSellerId = unsoldPartyId, selectedBookingDate = bookingDate) => {
+    if (!targetSellerId) {
+      setUnsoldMemoEntries([]);
+      return;
+    }
+
+    try {
+      const response = await lotteryService.getPurchases({
+        bookingDate: selectedBookingDate,
+        sessionMode,
+        sellerId: String(targetSellerId) === String(user?.id) ? undefined : targetSellerId,
+        status: 'unsold',
+        purchaseCategory: activePurchaseCategory,
+        amount
+      });
+      const mappedEntries = (response.data || [])
+        .map(mapApiEntry)
+        .filter((entry) => activeTab === 'unsold-remove' ? isRemovableUnsoldEntry(entry) : true);
+      setUnsoldMemoEntries(mappedEntries);
+      return mappedEntries;
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error loading unsold memo entries');
+      setUnsoldMemoEntries([]);
+      return [];
+    }
+  };
+
+  const loadUnsoldRemoveMemoEntries = async (targetSellerId = unsoldPartyId, selectedBookingDate = bookingDate) => {
+    if (!targetSellerId) {
+      setUnsoldRemoveMemoEntries([]);
+      return [];
+    }
+
+    try {
+      const response = await lotteryService.getPurchaseUnsoldRemoveMemo({
+        bookingDate: selectedBookingDate,
+        sessionMode,
+        sellerId: String(targetSellerId) === String(user?.id) ? undefined : targetSellerId,
+        amount,
+        purchaseCategory: activePurchaseCategory
+      });
+      const mappedEntries = (response.data || []).map(mapHistoryRecord);
+      setUnsoldRemoveMemoEntries(mappedEntries);
+      return mappedEntries;
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error loading unsold remove memo entries');
+      setUnsoldRemoveMemoEntries([]);
+      return [];
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'unsold' && unsoldPartyId) {
+      loadUnsoldMemoEntries(unsoldPartyId, bookingDate);
+    }
+  }, [activeTab, unsoldPartyId, bookingDate, sessionMode, activePurchaseCategory, amount]);
+
+  useEffect(() => {
+    if (activeTab === 'unsold-remove' && unsoldPartyId) {
+      loadUnsoldRemoveMemoEntries(unsoldPartyId, bookingDate);
+    }
+  }, [activeTab, unsoldPartyId, bookingDate, sessionMode, activePurchaseCategory, amount]);
+
+  useEffect(() => {
+    setSeePurchaseShift(getInitialBillShift(sessionMode, purchaseCategory));
+  }, [sessionMode, purchaseCategory]);
+
+  const loadSeePurchaseEntries = async () => {
+    setSeePurchaseLoading(true);
+    setError('');
+    try {
+      const response = await lotteryService.getSellerPurchaseView({
+        bookingDate: seePurchaseDate,
+        sessionMode: getBillApiShift(seePurchaseShift),
+        sellerId: seePurchaseSellerId,
+        purchaseCategory: getBillPurchaseCategory(seePurchaseShift),
+        amount
+      });
+      setSeePurchaseReceivedEntries((response.data?.received || []).map(mapHistoryRecord));
+      setSeePurchaseSentEntries((response.data?.sent || []).map(mapHistoryRecord));
+      setSeePurchaseAvailableEntries((response.data?.available || []).map(mapApiEntry));
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error loading purchase view');
+      setSeePurchaseReceivedEntries([]);
+      setSeePurchaseSentEntries([]);
+      setSeePurchaseAvailableEntries([]);
+    } finally {
+      setSeePurchaseLoading(false);
+    }
+  };
+
+  const loadStockTransferEntries = async () => {
+    setStockTransferLoading(true);
+    setError('');
+
+    try {
+      const response = await lotteryService.getPurchases({
+        bookingDate: stockTransferDate,
+        sessionMode,
+        status: 'accepted',
+        purchaseCategory: activePurchaseCategory,
+        amount,
+        remaining: true
+      });
+      setStockTransferEntries(response.data.map(mapApiEntry));
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error loading stock transfer data');
+      setStockTransferEntries([]);
+    } finally {
+      setStockTransferLoading(false);
     }
   };
 
@@ -501,7 +1671,11 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
         sem: entry.boxValue,
         amount: String(entry.amount),
         uniqueCode: entry.uniqueCode,
-        price: Number(entry.boxValue) * Number(entry.amount)
+        price: Number(entry.boxValue) * Number(entry.amount),
+        memoNumber: entry.memoNumber ?? entry.memo_number ?? '',
+        username: entry.username || user?.username || '',
+        displaySeller: entry.displaySeller || entry.username || user?.username || '',
+        bookingDate: entry.bookingDate || entry.booking_date || bookingDate
       })));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading pending entries');
@@ -513,14 +1687,117 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
       return;
     }
 
-    loadPendingEntries();
+    loadPurchaseEntries();
     loadAcceptedBookEntries();
-  }, [billOnlyMode, bookingDate, sessionMode]);
+  }, [billOnlyMode, bookingDate, sessionMode, activePurchaseCategory, amount]);
+
+  useEffect(() => {
+    if (retroPartyOptions.length === 0) {
+      if (selectedPartyName) {
+        setSelectedPartyName('');
+      }
+      if (purchaseSendSellerId) {
+        setPurchaseSendSellerId('');
+      }
+      return;
+    }
+
+    const matchedParty = retroPartyOptions.find((party) => (
+      String(party.id) === String(purchaseSendSellerId) || party.username === selectedPartyName
+    ));
+
+    if (!matchedParty) {
+      setSelectedPartyName(retroPartyOptions[0].username);
+      setPurchaseSendSellerId(String(retroPartyOptions[0].id));
+      return;
+    }
+
+    if (String(matchedParty.id) !== String(purchaseSendSellerId)) {
+      setPurchaseSendSellerId(String(matchedParty.id));
+    }
+
+    if (matchedParty.username !== selectedPartyName) {
+      setSelectedPartyName(matchedParty.username);
+    }
+  }, [purchaseSendSellerId, selectedPartyName, retroPartyOptions]);
+
+  useEffect(() => {
+    if (stockTransferTargetOptions.length === 0) {
+      if (stockTransferTargetId) {
+        setStockTransferTargetId('');
+      }
+      return;
+    }
+
+    const matchedTarget = stockTransferTargetOptions.find((seller) => (
+      String(seller.id) === String(stockTransferTargetId)
+    ));
+
+    if (!matchedTarget) {
+      setStockTransferTargetId(String(stockTransferTargetOptions[0].id));
+    }
+  }, [stockTransferTargetId, stockTransferTargetOptions]);
+
+  useEffect(() => {
+    if (seePurchaseSellerOptions.length === 0) {
+      if (seePurchaseSellerId) {
+        setSeePurchaseSellerId('');
+      }
+      return;
+    }
+
+    const matchedSeller = seePurchaseSellerOptions.find((seller) => String(seller.id) === String(seePurchaseSellerId));
+    if (!matchedSeller) {
+      setSeePurchaseSellerId(String(seePurchaseSellerOptions[0].id));
+    }
+  }, [seePurchaseSellerId, seePurchaseSellerOptions]);
+
+  function resetSellerMemoOptionState(tabName) {
+    if (tabName === 'purchase-send') {
+      setPurchaseSendMemoNumber(nextPurchaseSendMemoNumber);
+      setPurchaseSendMemoSelectionIndex(0);
+      setPurchaseSendMemoPopupOpen(false);
+      setRetroDraftRows([]);
+      setRetroActiveRowIndex(0);
+      setRetroEditorVisible(true);
+      setRetroCodeInput('');
+      setRetroFromInput('');
+      setRetroToInput('');
+      return;
+    }
+
+    if (tabName === 'unsold') {
+      setUnsoldMemoNumber(nextUnsoldMemoNumber);
+      setUnsoldMemoSelectionIndex(0);
+      setUnsoldMemoPopupOpen(false);
+      setUnsoldDraftRows([]);
+      setUnsoldActiveRowIndex(0);
+      setUnsoldEditorVisible(true);
+      resetUnsoldEditor({ keepCode: false });
+      return;
+    }
+
+    if (tabName === 'unsold-remove') {
+      setUnsoldRemoveMemoNumber(nextUnsoldRemoveMemoNumber);
+      setUnsoldMemoSelectionIndex(0);
+      setUnsoldMemoPopupOpen(false);
+      setUnsoldDraftRows([]);
+      setUnsoldActiveRowIndex(0);
+      setUnsoldEditorVisible(true);
+      resetUnsoldEditor({ keepCode: false });
+    }
+  }
 
   const handleTabToggle = (tabName) => {
     if (activeTab === tabName) {
+      resetSellerMemoOptionState(tabName);
+      resetDateFieldsToToday();
       window.history.back();
       return;
+    }
+
+    if (activeTab && activeTab !== tabName) {
+      resetSellerMemoOptionState(activeTab);
     }
 
     if (tabName === 'your-lot') {
@@ -532,11 +1809,51 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
     }
 
     if (tabName === 'add-seller') {
+      if (!canCreateChildSeller) {
+        setError('Aap is user se aur seller create nahi kar sakte');
+        return;
+      }
       loadTree();
     }
 
     if (tabName === 'tree') {
       loadTree();
+    }
+
+    if (tabName === 'purchase-send') {
+      if (!canForwardPurchase) {
+        setError('Normal seller purchase send nahi kar sakta');
+        return;
+      }
+      resetSellerMemoOptionState('purchase-send');
+      loadPurchaseEntries();
+      loadPurchaseSendMemoEntries();
+    }
+
+    if (tabName === 'see-purchase') {
+      if (currentSellerType === 'normal_seller') {
+        setError('Normal seller ka purchase direct F10 me dikhega');
+        return;
+      }
+      loadSeePurchaseEntries();
+    }
+
+    if (tabName === 'stock-transfer') {
+      if (!canUseStockTransfer) {
+        setError('Stock transfer sirf seller ke liye hai');
+        return;
+      }
+      loadStockTransferEntries();
+    }
+
+    if (tabName === 'unsold') {
+      resetSellerMemoOptionState('unsold');
+      loadPurchaseEntries();
+    }
+
+    if (tabName === 'unsold-remove') {
+      resetSellerMemoOptionState('unsold-remove');
+      loadUnsoldRemoveMemoEntries(unsoldPartyId, bookingDate);
     }
 
     if (tabName === 'book-lottery') {
@@ -547,40 +1864,1265 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
       loadTransferHistory(getHistoryFilters());
     }
 
+    if (tabName === 'generate-bill') {
+      loadBillPreviewData(getBillFilters());
+    }
+
     window.history.pushState({ sellerDashboardRoot: true, sellerTab: tabName }, '', '#' + tabName);
     setActiveTab(tabName);
   };
 
   const handleTabBack = () => {
     if (billOnlyMode) {
+      resetDateFieldsToToday();
       if (onExitSession) onExitSession();
       return;
     }
 
     if (activeTab) {
+      resetSellerMemoOptionState(activeTab);
+      resetDateFieldsToToday();
       window.history.back();
       return;
     }
 
     if (onExitSession) {
+      resetDateFieldsToToday();
       onExitSession();
     }
   };
 
-  const handleDashboardHome = () => {
-    setError('');
-    setSuccess('');
+  const getFirstActiveControl = () => {
+    if (activeTab === 'purchase-send') {
+      return purchaseSellerSelectRef.current || purchaseDateInputRef.current || purchaseCodeInputRef.current;
+    }
 
-    if (billOnlyMode) {
-      if (onExitSession) onExitSession();
+    if (activeTab === 'unsold' || activeTab === 'unsold-remove') {
+      return unsoldPartySelectRef.current || unsoldDateInputRef.current || unsoldCodeInputRef.current;
+    }
+
+    const activeContent = dashboardRef.current?.querySelector('.accordion-content');
+    return activeContent?.querySelector('input:not([type="hidden"]):not(:disabled), select:not(:disabled), textarea:not(:disabled), button:not(:disabled)')
+      || dashboardRef.current?.querySelector('button:not(:disabled)');
+  };
+
+  const focusFirstActiveControl = () => {
+    const firstControl = getFirstActiveControl();
+    window.requestAnimationFrame(() => {
+      firstControl?.focus();
+      firstControl?.select?.();
+    });
+  };
+
+  const requestExitConfirmation = () => {
+    const firstControl = getFirstActiveControl();
+    const isAtFirstControl = firstControl && document.activeElement === firstControl;
+
+    if (!activeTab || exitReadyFromFirstControl || isAtFirstControl) {
+      setExitReadyFromFirstControl(false);
+      handleTabBack();
       return;
     }
 
-    if (activeTab) {
-      setActiveTab('');
-      window.history.pushState({ sellerDashboardRoot: true }, '', window.location.pathname);
+    setExitConfirmSelected('no');
+    setExitConfirmOpen(true);
+  };
+
+  const cancelExitConfirmation = () => {
+    setExitConfirmOpen(false);
+    setExitConfirmSelected('no');
+  };
+
+  const confirmExitRequest = () => {
+    setExitConfirmOpen(false);
+    setExitConfirmSelected('no');
+
+    if (activeTab && !exitReadyFromFirstControl) {
+      setExitReadyFromFirstControl(true);
+      focusFirstActiveControl();
+      return;
+    }
+
+    setExitReadyFromFirstControl(false);
+    handleTabBack();
+  };
+
+  const handleDashboardFocusCapture = (event) => {
+    if (!exitReadyFromFirstControl || exitConfirmOpen) {
+      return;
+    }
+
+    const firstControl = getFirstActiveControl();
+    if (firstControl && event.target !== firstControl) {
+      setExitReadyFromFirstControl(false);
     }
   };
+
+  const resolvePartyFromKeyword = () => {
+    const normalizedKeyword = getPartyKeyword(partyKeyword);
+    if (!normalizedKeyword) {
+    return selectedParty || retroPartyOptions[0] || null;
+  }
+
+  return retroPartyOptions.find((party) => (
+      getPartyKeyword(party) === normalizedKeyword
+      || String(party.username).toUpperCase().startsWith(normalizedKeyword)
+    )) || null;
+  };
+
+  const resolveRetroSemValue = () => {
+    const parsed = parseRetroCodeValue(retroCodeInput, sessionMode, activePurchaseCategory);
+    return parsed.semValue || selectedBox || '';
+  };
+
+  const buildPurchasePreview = () => {
+    const party = resolvePartyFromKeyword();
+    const parsedCode = parseRetroCodeValue(retroCodeInput, sessionMode, activePurchaseCategory);
+    const previousRow = retroDraftRows[Math.min(retroActiveRowIndex, retroDraftRows.length) - 1] || null;
+    const { fromNumber, toNumber, count } = getFiveDigitRangeMetrics(retroFromInput, retroToInput, previousRow?.from);
+
+    if (!party || parsedCode.error || !parsedCode.semValue || !fromNumber || !toNumber) {
+      return null;
+    }
+
+    const quantity = Number(parsedCode.semValue) * count;
+    const rate = Number(amount || 0);
+
+    return {
+      code: buildRetroTicketCode(parsedCode.resolvedSessionMode, parsedCode.semValue, parsedCode.resolvedPurchaseCategory),
+      itemName: getRetroItemName(parsedCode.resolvedSessionMode, parsedCode.semValue),
+      drawDate: bookingDate,
+      day: new Date(bookingDate).toLocaleDateString('en-IN', { weekday: 'short' }).toUpperCase(),
+      from: fromNumber,
+      to: toNumber || fromNumber,
+      quantity,
+      rate: rate.toFixed(2),
+      amount: (quantity * rate).toFixed(2),
+      semValue: parsedCode.semValue,
+      resolvedSessionMode: parsedCode.resolvedSessionMode,
+      resolvedPurchaseCategory: parsedCode.resolvedPurchaseCategory
+    };
+  };
+
+  const buildRetroDraftRow = () => {
+    const party = resolvePartyFromKeyword();
+    const parsedCode = parseRetroCodeValue(retroCodeInput, sessionMode, activePurchaseCategory);
+    const semValue = parsedCode.semValue;
+    const previousRow = retroDraftRows[Math.min(retroActiveRowIndex, retroDraftRows.length) - 1] || null;
+    const { fromNumber, toNumber, count, error: rangeError } = getFiveDigitRangeMetrics(retroFromInput, retroToInput, previousRow?.from);
+
+    if (!party) {
+      return { error: 'Party name select karo' };
+    }
+
+    if (!amount) {
+      return { error: 'Amount select karo' };
+    }
+
+    if (parsedCode.error) {
+      return { error: parsedCode.error };
+    }
+
+    if (!semValue) {
+      return { error: 'Code/SEM enter karo' };
+    }
+
+    if (!fromNumber) {
+      return { error: 'From number 5 digit hona chahiye' };
+    }
+
+    if (rangeError) {
+      return { error: rangeError };
+    }
+
+    if (!toNumber) {
+      return { error: 'To number 5 digit hona chahiye' };
+    }
+
+    const quantityValue = Number(semValue) * count;
+    const rateValue = Number(amount || 0);
+
+    return {
+      row: {
+        id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        code: buildRetroTicketCode(parsedCode.resolvedSessionMode, semValue, parsedCode.resolvedPurchaseCategory),
+        itemName: getRetroItemName(parsedCode.resolvedSessionMode, semValue),
+        drawDate: bookingDate,
+        day: new Date(bookingDate).toLocaleDateString('en-IN', { weekday: 'short' }).toUpperCase(),
+        prefix: '',
+        series: '',
+        from: fromNumber,
+        to: toNumber,
+        quantity: quantityValue,
+        rate: rateValue.toFixed(2),
+        amount: (quantityValue * rateValue).toFixed(2),
+        semValue: String(semValue),
+        resolvedSessionMode: parsedCode.resolvedSessionMode,
+        resolvedPurchaseCategory: parsedCode.resolvedPurchaseCategory,
+        partyName: party.username,
+        bookingAmount: String(amount),
+        numberStart: fromNumber,
+        numberEnd: toNumber
+      }
+    };
+  };
+
+  const findConflictingRetroDraft = (candidateRow, rows = retroDraftRows) => (
+    rows.find((row, index) => (
+      index !== retroActiveRowIndex
+      && String(row.semValue || '') === String(candidateRow.semValue || '')
+      && String(row.resolvedSessionMode || '') === String(candidateRow.resolvedSessionMode || '')
+      && String(row.resolvedPurchaseCategory || '') === String(candidateRow.resolvedPurchaseCategory || '')
+      && String(row.drawDate || '') === String(candidateRow.drawDate || '')
+      && rangesOverlap(row.from, row.to, candidateRow.from, candidateRow.to)
+    ))
+  );
+
+  const hasPendingRetroEditorValues = () => (
+    retroEditorVisible
+    && (Boolean(String(retroFromInput || '').trim())
+    || Boolean(String(retroToInput || '').trim())
+    )
+  );
+
+  const startNewRetroDraftRow = () => {
+    setRetroEditorVisible(true);
+    setRetroCodeInput('');
+    setRetroFromInput('');
+    setRetroToInput('');
+    setRetroActiveRowIndex(retroDraftRows.length);
+    window.requestAnimationFrame(() => purchaseFromInputRef.current?.focus());
+  };
+
+  const getRetroRowsForSave = async () => {
+    const currentRows = [...retroDraftRows];
+
+    if (!hasPendingRetroEditorValues()) {
+      return { rows: currentRows };
+    }
+
+    const result = buildRetroDraftRow();
+
+    if (result.error) {
+      return { error: result.error };
+    }
+
+    const conflictingRetroDraft = findConflictingRetroDraft(result.row, currentRows);
+
+    if (conflictingRetroDraft) {
+      return {
+        error: 'Number already added.',
+        details: [`Memo No. ${user?.username || 'N/A'}`],
+        title: 'Duplicate Number'
+      };
+    }
+
+    const stockValidation = await validateRetroRowInStock(result.row);
+    if (stockValidation.error) {
+      return {
+        error: stockValidation.error,
+        title: 'Stock Missing'
+      };
+    }
+
+    if (retroActiveRowIndex < currentRows.length) {
+      const updatedRows = [...currentRows];
+      updatedRows[retroActiveRowIndex] = {
+        ...result.row,
+        id: currentRows[retroActiveRowIndex].id
+      };
+      return { rows: updatedRows, consumedEditor: true, consumedRow: result.row };
+    }
+
+    return { rows: [...currentRows, result.row], consumedEditor: true, consumedRow: result.row };
+  };
+
+  const validateRetroRowInStock = async (row) => {
+    const requestedNumbers = buildConsecutiveNumbers(row.numberStart || row.from, row.numberEnd || row.to);
+    if (requestedNumbers.error) {
+      return { error: requestedNumbers.error };
+    }
+
+    const response = await lotteryService.getPurchases({
+      bookingDate: row.drawDate || bookingDate,
+      sessionMode: row.resolvedSessionMode || sessionMode,
+      status: 'accepted',
+      purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+      amount: row.bookingAmount || amount,
+      boxValue: row.semValue,
+      remaining: true
+    });
+
+    const availableNumbers = new Set((response.data || []).map((entry) => String(entry.number || '').padStart(5, '0')));
+    const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !availableNumbers.has(currentNumber));
+
+    if (missingNumbers.length > 0) {
+      return {
+        error: `${formatDisplayDate(row.drawDate || bookingDate)} date me aapke balance stock me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
+      };
+    }
+
+    return { ok: true };
+  };
+
+  const addRetroDraftRow = () => {
+    if (blockingWarning) {
+      return;
+    }
+
+    const result = buildRetroDraftRow();
+
+    if (result.error) {
+      openBlockingWarning(result.error);
+      return;
+    }
+
+    const conflictingRetroDraft = findConflictingRetroDraft(result.row);
+
+    if (conflictingRetroDraft) {
+      openBlockingWarning(
+        'Number already added.',
+        [`Memo No. ${user?.username || 'N/A'}`],
+        'Duplicate Number'
+      );
+      return;
+    }
+
+    Promise.resolve().then(async () => {
+      try {
+        const stockValidation = await validateRetroRowInStock(result.row);
+        if (stockValidation.error) {
+          openBlockingWarning(stockValidation.error, [], 'Stock Missing');
+          return;
+        }
+      } catch (err) {
+        openBlockingWarning(err.response?.data?.message || 'Stock check nahi ho paya', [], 'Stock Missing');
+        return;
+      }
+
+      setRetroDraftRows((currentRows) => {
+        if (retroActiveRowIndex < currentRows.length) {
+          const updatedRows = [...currentRows];
+          updatedRows[retroActiveRowIndex] = {
+            ...result.row,
+            id: currentRows[retroActiveRowIndex].id
+          };
+          return updatedRows;
+        }
+
+        return [...currentRows, result.row];
+      });
+      setSelectedPartyName(result.row.partyName);
+      setPartyKeyword(getPartyKeyword(result.row.partyName));
+      setSelectedBox(result.row.semValue);
+      setRetroCodeInput(result.row.code || retroCodeInput);
+      setRetroFromInput('');
+      setRetroToInput('');
+      setRetroEditorVisible(true);
+      clearBlockingWarning();
+      const nextIndex = retroActiveRowIndex < retroDraftRows.length
+        ? Math.min(retroActiveRowIndex + 1, retroDraftRows.length)
+        : retroDraftRows.length + 1;
+      setRetroActiveRowIndex(nextIndex);
+      setBookingError('');
+      window.requestAnimationFrame(() => {
+        purchaseToInputRef.current?.focus();
+        purchaseToInputRef.current?.select?.();
+      });
+    });
+  };
+
+  const loadRetroDraftIntoEditor = (targetIndex) => {
+    if (targetIndex < retroDraftRows.length) {
+      const row = retroDraftRows[targetIndex];
+      setRetroEditorVisible(true);
+      setRetroCodeInput(row.code || '');
+      setRetroFromInput(row.from || '');
+      setRetroToInput(row.to || '');
+      setSelectedPartyName(row.partyName || selectedPartyName);
+      setPartyKeyword(getPartyKeyword(row.partyName || selectedPartyName));
+      setSelectedBox(row.semValue || '');
+      if (row.drawDate) {
+        setBookingDate(row.drawDate);
+      }
+      setRetroActiveRowIndex(targetIndex);
+      return;
+    }
+
+    setRetroCodeInput('');
+    setRetroFromInput('');
+    setRetroToInput('');
+    setRetroEditorVisible(true);
+    setRetroActiveRowIndex(retroDraftRows.length);
+  };
+
+  const openPurchaseSendMemoPopup = () => {
+    const nextIndex = Math.max(
+      purchaseSendMemoOptions.findIndex((option) => Number(option.memoNumber) === Number(purchaseSendMemoNumber) && !option.isNew),
+      0
+    );
+    setPurchaseSendMemoSelectionIndex(nextIndex);
+    setPurchaseSendMemoPopupOpen(true);
+  };
+
+  const closePurchaseSendMemoPopup = () => {
+    setPurchaseSendMemoPopupOpen(false);
+  };
+
+  const commitPurchaseSendMemoSelection = (option = highlightedPurchaseSendMemoOption) => {
+    if (!option) {
+      return;
+    }
+
+    setPurchaseSendMemoNumber(option.memoNumber);
+    setPurchaseSendMemoSelectionIndex(Math.max(
+      purchaseSendMemoOptions.findIndex((currentOption) => currentOption.key === option.key),
+      0
+    ));
+    setPurchaseSendMemoPopupOpen(false);
+
+    if (option.isNew) {
+      setRetroDraftRows([]);
+      setRetroActiveRowIndex(0);
+      setRetroCodeInput('');
+      setRetroFromInput('');
+      setRetroToInput('');
+    } else {
+      const selectedEntries = purchaseSendMemoEntries.filter((entry) => (
+        Number(entry.purchaseMemoNumber || entry.memoNumber) === Number(option.memoNumber)
+      ));
+      const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, amount);
+      setRetroDraftRows(draftRows);
+
+      if (draftRows.length > 0) {
+        const firstRow = draftRows[0];
+        setRetroCodeInput(firstRow.code || '');
+        setRetroFromInput(firstRow.from || '');
+        setRetroToInput(firstRow.to || '');
+        setSelectedPartyName(firstRow.partyName || selectedPartyName);
+        setPartyKeyword(getPartyKeyword(firstRow.partyName || selectedPartyName));
+        setSelectedBox(firstRow.semValue || '');
+        setRetroActiveRowIndex(0);
+      } else {
+        setRetroActiveRowIndex(0);
+        setRetroCodeInput('');
+        setRetroFromInput('');
+        setRetroToInput('');
+      }
+    }
+
+    window.requestAnimationFrame(() => purchaseCodeInputRef.current?.focus());
+  };
+
+  const unsoldMemoSummaries = buildCurrentMemoSummaries(unsoldMemoEntries);
+  const nextUnsoldMemoNumber = unsoldMemoSummaries.length > 0
+    ? Math.max(...unsoldMemoSummaries.map((memo) => memo.memoNumber)) + 1
+    : 1;
+  const unsoldMemoOptions = [
+    {
+      key: `new-unsold-${nextUnsoldMemoNumber}`,
+      memoNumber: nextUnsoldMemoNumber,
+      isNew: true,
+      label: String(nextUnsoldMemoNumber),
+      drawDate: bookingDate,
+      quantity: ''
+    },
+    ...unsoldMemoSummaries.map((memo) => ({
+      key: `unsold-memo-${memo.memoNumber}`,
+      memoNumber: memo.memoNumber,
+      isNew: false,
+      label: String(memo.memoNumber),
+      drawDate: memo.drawDate,
+      quantity: memo.totalPieceCount,
+      totalPieceCount: memo.totalPieceCount,
+      batches: memo.batches
+    }))
+  ];
+  const selectedUnsoldMemoOption = unsoldMemoOptions.find((option) => (
+    !option.isNew && Number(option.memoNumber) === Number(unsoldMemoNumber)
+  )) || unsoldMemoOptions[0] || null;
+  const unsoldRemoveMemoSummaries = buildCurrentMemoSummaries(unsoldRemoveMemoEntries);
+  const nextUnsoldRemoveMemoNumber = unsoldRemoveMemoSummaries.length > 0
+    ? Math.max(...unsoldRemoveMemoSummaries.map((memo) => memo.memoNumber)) + 1
+    : 1;
+  const unsoldRemoveMemoOptions = [
+    {
+      key: `unsold-remove-new-${nextUnsoldRemoveMemoNumber}`,
+      memoNumber: nextUnsoldRemoveMemoNumber,
+      isNew: true,
+      label: String(nextUnsoldRemoveMemoNumber),
+      drawDate: bookingDate,
+      quantity: ''
+    },
+    ...unsoldRemoveMemoSummaries.map((memo) => ({
+      key: `unsold-remove-memo-${memo.memoNumber}`,
+      memoNumber: memo.memoNumber,
+      isNew: false,
+      label: String(memo.memoNumber),
+      drawDate: memo.drawDate,
+      quantity: memo.totalPieceCount,
+      totalPieceCount: memo.totalPieceCount,
+      batches: memo.batches
+    }))
+  ];
+  const selectedUnsoldRemoveMemoOption = unsoldRemoveMemoOptions.find((option) => (
+    Number(option.memoNumber) === Number(unsoldRemoveMemoNumber)
+  )) || unsoldRemoveMemoOptions[0] || null;
+  const defaultUnsoldMemoOption = selectedUnsoldMemoOption
+    || unsoldMemoOptions.find((option) => !option.isNew)
+    || unsoldMemoOptions[0]
+    || null;
+  const defaultUnsoldRemoveMemoOption = selectedUnsoldRemoveMemoOption
+    || unsoldRemoveMemoOptions.find((option) => !option.isNew)
+    || unsoldRemoveMemoOptions[0]
+    || null;
+  const currentUnsoldMemoOptions = activeTab === 'unsold-remove' ? unsoldRemoveMemoOptions : unsoldMemoOptions;
+  const currentUnsoldMemoNumber = activeTab === 'unsold-remove' ? unsoldRemoveMemoNumber : unsoldMemoNumber;
+  const highlightedUnsoldMemoOption = currentUnsoldMemoOptions[unsoldMemoSelectionIndex]
+    || (activeTab === 'unsold-remove' ? selectedUnsoldRemoveMemoOption : selectedUnsoldMemoOption)
+    || null;
+
+  const openUnsoldMemoPopup = () => {
+    const nextIndex = Math.max(
+      currentUnsoldMemoOptions.findIndex((option) => Number(option.memoNumber) === Number(currentUnsoldMemoNumber) && !option.isNew),
+      0
+    );
+    setUnsoldMemoSelectionIndex(nextIndex);
+    setUnsoldMemoPopupOpen(true);
+  };
+
+  const hydrateUnsoldDraftRowsForMemo = (memoNumber, sourceEntries = unsoldMemoEntries) => {
+    const selectedEntries = sourceEntries.filter((entry) => (
+      Number(entry.memoNumber) === Number(memoNumber)
+    ));
+    const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, amount, { existingUnsoldMemo: true });
+    setUnsoldDraftRows(draftRows);
+    setUnsoldEditorVisible(true);
+
+    if (draftRows.length > 0) {
+      const firstRow = draftRows[0];
+      setUnsoldActiveRowIndex(0);
+      setUnsoldCodeInput(firstRow.code || '');
+      setUnsoldTableFromInput(firstRow.from || '');
+      setUnsoldTableToInput(firstRow.to || '');
+      setUnsoldNumber(firstRow.from || '');
+      setUnsoldRangeEndNumber(firstRow.to || '');
+      return;
+    }
+
+    setUnsoldActiveRowIndex(0);
+    setUnsoldCodeInput('');
+    setUnsoldTableFromInput('');
+    setUnsoldTableToInput('');
+    setUnsoldNumber('');
+    setUnsoldRangeEndNumber('');
+  };
+
+  const hydrateUnsoldRemoveDraftRowsForMemo = (memoNumber, sourceEntries = unsoldRemoveMemoEntries) => {
+    const selectedEntries = sourceEntries
+      .filter((entry) => Number(entry.memoNumber) === Number(memoNumber))
+      .map((entry) => ({
+        id: `unsold-remove-history-${entry.id}`,
+        number: entry.number,
+        sem: entry.boxValue,
+        amount: entry.amount,
+        bookingDate: entry.bookingDate,
+        sessionMode: entry.sessionMode,
+        purchaseCategory: entry.purchaseCategory,
+        displaySeller: selectedUnsoldParty?.username || user?.username || '',
+        userId: selectedUnsoldParty?.id || user?.id || '',
+        username: selectedUnsoldParty?.username || user?.username || ''
+      }));
+    const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, amount, { existingUnsoldMemo: true });
+    setUnsoldDraftRows(draftRows);
+    setUnsoldEditorVisible(true);
+
+    if (draftRows.length > 0) {
+      const firstRow = draftRows[0];
+      setUnsoldActiveRowIndex(0);
+      setUnsoldCodeInput(firstRow.code || '');
+      setUnsoldTableFromInput(firstRow.from || '');
+      setUnsoldTableToInput(firstRow.to || '');
+      setUnsoldNumber(firstRow.from || '');
+      setUnsoldRangeEndNumber(firstRow.to || '');
+      return;
+    }
+
+    setUnsoldActiveRowIndex(0);
+    setUnsoldCodeInput('');
+    setUnsoldTableFromInput('');
+    setUnsoldTableToInput('');
+    setUnsoldNumber('');
+    setUnsoldRangeEndNumber('');
+  };
+
+  const commitUnsoldMemoSelection = (option = highlightedUnsoldMemoOption) => {
+    if (!option) {
+      return;
+    }
+
+    if (activeTab === 'unsold-remove') {
+      setUnsoldRemoveMemoNumber(option.memoNumber);
+    } else {
+      setUnsoldMemoNumber(option.memoNumber);
+    }
+    setUnsoldMemoSelectionIndex(Math.max(
+      currentUnsoldMemoOptions.findIndex((currentOption) => currentOption.key === option.key),
+      0
+    ));
+    setUnsoldMemoPopupOpen(false);
+
+    if (option.isNew) {
+      setUnsoldDraftRows([]);
+      setUnsoldActiveRowIndex(0);
+      setUnsoldEditorVisible(true);
+      setUnsoldCodeInput('');
+      setUnsoldTableFromInput('');
+      setUnsoldTableToInput('');
+      setUnsoldNumber('');
+      setUnsoldRangeEndNumber('');
+    } else {
+      if (activeTab === 'unsold-remove') {
+        hydrateUnsoldRemoveDraftRowsForMemo(option.memoNumber);
+      } else {
+        hydrateUnsoldDraftRowsForMemo(option.memoNumber);
+      }
+    }
+    window.requestAnimationFrame(() => unsoldCodeInputRef.current?.focus());
+  };
+
+  useEffect(() => {
+    if (activeTab !== 'unsold' || unsoldMemoNumber !== null || unsoldMemoPopupOpen) {
+      return;
+    }
+
+    const latestExistingMemoOption = [...unsoldMemoOptions].reverse().find((option) => !option.isNew);
+    if (latestExistingMemoOption) {
+      setUnsoldMemoNumber(latestExistingMemoOption.memoNumber);
+    }
+  }, [activeTab, unsoldMemoNumber, unsoldMemoOptions, unsoldMemoPopupOpen]);
+
+  useEffect(() => {
+    if (activeTab !== 'unsold-remove' || unsoldRemoveMemoNumber !== null || unsoldMemoPopupOpen) {
+      return;
+    }
+
+    const latestExistingMemoOption = [...unsoldRemoveMemoOptions].reverse().find((option) => !option.isNew);
+    if (latestExistingMemoOption) {
+      setUnsoldRemoveMemoNumber(latestExistingMemoOption.memoNumber);
+    }
+  }, [activeTab, unsoldRemoveMemoNumber, unsoldRemoveMemoOptions, unsoldMemoPopupOpen]);
+
+  useEffect(() => {
+    if (activeTab !== 'unsold' || !unsoldMemoNumber || unsoldMemoPopupOpen) {
+      return;
+    }
+
+    const selectedMemoExists = unsoldMemoEntries.some((entry) => (
+      Number(entry.memoNumber) === Number(unsoldMemoNumber)
+    ));
+
+    if (selectedMemoExists) {
+      hydrateUnsoldDraftRowsForMemo(unsoldMemoNumber, unsoldMemoEntries);
+    }
+  }, [activeTab, unsoldMemoEntries, unsoldMemoNumber, unsoldMemoPopupOpen]);
+
+  useEffect(() => {
+    if (activeTab !== 'unsold-remove' || unsoldMemoPopupOpen) {
+      return;
+    }
+
+    const selectedMemoExists = unsoldRemoveMemoEntries.some((entry) => (
+      Number(entry.memoNumber) === Number(unsoldRemoveMemoNumber)
+    ));
+
+    if (selectedMemoExists) {
+      hydrateUnsoldRemoveDraftRowsForMemo(unsoldRemoveMemoNumber, unsoldRemoveMemoEntries);
+      return;
+    }
+
+    setUnsoldDraftRows([]);
+    setUnsoldActiveRowIndex(0);
+    setUnsoldEditorVisible(true);
+    setUnsoldCodeInput('');
+    setUnsoldTableFromInput('');
+    setUnsoldTableToInput('');
+    setUnsoldNumber('');
+    setUnsoldRangeEndNumber('');
+  }, [activeTab, unsoldRemoveMemoEntries, unsoldRemoveMemoNumber, unsoldMemoPopupOpen, selectedUnsoldParty?.username, amount, user?.username]);
+
+  useEffect(() => {
+    const currentMemoOptions = activeTab === 'unsold-remove' ? unsoldRemoveMemoOptions : unsoldMemoOptions;
+    const currentMemoNumber = activeTab === 'unsold-remove' ? unsoldRemoveMemoNumber : unsoldMemoNumber;
+
+    if (!['unsold', 'unsold-remove'].includes(activeTab)) {
+      return;
+    }
+
+    if (currentMemoOptions.length === 0) {
+      setUnsoldMemoSelectionIndex(0);
+      if (unsoldMemoNumber !== null || unsoldRemoveMemoNumber !== null) {
+        setUnsoldMemoNumber(null);
+        setUnsoldRemoveMemoNumber(null);
+      }
+      return;
+    }
+
+    const existingMemoOption = currentMemoOptions.find((option) => (
+      Number(option.memoNumber) === Number(currentMemoNumber)
+    ));
+
+    setUnsoldMemoSelectionIndex((currentIndex) => {
+      if (unsoldMemoPopupOpen && currentIndex < currentMemoOptions.length) {
+        return currentIndex;
+      }
+
+      const selectedIndex = currentMemoOptions.findIndex((option) => option.key === (existingMemoOption || currentMemoOptions[0]).key);
+      return Math.max(selectedIndex, 0);
+    });
+  }, [
+    activeTab,
+    unsoldMemoOptions,
+    unsoldRemoveMemoOptions,
+    unsoldMemoNumber,
+    unsoldRemoveMemoNumber,
+    unsoldMemoPopupOpen
+  ]);
+
+  const buildStockLookupFilter = (codeValue) => {
+    const normalizedCode = String(codeValue || '').trim();
+    if (!normalizedCode) {
+      return {
+        sessionMode,
+        purchaseCategory: activePurchaseCategory,
+        boxValue: '',
+        label: 'All SEM'
+      };
+    }
+
+    const parsedCode = parseRetroCodeValue(normalizedCode, sessionMode, activePurchaseCategory);
+    if (parsedCode.error) {
+      return { error: parsedCode.error };
+    }
+
+    return {
+      sessionMode: parsedCode.resolvedSessionMode || sessionMode,
+      purchaseCategory: parsedCode.resolvedPurchaseCategory || activePurchaseCategory,
+      boxValue: parsedCode.semValue,
+      label: buildRetroTicketCode(parsedCode.resolvedSessionMode, parsedCode.semValue, parsedCode.resolvedPurchaseCategory)
+    };
+  };
+
+  const buildStockLookupDetails = (entries = [], filterLabel = 'All SEM') => {
+    const normalizedEntries = entries.map((entry) => normalizeSeePurchaseEntry(entry));
+    const groupedEntries = groupConsecutiveNumberRows(
+      sortRowsForConsecutiveNumbers(
+        normalizedEntries,
+        (entry) => [entry.bookingDate, entry.sessionMode, entry.purchaseCategory, entry.amount, entry.boxValue, entry.sellerName]
+      ),
+      (entry) => [entry.bookingDate, entry.sessionMode, entry.purchaseCategory, entry.amount, entry.boxValue, entry.sellerName].join('|')
+    );
+    const totalNumbers = normalizedEntries.length;
+    const totalPieces = normalizedEntries.reduce((sum, entry) => sum + Number(entry.boxValue || 0), 0);
+    const totalAmount = normalizedEntries.reduce((sum, entry) => sum + (Number(entry.boxValue || 0) * Number(entry.amount || 0)), 0);
+    const detailRows = groupedEntries.map((group) => {
+      const firstRow = group.firstRow || {};
+      const pieces = group.rows.reduce((sum, row) => sum + Number(row.boxValue || 0), 0);
+      const categoryLabel = getPurchaseCategoryLabel(firstRow.purchaseCategory);
+      const rangeLabel = firstRow.number === group.lastRow?.number
+        ? firstRow.number
+        : `${firstRow.number} - ${group.lastRow?.number}`;
+
+      return `${categoryLabel}${firstRow.boxValue} | ${rangeLabel} | Nos ${group.rows.length} | Piece ${pieces} | ${firstRow.sellerName || 'Self'}`;
+    });
+
+    return [
+      `Filter: ${filterLabel}`,
+      `Total Numbers: ${totalNumbers} | Total Piece: ${totalPieces} | Amount: Rs. ${totalAmount.toFixed(2)}`,
+      ...detailRows.slice(0, 80),
+      ...(detailRows.length > 80 ? [`+${detailRows.length - 80} more ranges`] : [])
+    ];
+  };
+
+  const openStockLookup = async (source) => {
+    if (blockingWarning || stockLookupLoading) {
+      return;
+    }
+
+    const isUnsoldLookup = source === 'unsold';
+    const isUnsoldRemoveLookup = source === 'unsold-remove';
+    const filter = buildStockLookupFilter((isUnsoldLookup || isUnsoldRemoveLookup) ? unsoldCodeInput : retroCodeInput);
+    if (filter.error) {
+      openBlockingWarning(filter.error, [], 'F4 Stock');
+      return;
+    }
+
+    setStockLookupLoading(true);
+    setError('');
+
+    try {
+      const targetSellerId = (isUnsoldLookup || isUnsoldRemoveLookup) ? unsoldPartyId : '';
+      const response = (!isUnsoldLookup && !isUnsoldRemoveLookup && user?.role === 'admin')
+        ? await lotteryService.getAdminPurchases({
+          bookingDate,
+          sessionMode: filter.sessionMode,
+          purchaseCategory: filter.purchaseCategory,
+          amount,
+          boxValue: filter.boxValue || undefined
+        })
+        : await lotteryService.getPurchases({
+          bookingDate,
+          sessionMode: filter.sessionMode,
+          sellerId: (isUnsoldLookup || isUnsoldRemoveLookup) && String(targetSellerId) !== String(user?.id) ? targetSellerId : undefined,
+          status: isUnsoldRemoveLookup ? 'unsold' : 'accepted',
+          purchaseCategory: filter.purchaseCategory,
+          amount,
+          boxValue: filter.boxValue || undefined,
+          remaining: (isUnsoldLookup || isUnsoldRemoveLookup) ? undefined : true
+        });
+      const lookupEntries = isUnsoldRemoveLookup
+        ? (response.data || []).filter((entry) => (
+          isRemovableUnsoldEntry(entry)
+          && entry.memoNumber !== null
+          && entry.memoNumber !== undefined
+          && String(entry.memoNumber).trim() !== ''
+        ))
+        : isUnsoldLookup
+        ? (response.data || []).filter((entry) => {
+          const hasMemo = entry.memoNumber !== null && entry.memoNumber !== undefined && String(entry.memoNumber).trim() !== '';
+          if (!hasMemo) {
+            return false;
+          }
+
+          if (String(targetSellerId || user?.id || '') === String(user?.id || '')) {
+            return String(entry.forwardedBy || '') === String(user?.id || '');
+          }
+
+          return true;
+        })
+        : (response.data || []);
+      const details = buildStockLookupDetails(lookupEntries, filter.label);
+      const partyLabel = (isUnsoldLookup || isUnsoldRemoveLookup)
+        ? selectedUnsoldParty?.username || user?.username || 'Self'
+        : user?.username || 'Self';
+
+      openBlockingWarning(
+        lookupEntries.length
+          ? isUnsoldRemoveLookup
+            ? `${partyLabel} ke saved unsold me ye range available hai`
+            : `${partyLabel} ke purchase stock me ye range available hai`
+          : isUnsoldRemoveLookup
+            ? `${partyLabel} ke saved unsold me selected filter ka maal nahi hai`
+            : `${partyLabel} ke purchase stock me selected filter ka maal nahi hai`,
+        details,
+        isUnsoldRemoveLookup ? 'F4 Unsold Remove Stock' : isUnsoldLookup ? 'F4 Unsold Stock' : 'F4 Purchase Send Stock'
+      );
+    } catch (err) {
+      openBlockingWarning(err.response?.data?.message || 'Stock lookup error', [], 'F4 Stock');
+    } finally {
+      setStockLookupLoading(false);
+    }
+  };
+
+  const moveRetroDraftSelection = (direction) => {
+    const nextIndex = Math.min(Math.max(retroActiveRowIndex + direction, 0), retroDraftRows.length);
+    loadRetroDraftIntoEditor(nextIndex);
+  };
+
+  const deleteRetroDraftRow = async () => {
+    if (retroDraftRows.length === 0) {
+      setRetroCodeInput('');
+      setRetroFromInput('');
+      setRetroToInput('');
+      setRetroEditorVisible(false);
+      return;
+    }
+
+    const deleteIndex = retroActiveRowIndex < retroDraftRows.length
+      ? retroActiveRowIndex
+      : retroDraftRows.length - 1;
+    const nextRows = retroDraftRows.filter((_, index) => index !== deleteIndex);
+
+    if (isEditingExistingPurchaseSendMemo) {
+      const effectiveMemoNumber = Number(purchaseSendMemoNumber || selectedPurchaseSendMemoOption?.memoNumber || 0);
+      if (!effectiveMemoNumber) {
+        openBlockingWarning('Memo number select karo');
+        return;
+      }
+
+      setRetroSaving(true);
+      setBookingError('');
+      setError('');
+      setSuccess('');
+
+      try {
+        await lotteryService.replacePurchaseSendMemo({
+          sellerId: purchaseSendSellerId,
+          bookingDate: nextRows[0]?.drawDate || bookingDate,
+          memoNumber: effectiveMemoNumber,
+          sessionMode,
+          amount,
+          purchaseCategory: activePurchaseCategory,
+          rows: nextRows.map((row) => ({
+            rangeStart: row.numberStart || row.from,
+            rangeEnd: row.numberEnd || row.to,
+            boxValue: row.semValue,
+            amount: row.bookingAmount || amount,
+            bookingDate: row.drawDate || bookingDate,
+            sessionMode: row.resolvedSessionMode || sessionMode,
+            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory
+          }))
+        });
+
+        await Promise.all([
+          loadPurchaseEntries(),
+          loadPurchaseSendMemoEntries(purchaseSendSellerId, bookingDate)
+        ]);
+        setSuccess(nextRows.length === 0
+          ? `Memo ${effectiveMemoNumber} deleted; stock returned`
+          : `Memo ${effectiveMemoNumber} updated; deleted range stock me wapas aa gaya`);
+      } catch (err) {
+        setBookingError(err.response?.data?.message || 'Error deleting purchase send row');
+        return;
+      } finally {
+        setRetroSaving(false);
+      }
+    }
+
+    setRetroDraftRows(nextRows);
+    setBookingError('');
+
+    window.requestAnimationFrame(() => {
+      if (deleteIndex < nextRows.length) {
+        const row = nextRows[deleteIndex];
+        setRetroEditorVisible(true);
+        setRetroCodeInput(row.code || '');
+        setRetroFromInput(row.from || '');
+        setRetroToInput(row.to || '');
+        setSelectedPartyName(row.partyName || selectedPartyName);
+        setPartyKeyword(getPartyKeyword(row.partyName || selectedPartyName));
+        setSelectedBox(row.semValue || '');
+        setRetroActiveRowIndex(deleteIndex);
+      } else {
+        setRetroCodeInput('');
+        setRetroFromInput('');
+        setRetroToInput('');
+        setRetroEditorVisible(false);
+        setRetroActiveRowIndex(nextRows.length);
+      }
+      purchaseFromInputRef.current?.focus();
+    });
+  };
+
+  const saveRetroDraftRows = async () => {
+    if (blockingWarning) {
+      return;
+    }
+
+    if (!purchaseSendSellerId) {
+      openBlockingWarning('Sub seller select karo');
+      return;
+    }
+
+    const rowsForSaveResult = await getRetroRowsForSave();
+
+    if (rowsForSaveResult.error) {
+      openBlockingWarning(
+        rowsForSaveResult.error,
+        rowsForSaveResult.details || [],
+        rowsForSaveResult.title || 'Warning'
+      );
+      return;
+    }
+
+    const rowsToSave = rowsForSaveResult.rows || [];
+
+    if (rowsToSave.length === 0 && !isEditingExistingPurchaseSendMemo) {
+      openBlockingWarning('Save karne ke liye kam se kam ek row add karo');
+      return;
+    }
+
+    const isSelfPurchaseSendTarget = String(purchaseSendSellerId) === String(user?.id);
+    if (!isSelfPurchaseSendTarget && directChildSellers.length === 0) {
+      openBlockingWarning('Purchase send karne ke liye pehle sub seller banao');
+      return;
+    }
+
+    setRetroSaving(true);
+    setError('');
+    setBookingError('');
+    setSuccess('');
+
+    try {
+      if (rowsForSaveResult.consumedEditor) {
+        setRetroDraftRows(rowsToSave);
+        setSelectedPartyName(rowsForSaveResult.consumedRow?.partyName || selectedPartyName);
+        setPartyKeyword(getPartyKeyword(rowsForSaveResult.consumedRow?.partyName || selectedPartyName));
+        setSelectedBox(rowsForSaveResult.consumedRow?.semValue || selectedBox);
+      }
+
+      const effectiveMemoNumber = Number(purchaseSendMemoNumber || nextPurchaseSendMemoNumber);
+
+      if (isEditingExistingPurchaseSendMemo) {
+        await lotteryService.replacePurchaseSendMemo({
+          sellerId: purchaseSendSellerId,
+          bookingDate,
+          memoNumber: effectiveMemoNumber,
+          sessionMode,
+          amount,
+          purchaseCategory: activePurchaseCategory,
+          rows: rowsToSave.map((row) => ({
+            rangeStart: row.numberStart || row.from,
+            rangeEnd: row.numberEnd || row.to,
+            boxValue: row.semValue,
+            amount: row.bookingAmount || amount,
+            sessionMode: row.resolvedSessionMode || sessionMode,
+            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory
+          }))
+        });
+      } else {
+        for (const row of rowsToSave) {
+          await lotteryService.sendPurchase({
+            sellerId: purchaseSendSellerId,
+            series: '',
+            rangeStart: row.numberStart,
+            rangeEnd: row.numberEnd,
+            boxValue: row.semValue,
+            amount: row.bookingAmount,
+            memoNumber: effectiveMemoNumber,
+            bookingDate: row.drawDate || bookingDate,
+            sessionMode: row.resolvedSessionMode || sessionMode,
+            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory
+          });
+        }
+      }
+
+      const [, refreshedMemoEntries] = await Promise.all([
+        loadPurchaseEntries(),
+        loadPurchaseSendMemoEntries(purchaseSendSellerId, bookingDate),
+        loadSeePurchaseEntries(),
+        loadTransferHistory(getHistoryFilters())
+      ]);
+      const refreshedMemoSummaries = buildCurrentMemoSummaries(refreshedMemoEntries || []);
+      const nextMemoNumber = refreshedMemoSummaries.length > 0
+        ? Math.max(...refreshedMemoSummaries.map((memo) => memo.memoNumber)) + 1
+        : 1;
+      setPurchaseSendMemoNumber(nextMemoNumber);
+      setPurchaseSendMemoSelectionIndex(0);
+      setPurchaseSendMemoPopupOpen(false);
+      setRetroDraftRows([]);
+      setRetroActiveRowIndex(0);
+      setRetroEditorVisible(true);
+      setRetroFromInput('');
+      setRetroToInput('');
+      setRetroCodeInput('');
+      setSuccess(isEditingExistingPurchaseSendMemo ? `Memo ${effectiveMemoNumber} updated successfully` : 'Purchase sent successfully');
+    } catch (err) {
+      const errorMessage = err.response?.data?.message || 'Error sending purchase';
+      if (String(errorMessage).includes('pehle se use ho chuka hai')) {
+        setBookingError('');
+        return;
+      }
+      setBookingError(errorMessage);
+    } finally {
+      setRetroSaving(false);
+    }
+  };
+
+  const handleStockTransfer = async () => {
+    if (stockTransferTargetOptions.length === 0) {
+      setError('Stock transfer ke liye seller nahi mila');
+      return;
+    }
+
+    if (!stockTransferTargetId) {
+      setError('Seller select karo');
+      return;
+    }
+
+    if (stockTransferEntries.length === 0) {
+      setError('No remaining stock to transfer');
+      return;
+    }
+
+    setStockTransferLoading(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      const response = await lotteryService.transferRemainingStock({
+        sellerId: stockTransferTargetId,
+        bookingDate: stockTransferDate,
+        sessionMode,
+        purchaseCategory: activePurchaseCategory,
+        amount
+      });
+
+      setSuccess(response.data?.message || 'Stock transferred successfully');
+      setStockTransferEntries([]);
+      setBookingDate(stockTransferDate);
+      setPurchaseSendSellerId(String(stockTransferTargetId));
+      setPurchaseSendMemoNumber(null);
+      setPurchaseSendMemoSelectionIndex(0);
+      await Promise.all([
+        loadPurchaseEntries(),
+        loadPurchaseSendMemoEntries(stockTransferTargetId, stockTransferDate),
+        loadTransferHistory(getHistoryFilters())
+      ]);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error transferring stock');
+    } finally {
+      setStockTransferLoading(false);
+    }
+  };
+
+  function resetUnsoldEditor({ keepCode = false } = {}) {
+    if (!keepCode) {
+      setUnsoldCodeInput('');
+    }
+    setUnsoldTableFromInput('');
+    setUnsoldTableToInput('');
+    setUnsoldNumber('');
+    setUnsoldRangeEndNumber('');
+    setUnsoldMode('single');
+  }
+
+  function startNewUnsoldRow() {
+    if (activeTab === 'unsold') {
+      setUnsoldMemoNumber(nextUnsoldMemoNumber);
+      setUnsoldMemoSelectionIndex(0);
+      setUnsoldMemoPopupOpen(false);
+      setUnsoldDraftRows([]);
+    }
+
+    setUnsoldEditorVisible(true);
+    resetUnsoldEditor({ keepCode: false });
+    setUnsoldActiveRowIndex(0);
+    window.requestAnimationFrame(() => {
+      unsoldCodeInputRef.current?.focus();
+      unsoldCodeInputRef.current?.select?.();
+    });
+  }
+
+  function deleteUnsoldDraftRow() {
+    resetUnsoldEditor({ keepCode: false });
+    setUnsoldDraftRows((currentRows) => {
+      if (currentRows.length === 0 || unsoldActiveRowIndex >= currentRows.length) {
+        setUnsoldEditorVisible(false);
+        setUnsoldActiveRowIndex(currentRows.length);
+        return currentRows;
+      }
+
+      setUnsoldEditorVisible(true);
+      const nextRows = currentRows.filter((_, index) => index !== unsoldActiveRowIndex);
+      setUnsoldActiveRowIndex(Math.min(unsoldActiveRowIndex, nextRows.length));
+      return nextRows;
+    });
+    window.requestAnimationFrame(() => {
+      unsoldCodeInputRef.current?.focus();
+      unsoldCodeInputRef.current?.select?.();
+    });
+  }
+
+  useFunctionShortcuts(!billOnlyMode && activeTab === 'purchase-send', {
+    A: () => {
+      if (blockingWarning) {
+        return;
+      }
+      startNewRetroDraftRow();
+    },
+    F2: () => {
+      if (blockingWarning) {
+        return;
+      }
+      if (!retroSaving) {
+        saveRetroDraftRows();
+      }
+    },
+    F3: () => {
+      if (blockingWarning) {
+        return;
+      }
+      deleteRetroDraftRow();
+    },
+    F4: () => {
+      openStockLookup('purchase-send');
+    },
+    F8: () => {
+      if (blockingWarning) {
+        return;
+      }
+      setRetroDraftRows([]);
+      setRetroActiveRowIndex(0);
+      setSelectedBox('');
+      setRetroFromInput('');
+      setRetroToInput('');
+      setRetroCodeInput('');
+      setRetroEditorVisible(true);
+      setBookingError('');
+    },
+    ESCAPE: () => {
+      if (blockingWarning) {
+        clearBlockingWarning();
+        return;
+      }
+      requestExitConfirmation();
+    }
+  });
+
+  useFunctionShortcuts(!billOnlyMode, {
+    F10: () => {
+      loadPieceSummary();
+    },
+    F11: () => {
+      loadUnsoldSendSummary();
+    }
+  });
+
+  useFunctionShortcuts(!billOnlyMode && (activeTab === 'unsold' || activeTab === 'unsold-remove'), {
+    A: () => {
+      if (blockingWarning) {
+        return;
+      }
+      startNewUnsoldRow();
+    },
+    F2: () => {
+      if (blockingWarning) {
+        return;
+      }
+      if (!unsoldLoading) {
+        document.getElementById(activeTab === 'unsold-remove' ? 'seller-unsold-remove-form' : 'seller-unsold-form')?.requestSubmit();
+      }
+    },
+    F3: () => {
+      if (blockingWarning) {
+        return;
+      }
+      deleteUnsoldDraftRow();
+    },
+    F4: () => {
+      openStockLookup(activeTab === 'unsold-remove' ? 'unsold-remove' : 'unsold');
+    },
+    F8: () => {
+      if (blockingWarning) {
+        return;
+      }
+      setUnsoldCodeInput('');
+      setUnsoldTableFromInput('');
+      setUnsoldTableToInput('');
+      setUnsoldNumber('');
+      setUnsoldRangeEndNumber('');
+      setUnsoldDraftRows([]);
+      setUnsoldActiveRowIndex(0);
+    },
+    ESCAPE: () => {
+      if (blockingWarning) {
+        clearBlockingWarning();
+        return;
+      }
+      requestExitConfirmation();
+    }
+  });
 
   const handleAddEntry = async (e) => {
     e.preventDefault();
@@ -734,7 +3276,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
       return;
     }
 
-    if (!isFutureBookingDate && isSendDeadlinePassed) {
+    if (isTodayBookingDate && isSendDeadlinePassed) {
       setError(`Send Entries time ended for ${sessionMode}. Last time was ${sessionDeadlineLabel}`);
       return;
     }
@@ -752,6 +3294,481 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
       setError(err.response?.data?.message || 'Error sending entries');
     } finally {
       setSendingEntries(false);
+    }
+  };
+
+  const buildUnsoldDraftRow = () => {
+    const parsedCode = parseRetroCodeValue(unsoldCodeInput, sessionMode, activePurchaseCategory);
+    const previousRow = unsoldDraftRows[Math.min(unsoldActiveRowIndex, unsoldDraftRows.length) - 1] || null;
+    const { fromNumber, toNumber, count, error: rangeError } = getFiveDigitRangeMetrics(unsoldTableFromInput, unsoldTableToInput, previousRow?.from);
+
+    if (!selectedUnsoldParty) {
+      return { error: 'Party name select karo' };
+    }
+
+    if (!amount) {
+      return { error: 'Amount select karo' };
+    }
+
+    if (parsedCode.error) {
+      return { error: parsedCode.error };
+    }
+
+    if (!parsedCode.semValue) {
+      return { error: 'Code/SEM enter karo' };
+    }
+
+    if (!fromNumber) {
+      return { error: 'From number 5 digit hona chahiye' };
+    }
+
+    if (rangeError) {
+      return { error: rangeError };
+    }
+
+    if (!toNumber) {
+      return { error: 'To number 5 digit hona chahiye' };
+    }
+
+    const quantityValue = Number(parsedCode.semValue) * count;
+    const rateValue = Number(amount || 0);
+
+    return {
+      row: {
+        id: `unsold-draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        code: buildRetroTicketCode(parsedCode.resolvedSessionMode, parsedCode.semValue, parsedCode.resolvedPurchaseCategory),
+        itemName: `${String(selectedUnsoldParty.username || '').toUpperCase()} - ${parsedCode.semValue}`,
+        drawDate: bookingDate,
+        day: getDisplayDay(bookingDate),
+        prefix: '',
+        series: '',
+        from: fromNumber,
+        to: toNumber,
+        quantity: quantityValue,
+        rate: rateValue.toFixed(2),
+        amount: (quantityValue * rateValue).toFixed(2),
+        semValue: String(parsedCode.semValue),
+        bookingAmount: String(amount),
+        resolvedSessionMode: parsedCode.resolvedSessionMode,
+        resolvedPurchaseCategory: parsedCode.resolvedPurchaseCategory,
+        partyId: String(selectedUnsoldParty.id),
+        partyName: selectedUnsoldParty.username,
+        numberStart: fromNumber,
+        numberEnd: toNumber
+      }
+    };
+  };
+
+  const hasPendingUnsoldEditorValues = () => (
+    unsoldEditorVisible
+    && (Boolean(String(unsoldTableFromInput || '').trim())
+    || Boolean(String(unsoldTableToInput || '').trim())
+    )
+  );
+
+  const validateUnsoldRowInStock = async (row) => {
+    const requestedNumbers = buildConsecutiveNumbers(row.numberStart || row.from, row.numberEnd || row.to);
+    if (requestedNumbers.error) {
+      return { error: requestedNumbers.error };
+    }
+
+    const response = await lotteryService.getPurchases({
+      bookingDate: row.drawDate || bookingDate,
+      sessionMode: row.resolvedSessionMode || sessionMode,
+      sellerId: String(row.partyId || '') === String(user?.id) ? undefined : row.partyId,
+      status: 'accepted',
+      purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+      amount: row.bookingAmount || amount,
+      boxValue: row.semValue
+    });
+
+    const partyId = String(row.partyId || user?.id || '');
+    const partyOption = unsoldPartyOptions.find((party) => String(party.id) === partyId) || selectedUnsoldParty || {};
+    const memoStockEntries = (response.data || []).filter((entry) => {
+      const hasMemo = entry.memoNumber !== null && entry.memoNumber !== undefined && String(entry.memoNumber).trim() !== '';
+      if (!hasMemo) {
+        return false;
+      }
+
+      if (partyId === String(user?.id || '')) {
+        return String(entry.forwardedBy || '') === String(user?.id || '');
+      }
+
+      return true;
+    });
+    const availableNumbers = new Set(memoStockEntries.map((entry) => String(entry.number || '').padStart(5, '0')));
+    const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !availableNumbers.has(currentNumber));
+
+    if (missingNumbers.length > 0) {
+      return {
+        error: `${formatDisplayDate(row.drawDate || bookingDate)} date me ${partyOption.username || 'selected party'} ke ${partyId === String(user?.id || '') ? 'self stock transfer' : 'purchase stock'} me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
+      };
+    }
+
+    return { ok: true };
+  };
+
+  const validateUnsoldRowInRemovableStock = async (row) => {
+    const requestedNumbers = buildConsecutiveNumbers(row.numberStart || row.from, row.numberEnd || row.to);
+    if (requestedNumbers.error) {
+      return { error: requestedNumbers.error };
+    }
+
+    const effectiveMemoNumber = unsoldRemoveMemoNumber || selectedUnsoldRemoveMemoOption?.memoNumber;
+    if (!effectiveMemoNumber) {
+      return { error: 'Unsold remove memo select karo' };
+    }
+
+    const effectivePartyId = String(row.partyId || selectedUnsoldParty?.id || user?.id || '');
+    const response = await lotteryService.getPurchases({
+      bookingDate: row.drawDate || bookingDate,
+      sessionMode: row.resolvedSessionMode || sessionMode,
+      sellerId: effectivePartyId === String(user?.id) ? undefined : effectivePartyId,
+      status: 'unsold',
+      purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+      amount: row.bookingAmount || amount,
+      boxValue: row.semValue
+    });
+
+    const partyId = effectivePartyId;
+    const partyOption = unsoldPartyOptions.find((party) => String(party.id) === partyId) || selectedUnsoldParty || {};
+    const removableNumbers = new Set((response.data || [])
+      .filter((entry) => (
+        isRemovableUnsoldEntry(entry)
+        && Number(entry.memoNumber ?? entry.memo_number ?? 0) === Number(effectiveMemoNumber)
+      ))
+      .map((entry) => String(entry.number || '').padStart(5, '0')));
+    const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !removableNumbers.has(currentNumber));
+
+    if (missingNumbers.length > 0) {
+      return {
+        error: `${formatDisplayDate(row.drawDate || bookingDate)} date me ${partyOption.username || 'selected party'} ke unsold memo ${effectiveMemoNumber} me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
+      };
+    }
+
+    return { ok: true };
+  };
+
+  const addUnsoldDraftRow = async () => {
+    if (blockingWarning) {
+      return false;
+    }
+
+    const result = buildUnsoldDraftRow();
+
+    if (result.error) {
+      openBlockingWarning(result.error);
+      return false;
+    }
+
+    const isUnsoldRemoveMode = activeTab === 'unsold-remove';
+    const editingExistingUnsoldRow = Boolean(unsoldDraftRows[unsoldActiveRowIndex]?.isExistingUnsoldMemoRow);
+
+    try {
+      const stockValidation = editingExistingUnsoldRow || isUnsoldRemoveMode
+        ? { ok: true }
+        : await validateUnsoldRowInStock(result.row);
+      if (stockValidation.error) {
+        openBlockingWarning(stockValidation.error, [], 'Stock Missing', focusUnsoldFromInput);
+        return false;
+      }
+    } catch (err) {
+      openBlockingWarning(err.response?.data?.message || 'Stock check nahi ho paya', [], 'Stock Missing', focusUnsoldFromInput);
+      return false;
+    }
+
+    const conflictingDraft = unsoldDraftRows.find((row, index) => (
+      index !== unsoldActiveRowIndex
+      && String(row.partyId || '') === String(result.row.partyId || '')
+      && String(row.semValue || '') === String(result.row.semValue || '')
+      && String(row.resolvedSessionMode || '') === String(result.row.resolvedSessionMode || '')
+      && String(row.resolvedPurchaseCategory || '') === String(result.row.resolvedPurchaseCategory || '')
+      && String(row.drawDate || '') === String(result.row.drawDate || '')
+      && rangesOverlap(row.from, row.to, result.row.from, result.row.to)
+    ));
+
+    if (conflictingDraft) {
+      openBlockingWarning('Number already added.', [`Party ${conflictingDraft.partyName || 'N/A'}`], 'Duplicate Number', focusUnsoldFromInput);
+      return false;
+    }
+
+    setUnsoldDraftRows((currentRows) => {
+      if (unsoldActiveRowIndex < currentRows.length) {
+        const updatedRows = [...currentRows];
+        updatedRows[unsoldActiveRowIndex] = {
+          ...result.row,
+          id: currentRows[unsoldActiveRowIndex].id,
+          isExistingUnsoldMemoRow: currentRows[unsoldActiveRowIndex].isExistingUnsoldMemoRow,
+          entryIds: currentRows[unsoldActiveRowIndex].entryIds || []
+        };
+        return updatedRows;
+      }
+
+      return [...currentRows, result.row];
+    });
+    setUnsoldCodeInput(result.row.code || unsoldCodeInput);
+    resetUnsoldEditor({ keepCode: true });
+    setUnsoldEditorVisible(true);
+    setUnsoldActiveRowIndex((currentIndex) => currentIndex < unsoldDraftRows.length ? currentIndex + 1 : unsoldDraftRows.length + 1);
+    window.requestAnimationFrame(() => {
+      unsoldFromInputRef.current?.focus();
+      unsoldFromInputRef.current?.select?.();
+    });
+    return true;
+  };
+
+  const validateUnsoldEditorRowBeforeCommit = async () => {
+    const result = buildUnsoldDraftRow();
+
+    if (result.error) {
+      openBlockingWarning(result.error, [], 'Warning', focusUnsoldFromInput);
+      return false;
+    }
+
+    const isUnsoldRemoveMode = activeTab === 'unsold-remove';
+    const editingExistingUnsoldRow = Boolean(unsoldDraftRows[unsoldActiveRowIndex]?.isExistingUnsoldMemoRow);
+
+    try {
+      const stockValidation = editingExistingUnsoldRow
+        ? { ok: true }
+        : isUnsoldRemoveMode
+          ? await validateUnsoldRowInRemovableStock(result.row)
+          : await validateUnsoldRowInStock(result.row);
+
+      if (stockValidation.error) {
+        openBlockingWarning(
+          stockValidation.error,
+          [],
+          isUnsoldRemoveMode ? 'Unsold Missing' : 'Stock Missing',
+          focusUnsoldFromInput
+        );
+        return false;
+      }
+    } catch (err) {
+      openBlockingWarning(
+        err.response?.data?.message || (isUnsoldRemoveMode ? 'Unsold check nahi ho paya' : 'Stock check nahi ho paya'),
+        [],
+        isUnsoldRemoveMode ? 'Unsold Missing' : 'Stock Missing',
+        focusUnsoldFromInput
+      );
+      return false;
+    }
+
+    return true;
+  };
+
+  const handleRemoveUnsold = async (event) => {
+    event?.preventDefault?.();
+    if (blockingWarning) {
+      return;
+    }
+    setError('');
+    setSuccess('');
+
+    let rowsToSave = unsoldDraftRows.filter((row) => !row.isExistingUnsoldMemoRow);
+
+    if (hasPendingUnsoldEditorValues()) {
+      const result = buildUnsoldDraftRow();
+      if (result.error) {
+        openBlockingWarning(result.error);
+        return;
+      }
+      rowsToSave = [...rowsToSave, result.row];
+    }
+
+    if (rowsToSave.length === 0) {
+      openBlockingWarning('Remove karne ke liye kam se kam ek row add karo');
+      return;
+    }
+
+    try {
+      for (const row of rowsToSave) {
+        const unsoldValidation = await validateUnsoldRowInRemovableStock(row);
+        if (unsoldValidation.error) {
+          openBlockingWarning(unsoldValidation.error, [], 'Unsold Missing', focusUnsoldFromInput);
+          return;
+        }
+      }
+    } catch (err) {
+      openBlockingWarning(err.response?.data?.message || 'Unsold check nahi ho paya', [], 'Unsold Missing', focusUnsoldFromInput);
+      return;
+    }
+
+    setUnsoldLoading(true);
+
+    try {
+      const effectiveMemoNumber = unsoldRemoveMemoNumber || selectedUnsoldRemoveMemoOption?.memoNumber || nextUnsoldRemoveMemoNumber;
+      if (!effectiveMemoNumber) {
+        openBlockingWarning('Unsold remove memo select karo');
+        return;
+      }
+      for (const row of rowsToSave) {
+        const effectivePartyId = String(row.partyId || selectedUnsoldParty?.id || user?.id || '');
+        await lotteryService.removePurchaseUnsold({
+          bookingDate: row.drawDate || bookingDate,
+          sessionMode: row.resolvedSessionMode || sessionMode,
+          purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+          sellerId: effectivePartyId === String(user?.id) ? undefined : effectivePartyId,
+          memoNumber: effectiveMemoNumber,
+          rangeStart: row.numberStart || row.from,
+          rangeEnd: row.numberEnd || row.to
+        });
+      }
+
+      setSuccess(`Unsold removed successfully in memo ${effectiveMemoNumber}`);
+      setUnsoldMemoNumber(null);
+      setUnsoldRemoveMemoNumber(effectiveMemoNumber + 1);
+      setUnsoldMemoSelectionIndex(0);
+      setUnsoldMemoPopupOpen(false);
+      setUnsoldDraftRows([]);
+      setUnsoldActiveRowIndex(0);
+      setUnsoldEditorVisible(true);
+      setUnsoldCodeInput('');
+      setUnsoldTableFromInput('');
+      setUnsoldTableToInput('');
+      setUnsoldNumber('');
+      setUnsoldRangeEndNumber('');
+      await Promise.all([
+        loadPurchaseEntries(),
+        loadUnsoldMemoEntries(unsoldPartyId, bookingDate),
+        loadUnsoldRemoveMemoEntries(unsoldPartyId, bookingDate),
+        loadTransferHistory(getHistoryFilters())
+      ]);
+      await refreshUnsoldDerivedViews();
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error removing unsold');
+    } finally {
+      setUnsoldLoading(false);
+    }
+  };
+
+  const handleMarkUnsold = async (event) => {
+    event?.preventDefault?.();
+    if (blockingWarning) {
+      return;
+    }
+    setError('');
+    setSuccess('');
+
+    let rowsToSave = [...unsoldDraftRows];
+
+    if (hasPendingUnsoldEditorValues()) {
+      const result = buildUnsoldDraftRow();
+      if (result.error) {
+        openBlockingWarning(result.error);
+        return;
+      }
+      const editingExistingUnsoldRow = Boolean(unsoldDraftRows[unsoldActiveRowIndex]?.isExistingUnsoldMemoRow);
+      try {
+      if (!editingExistingUnsoldRow && !result.row.isExistingUnsoldMemoRow) {
+        const stockValidation = await validateUnsoldRowInStock(result.row);
+        if (stockValidation.error) {
+          openBlockingWarning(stockValidation.error, [], 'Stock Missing', focusUnsoldFromInput);
+          return;
+        }
+      }
+      } catch (err) {
+        openBlockingWarning(err.response?.data?.message || 'Stock check nahi ho paya', [], 'Stock Missing', focusUnsoldFromInput);
+        return;
+      }
+      const rowToSave = editingExistingUnsoldRow
+        ? {
+          ...result.row,
+          id: unsoldDraftRows[unsoldActiveRowIndex].id,
+          isExistingUnsoldMemoRow: true,
+          entryIds: unsoldDraftRows[unsoldActiveRowIndex].entryIds || []
+        }
+        : result.row;
+      rowsToSave = editingExistingUnsoldRow
+        ? rowsToSave.map((row, index) => (index === unsoldActiveRowIndex ? rowToSave : row))
+        : [...rowsToSave, rowToSave];
+    }
+
+    const editingExistingUnsoldMemo = Boolean(selectedUnsoldMemoOption && !selectedUnsoldMemoOption.isNew);
+
+    if (rowsToSave.length === 0 && !editingExistingUnsoldMemo) {
+      openBlockingWarning('Save karne ke liye kam se kam ek row add karo');
+      return;
+    }
+
+    try {
+    for (const row of rowsToSave) {
+      if (row.isExistingUnsoldMemoRow) {
+        continue;
+      }
+      const stockValidation = await validateUnsoldRowInStock(row);
+      if (stockValidation.error) {
+        openBlockingWarning(stockValidation.error, [], 'Stock Missing', focusUnsoldFromInput);
+          return;
+        }
+      }
+    } catch (err) {
+      openBlockingWarning(err.response?.data?.message || 'Stock check nahi ho paya', [], 'Stock Missing', focusUnsoldFromInput);
+      return;
+    }
+
+    setUnsoldLoading(true);
+
+    try {
+      const effectiveMemoNumber = unsoldMemoNumber || selectedUnsoldMemoOption?.memoNumber || nextUnsoldMemoNumber;
+      if (editingExistingUnsoldMemo) {
+        await lotteryService.replacePurchaseUnsoldMemo({
+          sellerId: String(unsoldPartyId || '') === String(user?.id) ? undefined : unsoldPartyId,
+          bookingDate,
+          memoNumber: effectiveMemoNumber,
+          sessionMode,
+          amount,
+          purchaseCategory: activePurchaseCategory,
+          rows: rowsToSave.map((row) => ({
+            rangeStart: row.numberStart || row.from,
+            rangeEnd: row.numberEnd || row.to,
+            boxValue: row.semValue,
+            amount: row.bookingAmount || amount,
+            bookingDate: row.drawDate || bookingDate,
+            sessionMode: row.resolvedSessionMode || sessionMode,
+            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory
+          }))
+        });
+      } else {
+        for (const row of rowsToSave) {
+          await lotteryService.markPurchaseUnsold({
+            bookingDate: row.drawDate || bookingDate,
+            sessionMode: row.resolvedSessionMode || sessionMode,
+            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+            sellerId: String(row.partyId || '') === String(user?.id) ? undefined : row.partyId,
+            memoNumber: effectiveMemoNumber,
+            rangeStart: row.numberStart || row.from,
+            rangeEnd: row.numberEnd || row.to
+          });
+        }
+      }
+
+      setSuccess(`Unsold marked successfully in memo ${effectiveMemoNumber}`);
+      const [, refreshedUnsoldEntries] = await Promise.all([
+        loadPurchaseEntries(),
+        loadUnsoldMemoEntries(unsoldPartyId, bookingDate),
+        loadMySentEntries(),
+        loadTransferHistory(getHistoryFilters())
+      ]);
+      await refreshUnsoldDerivedViews();
+      if (editingExistingUnsoldMemo && rowsToSave.length > 0) {
+        setUnsoldMemoNumber(effectiveMemoNumber);
+        hydrateUnsoldDraftRowsForMemo(effectiveMemoNumber, refreshedUnsoldEntries);
+      } else {
+        setUnsoldMemoNumber(null);
+        setUnsoldDraftRows([]);
+        setUnsoldActiveRowIndex(0);
+        setUnsoldEditorVisible(true);
+        setUnsoldCodeInput('');
+        setUnsoldTableFromInput('');
+        setUnsoldTableToInput('');
+        setUnsoldNumber('');
+        setUnsoldRangeEndNumber('');
+      }
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error marking unsold');
+    } finally {
+      setUnsoldLoading(false);
     }
   };
 
@@ -851,17 +3868,74 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
     );
   };
 
-  const directChildSellers = (treeData?.children || []).filter((node) => node.role === 'seller');
+  const filteredBillPrizeResults = billPrizeResults.filter((record) => {
+    const amountMatches = historyAmountFilter
+      ? String(record.amount || '') === String(historyAmountFilter)
+      : true;
+    const categoryMatches = historyPurchaseCategoryFilter
+      ? String(record.purchaseCategory || (record.sessionMode === 'NIGHT' ? 'E' : 'M')).trim().toUpperCase() === String(historyPurchaseCategoryFilter).trim().toUpperCase()
+      : true;
+
+    return amountMatches && categoryMatches;
+  });
+  const currentPurchaseBillRows = purchaseBillRows.filter((record) => (
+    !historySellerFilter || record.billRootUsername === historySellerFilter || record.sellerName === historySellerFilter
+  ));
   const billData = buildBillData({
-    records: transferHistory,
-    prizeRecords: billPrizeResults,
+    records: [],
+    prizeRecords: filteredBillPrizeResults,
     treeData,
     selectedSellerUsername: historySellerFilter
   });
-  const billTransferHistory = billData.records;
+  const billTransferHistory = currentPurchaseBillRows;
   const transferHistoryByActor = groupTransferHistoryByActor(transferHistory);
-  const billTransferHistoryByActor = billData.groupedRecords;
-  const billTransferHistoryTotals = billData.totals;
+  const billTransferHistoryByActor = currentPurchaseBillRows.reduce((groups, record) => {
+    const groupName = record.billRootUsername || record.sellerName || 'Unknown Seller';
+    if (!groups[groupName]) {
+      groups[groupName] = [];
+    }
+    groups[groupName].push(record);
+    return groups;
+  }, {});
+  const billGroupedSummaries = Object.entries(billTransferHistoryByActor).reduce((accumulator, [billSellerName, records]) => {
+    accumulator[billSellerName] = buildBillSummaryWithPrize(records, billData.prizeTotalsByRoot?.[billSellerName] || {});
+    return accumulator;
+  }, {});
+  const billGroupedAmountSummaries = Object.entries(billTransferHistoryByActor).reduce((accumulator, [billSellerName, records]) => {
+    accumulator[billSellerName] = buildBillAmountSummariesWithPrize(
+      records,
+      billData.prizeTotalsByRootAndAmount?.[billSellerName] || {}
+    );
+    return accumulator;
+  }, {});
+  const billTransferHistoryTotals = Object.entries(billTransferHistoryByActor).reduce((totals, [billSellerName]) => {
+    const summary = billGroupedSummaries[billSellerName];
+    if (!summary) {
+      return totals;
+    }
+    totals.recordCount += summary.recordCount;
+    totals.totalPiece += summary.totalPiece;
+    totals.totalSentPiece += summary.totalSentPiece;
+    totals.totalUnsoldPiece += summary.totalUnsoldPiece;
+    totals.totalSoldPiece += summary.totalSoldPiece;
+    totals.totalSales += summary.totalSales;
+    totals.totalPrize += summary.totalPrize;
+    totals.totalVc += summary.totalVc;
+    totals.totalSvc += summary.totalSvc;
+    totals.netBill += summary.netBill;
+    return totals;
+  }, {
+    recordCount: 0,
+    totalPiece: 0,
+    totalSentPiece: 0,
+    totalUnsoldPiece: 0,
+    totalSoldPiece: 0,
+    totalSales: 0,
+    totalPrize: 0,
+    totalVc: 0,
+    totalSvc: 0,
+    netBill: 0
+  });
   const myPrizeResultsBySeller = groupPrizeResultsBySeller(myPrizeResults);
   const todayDateValue = getTodayDateValue();
   const sortedReceivedEntries = [...receivedEntries].sort((leftEntry, rightEntry) => {
@@ -906,14 +3980,792 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
     return new Date(leftEntry.sentAt || leftEntry.createdAt || 0).getTime() - new Date(rightEntry.sentAt || rightEntry.createdAt || 0).getTime();
   });
 
-  const historyPeriodLabel = historyFilterMode === 'range'
-    ? `${formatDisplayDate(historyFromDate)} to ${formatDisplayDate(historyToDate)}`
-    : formatDisplayDate(historyDate);
+  const historyPeriodLabel = historyFromDate === historyToDate
+    ? formatDisplayDate(historyFromDate)
+    : `${formatDisplayDate(historyFromDate)} to ${formatDisplayDate(historyToDate)}`;
+  const sellerUnsoldTimestamp = currentDateTime.toLocaleString('en-IN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true
+  }).replace(',', '');
+  const purchaseSendMemoSummaries = buildPurchaseMemoSummaries(purchaseSendMemoEntries);
+  const nextPurchaseSendMemoNumber = purchaseSendMemoSummaries.length > 0
+    ? Math.max(...purchaseSendMemoSummaries.map((memo) => memo.memoNumber)) + 1
+    : 1;
+  const purchaseSendMemoOptions = [
+    {
+      key: `new-seller-send-${nextPurchaseSendMemoNumber}`,
+      memoNumber: nextPurchaseSendMemoNumber,
+      isNew: true,
+      label: String(nextPurchaseSendMemoNumber),
+      drawDate: bookingDate,
+      quantity: ''
+    },
+    ...purchaseSendMemoSummaries.map((memo) => ({
+      key: `seller-send-memo-${memo.memoNumber}`,
+      memoNumber: memo.memoNumber,
+      isNew: false,
+      label: String(memo.memoNumber),
+      drawDate: memo.drawDate,
+      quantity: memo.totalPieceCount,
+      totalPieceCount: memo.totalPieceCount,
+      batches: memo.batches
+    }))
+  ];
+  const selectedPurchaseSendMemoOption = purchaseSendMemoOptions.find((option) => (
+    !option.isNew && Number(option.memoNumber) === Number(purchaseSendMemoNumber)
+  )) || purchaseSendMemoOptions[0] || null;
+  const isEditingExistingPurchaseSendMemo = purchaseSendMemoSummaries.some((memo) => (
+    Number(memo.memoNumber) === Number(purchaseSendMemoNumber)
+  ));
+  const highlightedPurchaseSendMemoOption = purchaseSendMemoOptions[purchaseSendMemoSelectionIndex] || selectedPurchaseSendMemoOption || null;
+  const sellerPurchaseSummaryQuantity = retroDraftRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+  const sellerPurchaseSummaryAmount = retroDraftRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+  const sellerUnsoldSummaryQuantity = unsoldDraftRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
+  const sellerUnsoldSummaryAmount = unsoldDraftRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+  const sellerPurchasePreview = buildPurchasePreview();
+  const sellerPurchaseGridRows = createRetroGridRows(retroDraftRows);
+  const sellerPurchaseEditableRow = (
+    <tr key="seller-purchase-entry">
+      <td>{retroActiveRowIndex + 1}</td>
+      <td>
+        <input
+          ref={purchaseFromInputRef}
+          type="text"
+          value={retroCodeInput}
+          onChange={(e) => setRetroCodeInput(e.target.value.toUpperCase())}
+          onKeyDown={(e) => {
+            if (shouldMoveFocusVertical(e, 'ArrowUp')) {
+              e.preventDefault();
+              moveRetroDraftSelection(-1);
+              window.requestAnimationFrame(() => {
+                purchaseFromInputRef.current?.focus();
+                purchaseFromInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (shouldMoveFocusVertical(e, 'ArrowDown')) {
+              e.preventDefault();
+              moveRetroDraftSelection(1);
+              window.requestAnimationFrame(() => {
+                purchaseFromInputRef.current?.focus();
+                purchaseFromInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (shouldMoveFocusRight(e)) {
+              e.preventDefault();
+              e.stopPropagation();
+              const rawCode = String(e.currentTarget.value || '').trim();
+              if (!rawCode) {
+                openBlockingWarning('Code is empty', [], 'Warning', () => {
+                  window.requestAnimationFrame(() => purchaseFromInputRef.current?.focus());
+                });
+                return;
+              }
+              const parsed = parseRetroCodeValue(rawCode, sessionMode, activePurchaseCategory);
+              if (parsed.error) {
+                openBlockingWarning(parsed.error, [], 'Warning', () => {
+                  setRetroCodeInput('');
+                  window.requestAnimationFrame(() => purchaseFromInputRef.current?.focus());
+                });
+                return;
+              }
+              setSelectedBox(parsed.semValue);
+              setActivePurchaseCategory(parsed.resolvedPurchaseCategory || activePurchaseCategory);
+              setRetroCodeInput(buildRetroTicketCode(parsed.resolvedSessionMode, parsed.semValue, parsed.resolvedPurchaseCategory));
+              setBookingError('');
+              window.requestAnimationFrame(() => purchaseGridDateInputRef.current?.focus());
+              return;
+            }
+
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              e.stopPropagation();
+              const rawCode = String(e.currentTarget.value || '').trim();
+              if (!rawCode) {
+                openBlockingWarning('Code is empty', [], 'Warning', () => {
+                  window.requestAnimationFrame(() => purchaseFromInputRef.current?.focus());
+                });
+                return;
+              }
+              const parsed = parseRetroCodeValue(rawCode, sessionMode, activePurchaseCategory);
+              if (parsed.error) {
+                openBlockingWarning(parsed.error, [], 'Warning', () => {
+                  setRetroCodeInput('');
+                  window.requestAnimationFrame(() => purchaseFromInputRef.current?.focus());
+                });
+                return;
+              }
+              setSelectedBox(parsed.semValue);
+              setActivePurchaseCategory(parsed.resolvedPurchaseCategory || activePurchaseCategory);
+              setRetroCodeInput(buildRetroTicketCode(parsed.resolvedSessionMode, parsed.semValue, parsed.resolvedPurchaseCategory));
+              setBookingError('');
+              window.requestAnimationFrame(() => purchaseGridDateInputRef.current?.focus());
+            }
+          }}
+          placeholder="M5 / D5 / E5 / 5"
+        />
+      </td>
+      <td>{sellerPurchasePreview?.itemName || ''}</td>
+      <td>
+        <input
+          ref={purchaseGridDateInputRef}
+          type="date"
+          value={bookingDate}
+          onChange={(e) => setBookingDate(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'ArrowLeft') {
+              e.preventDefault();
+              window.requestAnimationFrame(() => {
+                purchaseFromInputRef.current?.focus();
+                purchaseFromInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (e.key === 'ArrowRight' || e.key === 'Enter') {
+              e.preventDefault();
+              window.requestAnimationFrame(() => {
+                purchaseToInputRef.current?.focus();
+                purchaseToInputRef.current?.select?.();
+              });
+            }
+          }}
+        />
+      </td>
+      <td>{sellerPurchasePreview?.day || ''}</td>
+      <td>
+        <input
+          ref={purchaseToInputRef}
+          type="text"
+          value={retroFromInput}
+          onChange={(e) => {
+            const normalized = String(e.target.value).replace(/[^0-9]/g, '').slice(0, 5);
+            setRetroFromInput(normalized);
+            if (normalized.length === 5) {
+              setRetroToInput(normalized);
+              window.requestAnimationFrame(() => {
+                purchaseCodeInputRef.current?.focus();
+                purchaseCodeInputRef.current?.select?.();
+              });
+            }
+          }}
+          onKeyDown={(e) => {
+            if (shouldMoveFocusVertical(e, 'ArrowUp')) {
+              e.preventDefault();
+              moveRetroDraftSelection(-1);
+              window.requestAnimationFrame(() => {
+                purchaseToInputRef.current?.focus();
+                purchaseToInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (shouldMoveFocusVertical(e, 'ArrowDown')) {
+              e.preventDefault();
+              moveRetroDraftSelection(1);
+              window.requestAnimationFrame(() => {
+                purchaseToInputRef.current?.focus();
+                purchaseToInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (shouldMoveFocusLeft(e)) {
+              e.preventDefault();
+              window.requestAnimationFrame(() => purchaseGridDateInputRef.current?.focus());
+              return;
+            }
+
+            if (shouldMoveFocusRight(e)) {
+              e.preventDefault();
+              window.requestAnimationFrame(() => {
+                purchaseCodeInputRef.current?.focus();
+                purchaseCodeInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              const previousRow = retroDraftRows[Math.min(retroActiveRowIndex, retroDraftRows.length) - 1] || null;
+              if (!String(retroCodeInput || '').trim()) {
+                openBlockingWarning('Code is empty', [], 'Warning', () => {
+                  window.requestAnimationFrame(() => purchaseFromInputRef.current?.focus());
+                });
+                return;
+              }
+              const normalizedFrom = normalizeRangeStartNumber(retroFromInput, previousRow?.from);
+              if (normalizedFrom.error || !normalizedFrom.value) {
+                openBlockingWarning('From is empty ya 5 digit nahi hai', [], 'Warning', () => {
+                  window.requestAnimationFrame(() => purchaseToInputRef.current?.focus());
+                });
+                return;
+              }
+              setRetroFromInput(normalizedFrom.value);
+              setRetroToInput(normalizedFrom.value);
+              setBookingError('');
+              window.requestAnimationFrame(() => {
+                purchaseCodeInputRef.current?.focus();
+                purchaseCodeInputRef.current?.select?.();
+              });
+            }
+          }}
+          placeholder="12500"
+        />
+      </td>
+      <td>
+        <input
+          ref={purchaseCodeInputRef}
+          className={retroToInput && retroToInput === retroFromInput ? 'retro-grid-autofill' : ''}
+          type="text"
+          value={retroToInput}
+          onChange={(e) => setRetroToInput(String(e.target.value).replace(/[^0-9]/g, '').slice(0, 5))}
+          onKeyDown={(e) => {
+            if (shouldMoveFocusVertical(e, 'ArrowUp')) {
+              e.preventDefault();
+              moveRetroDraftSelection(-1);
+              window.requestAnimationFrame(() => {
+                purchaseCodeInputRef.current?.focus();
+                purchaseCodeInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (shouldMoveFocusVertical(e, 'ArrowDown')) {
+              e.preventDefault();
+              moveRetroDraftSelection(1);
+              window.requestAnimationFrame(() => {
+                purchaseCodeInputRef.current?.focus();
+                purchaseCodeInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (shouldMoveFocusLeft(e)) {
+              e.preventDefault();
+              window.requestAnimationFrame(() => {
+                purchaseToInputRef.current?.focus();
+                purchaseToInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (!String(retroCodeInput || '').trim()) {
+                openBlockingWarning('Code is empty', [], 'Warning', () => {
+                  window.requestAnimationFrame(() => purchaseFromInputRef.current?.focus());
+                });
+                return;
+              }
+              if (!String(retroFromInput || '').trim()) {
+                openBlockingWarning('From is empty', [], 'Warning', () => {
+                  window.requestAnimationFrame(() => purchaseToInputRef.current?.focus());
+                });
+                return;
+              }
+              if (!String(retroToInput || '').trim()) {
+                openBlockingWarning('To is empty', [], 'Warning', () => {
+                  window.requestAnimationFrame(() => purchaseCodeInputRef.current?.focus());
+                });
+                return;
+              }
+              addRetroDraftRow();
+              window.requestAnimationFrame(() => purchaseToInputRef.current?.focus());
+            }
+          }}
+          placeholder="12500"
+        />
+      </td>
+      <td>{sellerPurchasePreview?.quantity || ''}</td>
+      <td>{sellerPurchasePreview?.rate || ''}</td>
+      <td>{sellerPurchasePreview?.amount || ''}</td>
+    </tr>
+  );
+  const sellerPurchaseFormRows = [
+    {
+      label: 'Date',
+      className: 'medium',
+      content: (
+        <input
+          type="date"
+          value={bookingDate}
+          readOnly
+          tabIndex={-1}
+          onMouseDown={(e) => e.preventDefault()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              window.requestAnimationFrame(() => purchaseSellerSelectRef.current?.focus());
+            }
+          }}
+        />
+      )
+    },
+    {
+      label: 'Sub Seller',
+      className: 'wide',
+      content: (
+        <SearchableSellerSelect
+          inputRef={purchaseSellerSelectRef}
+          value={purchaseSendSellerId}
+          options={retroPartyOptions}
+          getOptionLabel={(party) => `${party.username}${String(party.id) === String(user?.id) ? ' (Self)' : ''} [${getPartyKeyword(party)}] (${getAllowedAmountsLabel(party)})`}
+          getOptionSearchLabel={(party) => `${getPartyKeyword(party)} ${party.username} ${getAllowedAmountsLabel(party)}`}
+          onChange={(matchedSeller) => {
+            const nextSellerId = String(matchedSeller?.id || '');
+            setPurchaseSendSellerId(nextSellerId);
+            setSelectedPartyName(matchedSeller?.username || '');
+            setPartyKeyword(getPartyKeyword(matchedSeller));
+            setPurchaseSendMemoNumber(null);
+            setPurchaseSendMemoSelectionIndex(0);
+            setPurchaseSendMemoPopupOpen(false);
+            setRetroDraftRows([]);
+            setRetroActiveRowIndex(0);
+          }}
+          onEnter={(matchedSeller) => {
+            if (matchedSeller) {
+              window.requestAnimationFrame(() => purchaseMemoRef.current?.focus());
+            }
+          }}
+          placeholder={retroPartyOptions.length === 0 ? 'No seller' : 'Keyword ya seller name type karo'}
+        />
+      )
+    }
+  ];
+  const sellerPurchaseActions = [
+    {
+      label: 'Add (A)',
+      shortcut: 'A',
+      onClick: startNewRetroDraftRow
+    },
+    {
+      label: retroSaving ? 'Sending...' : 'Send (F2)',
+      shortcut: 'F2',
+      variant: 'primary',
+      onClick: saveRetroDraftRows,
+      disabled: retroSaving
+    },
+    {
+      label: 'Delete (F3)',
+      shortcut: 'F3',
+      onClick: deleteRetroDraftRow
+    },
+    {
+      label: 'Clear (F8)',
+      shortcut: 'F8',
+      onClick: () => {
+        setRetroDraftRows([]);
+        setSelectedBox('');
+        setRetroFromInput('');
+        setRetroToInput('');
+        setRetroCodeInput('');
+        setRetroActiveRowIndex(0);
+        setRetroEditorVisible(true);
+      }
+    },
+    {
+      label: 'Exit (Esc)',
+      shortcut: 'ESC',
+      variant: 'secondary',
+      onClick: requestExitConfirmation
+    }
+  ];
+  const sellerUnsoldFormRows = [
+    {
+      label: 'Party Name',
+      className: 'wide',
+      content: (
+        <SearchableSellerSelect
+          inputRef={unsoldPartySelectRef}
+          value={unsoldPartyId}
+          options={unsoldPartyOptions}
+          form="seller-unsold-form"
+          getOptionLabel={(party) => `${party.username}${String(party.id) === String(user?.id) ? ' (Self)' : ''} [${getPartyKeyword(party)}] (${getAllowedAmountsLabel(party)})`}
+          getOptionSearchLabel={(party) => `${getPartyKeyword(party)} ${party.username} ${getAllowedAmountsLabel(party)}`}
+          onChange={(party) => {
+            setUnsoldPartyId(String(party?.id || ''));
+            setUnsoldMemoNumber(null);
+            setUnsoldRemoveMemoNumber(null);
+            setUnsoldMemoSelectionIndex(0);
+            setUnsoldMemoPopupOpen(false);
+            setUnsoldDraftRows([]);
+            setUnsoldActiveRowIndex(0);
+            setUnsoldEditorVisible(true);
+          }}
+          onEnter={(party) => {
+            if (party) {
+              window.requestAnimationFrame(() => unsoldMemoRef.current?.focus());
+            }
+          }}
+          placeholder="Keyword ya seller name type karo"
+        />
+      )
+    },
+    {
+      label: 'Date',
+      className: 'medium',
+      content: (
+        <input
+          type="date"
+          value={bookingDate}
+          readOnly
+          tabIndex={-1}
+          onMouseDown={(e) => e.preventDefault()}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              e.stopPropagation();
+              window.requestAnimationFrame(() => unsoldMemoRef.current?.focus());
+            }
+          }}
+          form="seller-unsold-form"
+        />
+      )
+    }
+  ];
+  const sellerUnsoldActions = [
+    {
+      label: 'Add (A)',
+      shortcut: 'A',
+      onClick: startNewUnsoldRow
+    },
+    {
+      label: unsoldLoading ? 'Saving...' : 'Save (F2)',
+      shortcut: 'F2',
+      type: 'submit',
+      form: 'seller-unsold-form',
+      variant: 'primary',
+      disabled: unsoldLoading
+    },
+    {
+      label: 'Delete (F3)',
+      shortcut: 'F3',
+      onClick: deleteUnsoldDraftRow
+    },
+    {
+      label: 'View (F4)',
+      shortcut: 'F4',
+      onClick: () => {
+        void openStockLookup(activeTab === 'unsold-remove' ? 'unsold-remove' : 'unsold');
+      }
+    },
+    {
+      label: 'Clear (F8)',
+      shortcut: 'F8',
+      onClick: () => {
+        setUnsoldNumber('');
+        setUnsoldRangeEndNumber('');
+        setUnsoldDraftRows([]);
+        setUnsoldActiveRowIndex(0);
+        setUnsoldEditorVisible(true);
+      }
+    },
+    {
+      label: 'Exit (Esc)',
+      shortcut: 'ESC',
+      variant: 'secondary',
+      onClick: requestExitConfirmation
+    }
+  ];
+  const sellerUnsoldRemoveActions = sellerUnsoldActions.map((action) => (
+    action.shortcut === 'F2'
+      ? {
+        ...action,
+        label: unsoldLoading ? 'Removing...' : 'Remove (F2)',
+        form: 'seller-unsold-remove-form'
+      }
+      : action
+  ));
+  const unsoldParsedCode = parseRetroCodeValue(unsoldCodeInput, sessionMode, activePurchaseCategory);
+  const previousUnsoldDraftRow = unsoldDraftRows[Math.min(unsoldActiveRowIndex, unsoldDraftRows.length) - 1] || null;
+  const unsoldRangeMetrics = getFiveDigitRangeMetrics(unsoldTableFromInput, unsoldTableToInput, previousUnsoldDraftRow?.from);
+  const unsoldResolvedFrom = unsoldRangeMetrics.fromNumber;
+  const unsoldResolvedTo = unsoldRangeMetrics.toNumber;
+  const unsoldCount = unsoldParsedCode.semValue && unsoldResolvedFrom && unsoldResolvedTo
+    ? unsoldRangeMetrics.count
+    : 0;
+  const unsoldPreviewQuantity = unsoldCount > 0 ? Number(unsoldParsedCode.semValue || 0) * unsoldCount : '';
+  const unsoldPreviewRate = amount || '';
+  const unsoldPreviewAmount = unsoldPreviewQuantity && unsoldPreviewRate
+    ? (Number(unsoldPreviewQuantity) * Number(unsoldPreviewRate)).toFixed(2)
+    : '';
+  const sellerUnsoldEditableRow = (
+    <tr key="seller-unsold-entry">
+      <td>{unsoldActiveRowIndex + 1}</td>
+      <td>
+        <input
+          ref={unsoldCodeInputRef}
+          type="text"
+          value={unsoldCodeInput}
+          onChange={(e) => setUnsoldCodeInput(e.target.value.toUpperCase())}
+          onKeyDown={(e) => {
+            if (shouldMoveFocusRight(e)) {
+              e.preventDefault();
+              const parsedCode = parseRetroCodeValue(e.currentTarget.value, sessionMode, activePurchaseCategory);
+              if (parsedCode.error) {
+                openBlockingWarning(parsedCode.error, [], 'Warning', () => {
+                  setUnsoldCodeInput('');
+                  window.requestAnimationFrame(() => unsoldCodeInputRef.current?.focus());
+                });
+                return;
+              }
+              if (!parsedCode.semValue) {
+                openBlockingWarning('Code is empty', [], 'Warning', () => {
+                  window.requestAnimationFrame(() => unsoldCodeInputRef.current?.focus());
+                });
+                return;
+              }
+              setActivePurchaseCategory(parsedCode.resolvedPurchaseCategory || activePurchaseCategory);
+              setUnsoldCodeInput(buildRetroTicketCode(parsedCode.resolvedSessionMode, parsedCode.semValue, parsedCode.resolvedPurchaseCategory));
+              setError('');
+              window.requestAnimationFrame(() => unsoldFromInputRef.current?.focus());
+              return;
+            }
+
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              const parsedCode = parseRetroCodeValue(e.currentTarget.value, sessionMode, activePurchaseCategory);
+              if (parsedCode.error) {
+                openBlockingWarning(parsedCode.error, [], 'Warning', () => {
+                  setUnsoldCodeInput('');
+                  window.requestAnimationFrame(() => unsoldCodeInputRef.current?.focus());
+                });
+                return;
+              }
+              if (!parsedCode.semValue) {
+                openBlockingWarning('Code is empty', [], 'Warning', () => {
+                  window.requestAnimationFrame(() => unsoldCodeInputRef.current?.focus());
+                });
+                return;
+              }
+              setActivePurchaseCategory(parsedCode.resolvedPurchaseCategory || activePurchaseCategory);
+              setUnsoldCodeInput(buildRetroTicketCode(parsedCode.resolvedSessionMode, parsedCode.semValue, parsedCode.resolvedPurchaseCategory));
+              setError('');
+              window.requestAnimationFrame(() => unsoldFromInputRef.current?.focus());
+            }
+          }}
+          placeholder="M5 / D5 / E5 / 5"
+        />
+      </td>
+      <td>{`${String(selectedUnsoldParty?.username || '').toUpperCase()} - ${unsoldParsedCode.semValue || ''}`.trim()}</td>
+      <td>{bookingDate}</td>
+      <td>{new Date(bookingDate).toLocaleDateString('en-IN', { weekday: 'short' }).toUpperCase()}</td>
+      <td>
+        <input
+          ref={unsoldFromInputRef}
+          type="text"
+          value={unsoldTableFromInput}
+          onChange={(e) => {
+            const normalized = String(e.target.value).replace(/[^0-9]/g, '').slice(0, 5);
+            setUnsoldTableFromInput(normalized);
+            if (normalized.length === 5) {
+              setUnsoldTableToInput(normalized);
+              window.requestAnimationFrame(() => {
+                unsoldToInputRef.current?.focus();
+                unsoldToInputRef.current?.select?.();
+              });
+            }
+          }}
+          onKeyDown={(e) => {
+            if (shouldMoveFocusLeft(e)) {
+              e.preventDefault();
+              window.requestAnimationFrame(() => {
+                unsoldCodeInputRef.current?.focus();
+                unsoldCodeInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (shouldMoveFocusRight(e)) {
+              e.preventDefault();
+              window.requestAnimationFrame(() => {
+                unsoldToInputRef.current?.focus();
+                unsoldToInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              const previousRow = unsoldDraftRows[Math.min(unsoldActiveRowIndex, unsoldDraftRows.length) - 1] || null;
+              if (!String(unsoldCodeInput || '').trim()) {
+                openBlockingWarning('Code is empty', [], 'Warning', () => {
+                  window.requestAnimationFrame(() => unsoldCodeInputRef.current?.focus());
+                });
+                return;
+              }
+              const normalizedFrom = normalizeRangeStartNumber(unsoldTableFromInput, previousRow?.from);
+              if (normalizedFrom.error || !normalizedFrom.value) {
+                openBlockingWarning('From is empty ya 5 digit nahi hai', [], 'Warning', () => {
+                  window.requestAnimationFrame(() => unsoldFromInputRef.current?.focus());
+                });
+                return;
+              }
+              setUnsoldTableFromInput(normalizedFrom.value);
+              setUnsoldTableToInput(normalizedFrom.value);
+              setError('');
+              window.requestAnimationFrame(() => {
+                unsoldToInputRef.current?.focus();
+                unsoldToInputRef.current?.select?.();
+              });
+            }
+          }}
+          placeholder="12500"
+        />
+      </td>
+      <td>
+        <input
+          ref={unsoldToInputRef}
+          className={unsoldTableToInput && unsoldTableToInput === unsoldTableFromInput ? 'retro-grid-autofill' : ''}
+          type="text"
+          value={unsoldTableToInput}
+          onChange={(e) => setUnsoldTableToInput(String(e.target.value).replace(/[^0-9]/g, '').slice(0, 5))}
+          onKeyDown={(e) => {
+            if (shouldMoveFocusLeft(e)) {
+              e.preventDefault();
+              window.requestAnimationFrame(() => {
+                unsoldFromInputRef.current?.focus();
+                unsoldFromInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              void (async () => {
+                if (!String(unsoldCodeInput || '').trim()) {
+                  openBlockingWarning('Code is empty', [], 'Warning', () => {
+                    window.requestAnimationFrame(() => unsoldCodeInputRef.current?.focus());
+                  });
+                  return;
+                }
+                if (!String(unsoldTableFromInput || '').trim()) {
+                  openBlockingWarning('From is empty', [], 'Warning', () => {
+                    window.requestAnimationFrame(() => unsoldFromInputRef.current?.focus());
+                  });
+                  return;
+                }
+                if (!String(unsoldTableToInput || '').trim()) {
+                  openBlockingWarning('To is empty', [], 'Warning', () => {
+                    window.requestAnimationFrame(() => unsoldToInputRef.current?.focus());
+                  });
+                  return;
+                }
+                if (unsoldRangeMetrics.error) {
+                  openBlockingWarning(unsoldRangeMetrics.error, [], 'Warning', () => {
+                    window.requestAnimationFrame(() => unsoldToInputRef.current?.focus());
+                  });
+                  return;
+                }
+
+                const nextMode = unsoldResolvedTo && unsoldResolvedTo !== unsoldResolvedFrom ? 'range' : 'single';
+                setUnsoldNumber(unsoldResolvedFrom);
+                setUnsoldRangeEndNumber(unsoldResolvedTo);
+                setUnsoldMode(nextMode);
+
+                const canCommit = await validateUnsoldEditorRowBeforeCommit();
+                if (!canCommit) {
+                  return;
+                }
+
+                await addUnsoldDraftRow();
+              })();
+            }
+          }}
+          placeholder="12500"
+        />
+      </td>
+      <td>{unsoldPreviewQuantity}</td>
+      <td>{unsoldPreviewRate}</td>
+      <td>{unsoldPreviewAmount}</td>
+    </tr>
+  );
+  const sellerUnsoldGridRows = createRetroGridRows(unsoldDraftRows);
+  const seePurchaseReceivedRows = seePurchaseReceivedEntries.map((entry) => normalizeSeePurchaseEntry(entry));
+  const seePurchaseSentRows = seePurchaseSentEntries.map((entry) => normalizeSeePurchaseEntry(entry));
+  const seePurchaseAvailableRows = seePurchaseAvailableEntries.map((entry) => normalizeSeePurchaseEntry(entry));
+  const buildSellerSeePurchaseGroups = (rows = [], includeParty = false) => groupConsecutiveNumberRows(
+    sortRowsForConsecutiveNumbers(
+      rows,
+      (entry) => [
+        entry.bookingDate,
+        entry.sessionMode,
+        entry.amount,
+        entry.boxValue,
+        includeParty ? (entry.toUsername || entry.sellerName) : ''
+      ]
+    ),
+    (entry) => [
+      entry.bookingDate,
+      entry.sessionMode,
+      entry.amount,
+      entry.boxValue,
+      includeParty ? (entry.toUsername || entry.sellerName) : ''
+    ].join('|')
+  );
+  const seePurchaseReceivedGroups = buildSellerSeePurchaseGroups(seePurchaseReceivedRows);
+  const seePurchaseSentGroups = buildSellerSeePurchaseGroups(seePurchaseSentRows, true);
+  const seePurchaseAvailableGroups = buildSellerSeePurchaseGroups(seePurchaseAvailableRows);
+  const seePurchaseSemSummaries = [...new Set(seePurchaseReceivedRows.map((entry) => String(entry.boxValue || '')).filter(Boolean))]
+    .sort((leftValue, rightValue) => Number(leftValue) - Number(rightValue))
+    .map((semValue) => {
+      const semEntries = seePurchaseReceivedRows.filter((entry) => String(entry.boxValue || '') === semValue);
+      const totalPieces = semEntries.reduce((sum, entry) => sum + Number(entry.boxValue || 0), 0);
+      const totalRate = Number(semEntries[0]?.amount || amount || 0);
+      const totalAmount = semEntries.reduce((sum, entry) => sum + (Number(entry.amount || 0) * Number(entry.boxValue || 0)), 0);
+
+      return {
+        semValue,
+        totalNumbers: semEntries.length,
+        totalPieces,
+        totalRate,
+        totalAmount
+      };
+    });
+  const seePurchaseGrandTotal = seePurchaseSemSummaries.reduce((summary, semSummary) => ({
+    totalNumbers: summary.totalNumbers + semSummary.totalNumbers,
+    totalPieces: summary.totalPieces + semSummary.totalPieces,
+    totalRate: summary.totalRate || semSummary.totalRate,
+    totalAmount: summary.totalAmount + semSummary.totalAmount
+  }), {
+    totalNumbers: 0,
+    totalPieces: 0,
+    totalRate: 0,
+    totalAmount: 0
+  });
+  const seePurchaseSentTotal = {
+    totalNumbers: seePurchaseSentRows.length,
+    totalPieces: seePurchaseSentRows.reduce((sum, entry) => sum + Number(entry.boxValue || 0), 0),
+    totalAmount: seePurchaseSentRows.reduce((sum, entry) => sum + (Number(entry.amount || 0) * Number(entry.boxValue || 0)), 0)
+  };
+  const seePurchaseAvailableTotal = {
+    totalNumbers: seePurchaseAvailableRows.length,
+    totalPieces: seePurchaseAvailableRows.reduce((sum, entry) => sum + Number(entry.boxValue || 0), 0),
+    totalAmount: seePurchaseAvailableRows.reduce((sum, entry) => sum + (Number(entry.amount || 0) * Number(entry.boxValue || 0)), 0)
+  };
+  const stockTransferGroupedEntries = groupConsecutiveNumberRows(
+    sortRowsForConsecutiveNumbers(
+      stockTransferEntries.map((entry) => normalizeSeePurchaseEntry(entry)),
+      (entry) => [entry.bookingDate, entry.sessionMode, entry.amount, entry.boxValue, entry.sellerName]
+    ),
+    (entry) => [entry.bookingDate, entry.sessionMode, entry.amount, entry.boxValue, entry.sellerName].join('|')
+  );
+  const stockTransferTotalPieces = stockTransferEntries.reduce((sum, entry) => sum + Number(entry.sem || 0), 0);
+  const stockTransferTotalAmount = stockTransferEntries.reduce((sum, entry) => sum + Number(entry.price || 0), 0);
 
   const generateBill = () => {
     setError('');
 
-    if (historyFilterMode === 'range' && historyFromDate > historyToDate) {
+    if (historyFromDate > historyToDate) {
       setError('From date cannot be after to date');
       return;
     }
@@ -930,14 +4782,14 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
 
     const didOpen = openTransferBill({
       groupedRecords: billTransferHistoryByActor,
-      groupedSummaries: billData.groupedSummaries,
-      groupedAmountSummaries: billData.groupedAmountSummaries,
+      groupedSummaries: billGroupedSummaries,
+      groupedAmountSummaries: billGroupedAmountSummaries,
       rootSellerMeta: billData.rootSellerMeta,
       totals: billTransferHistoryTotals,
       username: user.username,
       sessionMode,
       periodLabel: historyPeriodLabel,
-      shiftLabel: `${historyShift || 'All'}${historySellerFilter ? ` | Seller: ${historySellerFilter}` : ''}`,
+      shiftLabel: `${historyShift === 'ALL' ? 'ALL' : (historyShift || 'All')} | Amount ${historyAmountFilter || '7'}${historySellerFilter ? ` | Seller: ${historySellerFilter}` : ''}`,
       title: 'Generate Bill'
     });
 
@@ -1249,7 +5101,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
 
     return (
       <>
-        {amount6.length > 0 && renderTable(amount6, '6')}
+        {amount6.length > 0 && renderTable(amount6, '7')}
         {amount12.length > 0 && renderTable(amount12, '12')}
       </>
     );
@@ -1332,41 +5184,218 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
 
     return (
       <>
-        {amount6.length > 0 && renderTable(amount6, '6')}
+        {amount6.length > 0 && renderTable(amount6, '7')}
         {amount12.length > 0 && renderTable(amount12, '12')}
       </>
     );
   };
 
+  const sellerLauncherItems = [
+    { tab: 'purchase-send', label: 'Purchase Send' },
+    { tab: 'see-purchase', label: 'See Purchase' },
+    { tab: 'unsold', label: 'Unsold' },
+    { tab: 'unsold-remove', label: 'Unsold Remove', shortcutLetter: 'R' },
+    { tab: 'check-price', label: 'Check Price' },
+    { tab: 'tree', label: 'Tree' },
+    { tab: 'add-seller', label: 'Add New Seller' },
+    { tab: 'your-lot', label: 'Your Lot' },
+    { tab: 'accept-seller-lot', label: 'Accept Seller Lot' },
+    { tab: 'send-record', label: 'Send Record' },
+    { tab: 'generate-bill', label: 'Generate Bill' },
+    { tab: 'track-number', label: 'Track Number' },
+    { tab: 'my-prizes', label: 'My Prizes' },
+    { tab: 'stock-transfer', label: 'Stock Transfer' }
+  ].filter((item) => {
+    if (item.tab === 'purchase-send') {
+      return canForwardPurchase;
+    }
+    if (item.tab === 'see-purchase') {
+      return currentSellerType !== 'normal_seller';
+    }
+    if (item.tab === 'add-seller') {
+      return canCreateChildSeller;
+    }
+    if (item.tab === 'stock-transfer') {
+      return canUseStockTransfer;
+    }
+    return true;
+  });
+  const sellerLauncherActions = [
+    { id: 'piece-summary', label: 'F10 - Unsold Summary' },
+    { id: 'send-unsold', label: 'F11 - Send Unsold' }
+  ];
+  const launcherTitle = entryCompanyLabel || 'Seller Keyboard Menu';
+
   return (
-    <div className="seller-dashboard">
-      <header className="dashboard-header">
-        <div className="header-content">
-          <div className="header-center">
-            <button type="button" className="dashboard-home-link" onClick={handleDashboardHome}>
-              <h1>Seller Dashboard</h1>
-            </button>
-            <div className="session-banner">{billOnlyMode ? 'GENERATE BILL' : sessionMode}</div>
-            <div className="session-meta">
-              <span>{currentDateTime.toLocaleDateString('en-IN', { day: '2-digit', month: 'long', year: 'numeric' })}</span>
-              <span>{currentDateTime.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+    <div
+      ref={dashboardRef}
+      className="seller-dashboard"
+      data-enter-navigation-root
+      onKeyDown={focusNextOnEnter}
+      onFocusCapture={handleDashboardFocusCapture}
+    >
+      <ExitConfirmPrompt
+        open={exitConfirmOpen}
+        selected={exitConfirmSelected}
+        onSelectedChange={setExitConfirmSelected}
+        onConfirm={confirmExitRequest}
+        onCancel={cancelExitConfirmation}
+      />
+      {pieceSummaryOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+          <div style={{ background: '#fff', width: 'min(720px, 100%)', borderRadius: '8px', padding: '20px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+              <h2 style={{ margin: 0 }}>F10 Unsold Summary</h2>
+              <button type="button" onClick={closePieceSummary}>Close</button>
             </div>
-          </div>
-          <div className="user-info">
-            <span>Welcome, {user.username}</span>
-            <PasswordSettingsMenu
-              currentUser={user}
-              onSuccess={setSuccess}
-              onError={setError}
-            />
-            <button className="logout-btn" onClick={onLogout}>Logout</button>
+            <div style={{ marginTop: '16px', display: 'flex', alignItems: 'end', gap: '12px', flexWrap: 'wrap' }}>
+              <label style={{ display: 'grid', gap: '6px', fontWeight: 700 }}>
+                Date
+                <input
+                  type="date"
+                  value={pieceSummaryDate}
+                  onChange={(event) => {
+                    const nextDate = event.target.value;
+                    setPieceSummaryDate(nextDate);
+                    if (nextDate) {
+                      loadPieceSummary(nextDate);
+                    }
+                  }}
+                  style={{ minWidth: '180px' }}
+                />
+              </label>
+            </div>
+            {pieceSummaryLoading ? (
+              <p>Loading...</p>
+            ) : (
+              <table className="entries-table" style={{ marginTop: '16px' }}>
+                <thead>
+                  <tr>
+                    <th>Seller Name</th>
+                    <th>Total Piece</th>
+                    <th>Unsold Piece</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pieceSummaryRows.map((row) => (
+                    <tr key={row.id}>
+                      <td>{row.sellerName}</td>
+                      <td>{Number(row.totalPiece || 0).toFixed(2)}</td>
+                      <td>{Number(row.unsoldPiece || 0).toFixed(2)}</td>
+                    </tr>
+                  ))}
+                  <tr>
+                    <td><strong>Total</strong></td>
+                    <td><strong>{pieceSummaryRows.reduce((sum, row) => sum + Number(row.totalPiece || 0), 0).toFixed(2)}</strong></td>
+                    <td><strong>{pieceSummaryRows.reduce((sum, row) => sum + Number(row.unsoldPiece || 0), 0).toFixed(2)}</strong></td>
+                  </tr>
+                  <tr style={{ color: '#c53030', background: '#fff5f5' }}>
+                    <td><strong>STOCK NOT TRANSFERED</strong></td>
+                    <td colSpan="2"><strong>{Number(pieceSummaryRows[0]?.stockNotTransferredPiece || 0).toFixed(2)} Piece</strong></td>
+                  </tr>
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
-      </header>
-
+      )}
+      {unsoldSendOpen && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
+          <div style={{ background: '#fff', width: 'min(820px, 100%)', borderRadius: '8px', padding: '20px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
+              <h2 style={{ margin: 0 }}>F11 Send Unsold</h2>
+              <button type="button" onClick={() => setUnsoldSendOpen(false)}>Close</button>
+            </div>
+            {unsoldSendLoading ? (
+              <p>Loading...</p>
+            ) : (
+              <>
+                <div style={{ marginTop: '14px', padding: '12px 14px', borderRadius: '8px', background: '#f6f8ff', fontSize: '18px', lineHeight: 1.5 }}>
+                  <strong>From:</strong> {unsoldSendSummary?.fromSeller || user?.username} |{' '}
+                  <strong>To:</strong> {unsoldSendSummary?.toSeller || 'Parent'} |{' '}
+                  <strong>Total Piece:</strong> {Number(unsoldSendSummary?.totalPiece || 0).toFixed(2)} |{' '}
+                  <strong>Send Unsold:</strong> {Number(unsoldSendSummary?.unsoldPiece || 0).toFixed(2)} |{' '}
+                  <strong>Sold:</strong> {Number(unsoldSendSummary?.soldPiece || 0).toFixed(2)}
+                  {unsoldSendSummary?.autoAccept ? <div style={{ color: '#2f855a', fontWeight: 700 }}>Admin ko send hote hi auto accept hoga.</div> : null}
+                  {Number(unsoldSendSummary?.alreadySentPiece || 0) > 0 ? (
+                    <div style={{ marginTop: '8px', color: '#2b6cb0', fontWeight: 700 }}>
+                      You already send {Number(unsoldSendSummary.alreadySentPiece || 0).toFixed(2)} piece.
+                    </div>
+                  ) : null}
+                  {Number(unsoldSendSummary?.pendingSendPiece || 0) > 0 ? (
+                    <div style={{ marginTop: '4px', color: '#2f855a', fontWeight: 700 }}>
+                      New unsold ready to send: {Number(unsoldSendSummary.pendingSendPiece || 0).toFixed(2)} piece.
+                    </div>
+                  ) : null}
+                </div>
+                <table className="entries-table" style={{ marginTop: '16px' }}>
+                  <thead>
+                    <tr>
+                      <th>Seller Name</th>
+                      <th>Total Piece</th>
+                      <th>Unsold Piece</th>
+                      <th>Already Sent</th>
+                      <th>New Unsold</th>
+                      <th>Sold Piece</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(unsoldSendSummary?.rows || []).map((row) => (
+                      <tr key={row.sellerId}>
+                        <td>{row.sellerName}</td>
+                        <td>{Number(row.totalPiece || 0).toFixed(2)}</td>
+                        <td>{Number(row.unsoldPiece || 0).toFixed(2)}</td>
+                        <td>{Number(row.alreadySentPiece || 0).toFixed(2)}</td>
+                        <td>{Number(row.pendingSendPiece || 0).toFixed(2)}</td>
+                        <td>{Number(row.soldPiece || 0).toFixed(2)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '18px' }}>
+                  <button type="button" onClick={loadUnsoldSendSummary} disabled={unsoldSendLoading || unsoldSendSaving}>Refresh</button>
+                  <button
+                    type="button"
+                    onClick={sendUnsoldToParent}
+                    disabled={unsoldSendSaving || Number(unsoldSendSummary?.pendingSendPiece || 0) <= 0}
+                    style={{ backgroundColor: '#2f855a' }}
+                  >
+                    {unsoldSendSaving ? 'Sending...' : 'Send Unsold'}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      {activeTab ? (
+        <div className="active-session-titlebar">
+          <span>RAHUL</span>
+          <strong>{launcherTitle}</strong>
+          <span>Press A-Z</span>
+        </div>
+      ) : null}
       {!billOnlyMode && (
-        <div className="dashboard-accordion">
-        {!activeTab && (
+        <div className={`dashboard-accordion ${!activeTab ? 'dashboard-launcher-active' : ''}`.trim()}>
+        {!activeTab ? (
+          <DashboardLauncher
+            title={launcherTitle}
+            subtitle="A-Z keyboard shortcuts se seller pages kholo"
+            items={sellerLauncherItems}
+            actions={sellerLauncherActions}
+            onSelect={(item) => handleTabToggle(item.tab)}
+            onAction={(item) => {
+              if (item.id === 'piece-summary') {
+                loadPieceSummary();
+              }
+              if (item.id === 'send-unsold') {
+                loadUnsoldSendSummary();
+              }
+            }}
+            onExit={requestExitConfirmation}
+          />
+        ) : null}
+        {!activeTab && canCreateChildSeller && (
           <div className="accordion-item" style={{ order: 2 }}>
             <button
               className={`accordion-header ${activeTab === 'check-price' ? 'active' : ''}`}
@@ -1379,7 +5408,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
 
         {activeTab === 'check-price' && (
           <div className="accordion-item" style={{ order: 2 }}>
-            <button className="accordion-header active" onClick={handleTabBack}>
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
               Check Price
             </button>
             <div className="accordion-content">
@@ -1407,40 +5436,6 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
                   placeholder="Enter 4 or 5 digit booked number"
                   maxLength="5"
                 />
-
-                <label style={{ marginTop: '12px', display: 'block' }}>Amount:</label>
-                <div className="box-options" style={{ marginTop: '8px' }}>
-                  {hasMultipleAvailableAmounts && (
-                    <label className="checkbox-label">
-                      <input
-                        type="radio"
-                        name="seller-prize-amount"
-                        value=""
-                        checked={sellerPrizeAmount === ''}
-                        onChange={() => {
-                          setSellerPrizeAmount('');
-                          setSellerPrizeSem('');
-                        }}
-                      />
-                      ALL
-                    </label>
-                  )}
-                  {availableAmountOptions.map((amountOption) => (
-                    <label key={amountOption} className="checkbox-label">
-                      <input
-                        type="radio"
-                        name="seller-prize-amount"
-                        value={amountOption}
-                        checked={sellerPrizeAmount === amountOption}
-                        onChange={(e) => {
-                          setSellerPrizeAmount(e.target.value);
-                          setSellerPrizeSem('');
-                        }}
-                      />
-                      {amountOption}
-                    </label>
-                  ))}
-                </div>
 
                 <label style={{ marginTop: '12px', display: 'block' }}>SEM:</label>
                 <div className="box-options" style={{ marginTop: '8px' }}>
@@ -1548,7 +5543,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
 
         {activeTab === 'my-prizes' && (
           <div className="accordion-item" style={{ order: 2 }}>
-            <button className="accordion-header active" onClick={handleTabBack}>
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
               My Prizes
             </button>
             <div className="accordion-content">
@@ -1556,40 +5551,6 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
               <div className="form-group">
                 <div style={{ marginBottom: '12px', padding: '12px 14px', borderRadius: '12px', background: '#f6f8ff' }}>
                   <strong>Date:</strong> {formatDisplayDate(getTodayDateValue())} | <strong>Session:</strong> {sessionMode}
-                </div>
-
-                <label>Amount:</label>
-                <div className="box-options" style={{ marginTop: '8px' }}>
-                  {hasMultipleAvailableAmounts && (
-                    <label className="checkbox-label">
-                      <input
-                        type="radio"
-                        name="my-prize-amount"
-                        value=""
-                        checked={myPrizeAmount === ''}
-                        onChange={() => {
-                          setMyPrizeAmount('');
-                          setMyPrizeSem('');
-                        }}
-                      />
-                      ALL
-                    </label>
-                  )}
-                  {availableAmountOptions.map((amountOption) => (
-                    <label key={amountOption} className="checkbox-label">
-                      <input
-                        type="radio"
-                        name="my-prize-amount"
-                        value={amountOption}
-                        checked={myPrizeAmount === amountOption}
-                        onChange={(e) => {
-                          setMyPrizeAmount(e.target.value);
-                          setMyPrizeSem('');
-                        }}
-                      />
-                      {amountOption}
-                    </label>
-                  ))}
                 </div>
 
                 <label style={{ marginTop: '12px', display: 'block' }}>SEM:</label>
@@ -1708,7 +5669,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
 
         {activeTab === 'tree' && (
           <div className="accordion-item" style={{ order: 3 }}>
-            <button className="accordion-header active" onClick={handleTabBack}>
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
               Tree
             </button>
             <div className="accordion-content">
@@ -1734,14 +5695,15 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
           </div>
         )}
 
-        {activeTab === 'add-seller' && (
+        {activeTab === 'add-seller' && canCreateChildSeller && (
           <div className="accordion-item" style={{ order: 4 }}>
-            <button className="accordion-header active" onClick={handleTabBack}>
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
               Add New Seller
             </button>
             <div className="accordion-content">
               <AddSellerForm
                 currentUser={user}
+                selectedAmount={amount}
                 onSuccess={async () => {
                   setSuccess('Seller created successfully');
                   await loadTree();
@@ -1752,221 +5714,625 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
           </div>
         )}
 
-        {!activeTab && (
+        {!activeTab && canForwardPurchase && (
           <div className="accordion-item" style={{ order: 1 }}>
             <button
-              className={`accordion-header ${activeTab === 'book-lottery' ? 'active' : ''}`}
-              onClick={() => handleTabToggle('book-lottery')}
+              className={`accordion-header ${activeTab === 'purchase-send' ? 'active' : ''}`}
+              onClick={() => handleTabToggle('purchase-send')}
             >
-              Book Lottery
+              Purchase Send
             </button>
           </div>
         )}
 
-        {activeTab === 'book-lottery' && (
+        {activeTab === 'purchase-send' && canForwardPurchase && (
           <div className="accordion-item" style={{ order: 1 }}>
-            <button className="accordion-header active" onClick={handleTabBack}>
-              Book Lottery
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
+              Purchase Send
             </button>
             <div className="accordion-content">
-              <h2>Book Lottery</h2>
-              <div className="time-left-banner" style={{ backgroundColor: '#f8f9fa', padding: '12px', borderRadius: '8px', marginBottom: '20px', borderLeft: '4px solid #667eea' }}>
-                <p style={{ margin: '0 0 4px 0', color: '#555', fontWeight: '600', fontSize: '14px' }}>
-                  {sessionMode} last send time: {sessionDeadlineLabel}
-                </p>
-                <p style={{ margin: 0, color: '#d32f2f', fontWeight: '700', fontSize: '16px' }}>
-                  {isFutureBookingDate ? `Future booking selected for ${formatDisplayDate(bookingDate)}` : `Time Left To Send: ${sendCountdownLabel}`}
-                </p>
-              </div>
-              <form onSubmit={handleAddEntry} className="lottery-form">
-                <div className="form-group">
-                  <label>Booking Date:</label>
-                  <input
-                    type="date"
-                    value={bookingDate}
-                    min={getTodayDateValue()}
-                    onChange={(e) => setBookingDate(e.target.value)}
+              <RetroPurchasePanel
+                screenCode="RAHUL"
+                panelTitle="Purchase Send"
+                screenTitle={entryCompanyLabel || 'SELLER PURCHASE SEND'}
+                headerTimestamp={sellerUnsoldTimestamp}
+                memoNumber={selectedPurchaseSendMemoOption ? String(selectedPurchaseSendMemoOption.memoNumber) : '1'}
+                formRows={sellerPurchaseFormRows}
+                gridRows={sellerPurchaseGridRows}
+                editableRow={retroEditorVisible ? sellerPurchaseEditableRow : null}
+                editableRowIndex={retroActiveRowIndex}
+                activeGridRowIndex={retroEditorVisible && retroActiveRowIndex < retroDraftRows.length ? retroActiveRowIndex : null}
+                onGridRowClick={(_, index) => {
+                  loadRetroDraftIntoEditor(index);
+                  window.requestAnimationFrame(() => {
+                    purchaseFromInputRef.current?.focus();
+                    purchaseFromInputRef.current?.select?.();
+                  });
+                }}
+                memoProps={{
+                  ref: purchaseMemoRef,
+                  tabIndex: 0,
+                  onClick: () => {
+                    if (!purchaseSendMemoPopupOpen) {
+                      openPurchaseSendMemoPopup();
+                    }
+                  },
+                  onKeyDown: (e) => {
+                    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      if (!purchaseSendMemoPopupOpen) {
+                        openPurchaseSendMemoPopup();
+                      }
+                      setPurchaseSendMemoSelectionIndex((currentIndex) => {
+                        const delta = e.key === 'ArrowDown' ? 1 : -1;
+                        const nextIndex = currentIndex + delta;
+                        if (nextIndex < 0) {
+                          return 0;
+                        }
+                        if (nextIndex >= purchaseSendMemoOptions.length) {
+                          return Math.max(purchaseSendMemoOptions.length - 1, 0);
+                        }
+                        return nextIndex;
+                      });
+                      return;
+                    }
+
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      closePurchaseSendMemoPopup();
+                      return;
+                    }
+
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      if (purchaseSendMemoPopupOpen) {
+                        commitPurchaseSendMemoSelection();
+                        return;
+                      }
+                      window.requestAnimationFrame(() => {
+                        purchaseFromInputRef.current?.focus();
+                        purchaseFromInputRef.current?.select?.();
+                      });
+                    }
+                  }
+                }}
+                memoSelector={{
+                  isOpen: purchaseSendMemoPopupOpen,
+                  options: purchaseSendMemoOptions,
+                  activeIndex: purchaseSendMemoSelectionIndex,
+                  variant: 'table',
+                  onHighlight: setPurchaseSendMemoSelectionIndex,
+                  onSelect: (option, index) => {
+                    setPurchaseSendMemoSelectionIndex(index);
+                    commitPurchaseSendMemoSelection(option);
+                  }
+                }}
+                topShortcuts={SELLER_PURCHASE_SEND_SHORTCUTS}
+                footerActions={sellerPurchaseActions}
+                summaryQuantity={sellerPurchaseSummaryQuantity}
+                summaryAmount={sellerPurchaseSummaryAmount}
+                statusLabel={sessionMode}
+                windowClassName="full-page"
+                blockingWarning={activeTab === 'purchase-send' ? blockingWarning : null}
+                onBlockingWarningClose={clearBlockingWarning}
+              />
+            </div>
+          </div>
+        )}
+
+        {!activeTab && currentSellerType !== 'normal_seller' && (
+          <div className="accordion-item" style={{ order: 1 }}>
+            <button
+              className={`accordion-header ${activeTab === 'see-purchase' ? 'active' : ''}`}
+              onClick={() => handleTabToggle('see-purchase')}
+            >
+              See Purchase
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'see-purchase' && currentSellerType !== 'normal_seller' && (
+          <div className="accordion-item" style={{ order: 1 }}>
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
+              See Purchase
+            </button>
+            <div className="accordion-content">
+              <h2>See Purchase</h2>
+              <p style={{ marginBottom: '14px', color: '#4a5568' }}>
+                Yahan parent/admin se mila hua poora purchase dikh raha hai. Sub seller ko bhejne ke baad bhi total received purchase yahan se nahi hatega.
+              </p>
+
+              <div className="form-group">
+                <label>Select Date:</label>
+                <input
+                  type="date"
+                  value={seePurchaseDate}
+                  onChange={(e) => setSeePurchaseDate(e.target.value)}
+                />
+
+                <label style={{ marginTop: '12px', display: 'block' }}>Select Shift:</label>
+                <select value={seePurchaseShift} onChange={(e) => setSeePurchaseShift(e.target.value)} style={{ marginTop: '8px' }}>
+                  <option value="ALL">ALL</option>
+                  <option value="MORNING">MORNING</option>
+                  <option value="DAY">DAY</option>
+                  <option value="EVENING">EVENING</option>
+                </select>
+
+                <label style={{ marginTop: '12px', display: 'block' }}>Select Seller:</label>
+                <div style={{ marginTop: '8px' }}>
+                  <SearchableSellerSelect
+                    value={seePurchaseSellerId}
+                    options={seePurchaseSellerOptions}
+                    onChange={(seller) => setSeePurchaseSellerId(String(seller?.id || ''))}
+                    getOptionValue={(seller) => seller.id}
+                    getOptionLabel={(seller) => `${seller.username}${String(seller.id) === String(user?.id) ? ' (Self)' : ''} [${getPartyKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}
+                    getOptionSearchLabel={(seller) => `${getPartyKeyword(seller)} ${seller.username} ${getAllowedAmountsLabel(seller)}`}
+                    placeholder={seePurchaseSellerOptions.length === 0 ? 'No seller' : 'Keyword ya seller name type karo'}
                   />
                 </div>
 
-                <div className="form-group">
-                  <label>Amount:</label>
-                  {availableAmountOptions.length === 1 ? (
-                    <>
-                      <div style={{ padding: '12px 14px', border: '1px solid #ddd', borderRadius: '8px', backgroundColor: '#f8f9ff', fontWeight: '600' }}>
-                        {availableAmountOptions[0]} (auto-selected)
-                      </div>
-                      <p style={{ marginTop: '8px', fontSize: '14px', color: '#666' }}>
-                        This seller is allowed to book only amount {availableAmountOptions[0]}, so it is selected automatically.
-                      </p>
-                    </>
-                  ) : (
-                    <>
-                      <div className="box-options">
-                        {availableAmountOptions.map((amountOption) => (
-                          <label key={amountOption} className="checkbox-label">
-                            <input
-                              type="radio"
-                              name="amount"
-                              value={amountOption}
-                              checked={amount === amountOption}
-                              onChange={(e) => {
-                                setAmount(e.target.value);
-                                setSelectedBox('');
-                              }}
-                            />
-                            {amountOption}
-                          </label>
-                        ))}
-                      </div>
-                      <p style={{ marginTop: '8px', fontSize: '14px', color: '#666' }}>
-                        Only allowed amount options are shown. Amounts without permission are hidden from the seller dashboard.
-                      </p>
-                    </>
-                  )}
+                <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' }}>
+                  <button type="button" onClick={loadSeePurchaseEntries} disabled={seePurchaseLoading}>
+                    {seePurchaseLoading ? 'Loading...' : 'Refresh Purchase View'}
+                  </button>
                 </div>
+              </div>
 
-                <div className="form-group">
-                  <label>SEM</label>
-                  <div className="box-options">
-                    {amount && getAvailableSemOptions().map((box) => (
-                      <label key={box} className="checkbox-label">
-                        <input
-                          type="radio"
-                          name="box"
-                          value={box}
-                          checked={selectedBox === box}
-                          onChange={(e) => setSelectedBox(e.target.value)}
-                        />
-                        {box}
-                      </label>
+              <div style={{ marginTop: '16px', padding: '12px 14px', borderRadius: '10px', background: '#eef4ff' }}>
+                <strong>Selected View:</strong> {formatDisplayDate(seePurchaseDate)} | {seePurchaseShift || 'ALL'} | {selectedSeePurchaseSeller?.username || user?.username || '-'} | Rate {amount || '-'}
+              </div>
+
+              {seePurchaseSemSummaries.length > 0 ? (
+                <table className="entries-table" style={{ marginTop: '16px' }}>
+                  <thead>
+                    <tr>
+                      <th>Same</th>
+                      <th>Total Pieces</th>
+                      <th>Total Rate</th>
+                      <th>Total Amount</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {seePurchaseSemSummaries.map((summary) => (
+                      <tr key={`see-purchase-summary-${summary.semValue}`}>
+                        <td>{summary.semValue} Same</td>
+                        <td>{summary.totalPieces}</td>
+                        <td>{summary.totalRate}</td>
+                        <td>{summary.totalAmount.toFixed(2)}</td>
+                      </tr>
                     ))}
-                  </div>
-                </div>
+                    <tr style={{ fontWeight: '700', background: '#f8fbff' }}>
+                      <td>Grand Total</td>
+                      <td>{seePurchaseGrandTotal.totalPieces}</td>
+                      <td>{seePurchaseGrandTotal.totalRate}</td>
+                      <td>{seePurchaseGrandTotal.totalAmount.toFixed(2)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              ) : null}
 
-                <div className="form-group">
-                  <label>Booking Type:</label>
-                  <div className="box-options">
-                    <label className="checkbox-label">
-                      <input
-                        type="radio"
-                        name="booking-mode"
-                        value="single"
-                        checked={bookingMode === 'single'}
-                        onChange={() => {
-                          setBookingMode('single');
-                          setNumber('');
-                          setRangeEndNumber('');
-                        }}
-                      />
-                      Single Number
-                    </label>
-                    <label className="checkbox-label">
-                      <input
-                        type="radio"
-                        name="booking-mode"
-                        value="range"
-                        checked={bookingMode === 'range'}
-                        onChange={() => {
-                          setBookingMode('range');
-                          setNumber('');
-                          setRangeEndNumber('');
-                        }}
-                      />
-                      Consecutive Range
-                    </label>
-                  </div>
-                </div>
+              <div style={{ marginTop: '16px', padding: '12px 14px', borderRadius: '10px', background: '#eef4ff' }}>
+                <strong>Total Purchase:</strong> {seePurchaseGrandTotal.totalNumbers} numbers | Pieces {seePurchaseGrandTotal.totalPieces} | Rs. {seePurchaseGrandTotal.totalAmount.toFixed(2)} |{' '}
+                <strong>Sub Seller Ko Diya:</strong> {seePurchaseSentTotal.totalNumbers} numbers | Pieces {seePurchaseSentTotal.totalPieces} | Rs. {seePurchaseSentTotal.totalAmount.toFixed(2)} |{' '}
+                <strong>Balance Stock:</strong> {seePurchaseAvailableTotal.totalNumbers} numbers | Pieces {seePurchaseAvailableTotal.totalPieces} | Rs. {seePurchaseAvailableTotal.totalAmount.toFixed(2)}
+              </div>
 
-                <div className="form-group">
-                  <label>{bookingMode === 'range' ? 'From Number:' : '5-Digit Number:'}</label>
-                  <input
-                    type="text"
-                    value={number}
-                    onChange={(e) => setNumber(sanitizeFiveDigitInput(e.target.value))}
-                    placeholder="00000"
-                    maxLength="5"
+              {seePurchaseReceivedGroups.length > 0 ? (
+                <table className="entries-table" style={{ marginTop: '16px' }}>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Session</th>
+                      <th>Amount</th>
+                      <th>SEM</th>
+                      <th>From</th>
+                      <th>To</th>
+                      <th>Total Pieces</th>
+                      <th>Received From</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {seePurchaseReceivedGroups.map((group) => (
+                      <tr key={`see-purchase-received-${group.firstRow?.id}-${group.lastRow?.id}`}>
+                        <td>{formatDisplayDate(group.firstRow?.bookingDate)}</td>
+                        <td>{group.firstRow?.sessionMode || '-'}</td>
+                        <td>{group.firstRow?.amount || '-'}</td>
+                        <td>{group.firstRow?.boxValue || '-'}</td>
+                        <td>{group.firstRow?.number || '-'}</td>
+                        <td>{group.lastRow?.number || '-'}</td>
+                        <td>{group.rows.reduce((sum, row) => sum + Number(row.boxValue || 0), 0)}</td>
+                        <td>{group.firstRow?.fromUsername || group.firstRow?.sellerName || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p style={{ marginTop: '16px' }}>Selected date, seller aur shift me parent/admin se koi purchase nahi mila.</p>
+              )}
+
+              {seePurchaseSentGroups.length > 0 ? (
+                <>
+                  <h4 style={{ margin: '16px 0 8px' }}>Sent To Sub Seller</h4>
+                  <table className="entries-table">
+                    <thead>
+                      <tr>
+                        <th>Sub Seller</th>
+                        <th>Memo</th>
+                        <th>Date</th>
+                        <th>Session</th>
+                        <th>Amount</th>
+                        <th>SEM</th>
+                        <th>From</th>
+                        <th>To</th>
+                        <th>Total Pieces</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {seePurchaseSentGroups.map((group) => (
+                        <tr key={`see-purchase-sent-${group.firstRow?.id}-${group.lastRow?.id}`}>
+                          <td>{group.firstRow?.toUsername || '-'}</td>
+                          <td>{group.firstRow?.memoNumber || '-'}</td>
+                          <td>{formatDisplayDate(group.firstRow?.bookingDate)}</td>
+                          <td>{group.firstRow?.sessionMode || '-'}</td>
+                          <td>{group.firstRow?.amount || '-'}</td>
+                          <td>{group.firstRow?.boxValue || '-'}</td>
+                          <td>{group.firstRow?.number || '-'}</td>
+                          <td>{group.lastRow?.number || '-'}</td>
+                          <td>{group.rows.reduce((sum, row) => sum + Number(row.boxValue || 0), 0)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              ) : null}
+
+              {seePurchaseAvailableGroups.length > 0 ? (
+                <>
+                  <h4 style={{ margin: '16px 0 8px' }}>Balance Stock</h4>
+                  <table className="entries-table">
+                    <thead>
+                      <tr>
+                        <th>Date</th>
+                        <th>Session</th>
+                        <th>Amount</th>
+                        <th>SEM</th>
+                        <th>From</th>
+                        <th>To</th>
+                        <th>Total Pieces</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {seePurchaseAvailableGroups.map((group) => (
+                        <tr key={`see-purchase-available-${group.firstRow?.id}-${group.lastRow?.id}`}>
+                          <td>{formatDisplayDate(group.firstRow?.bookingDate)}</td>
+                          <td>{group.firstRow?.sessionMode || '-'}</td>
+                          <td>{group.firstRow?.amount || '-'}</td>
+                          <td>{group.firstRow?.boxValue || '-'}</td>
+                          <td>{group.firstRow?.number || '-'}</td>
+                          <td>{group.lastRow?.number || '-'}</td>
+                          <td>{group.rows.reduce((sum, row) => sum + Number(row.boxValue || 0), 0)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </>
+              ) : (
+                <p style={{ marginTop: '16px' }}>Balance stock nahi bacha.</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'stock-transfer' && canUseStockTransfer && (
+          <div className="accordion-item" style={{ order: 1 }}>
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
+              Stock Transfer
+            </button>
+            <div className="accordion-content">
+              <h2>Stock Transfer</h2>
+              <p style={{ marginBottom: '14px', color: '#4a5568' }}>
+                Selected date, category aur amount ka jo remaining stock aapke paas hai, woh ek baar me selected seller ko transfer hoga.
+              </p>
+
+              <div className="form-group">
+                <label>Select Date:</label>
+                <input
+                  type="date"
+                  value={stockTransferDate}
+                  onChange={(e) => setStockTransferDate(e.target.value)}
+                />
+
+                <label style={{ marginTop: '12px', display: 'block' }}>Transfer To:</label>
+                <div style={{ marginTop: '8px' }}>
+                  <SearchableSellerSelect
+                    value={stockTransferTargetId}
+                    options={stockTransferTargetOptions}
+                    onChange={(seller) => setStockTransferTargetId(String(seller?.id || ''))}
+                    getOptionLabel={(seller) => `${seller.username}${String(seller.id) === String(user?.id) ? ' (Self)' : ''} [${getPartyKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}
+                    getOptionSearchLabel={(seller) => `${getPartyKeyword(seller)} ${seller.username} ${getAllowedAmountsLabel(seller)}`}
+                    placeholder={stockTransferTargetOptions.length === 0 ? 'No seller' : 'Keyword ya seller name type karo'}
                   />
                 </div>
 
-                {bookingMode === 'range' && (
-                  <div className="form-group">
-                    <label>To Number:</label>
-                    <input
-                      type="text"
-                      value={rangeEndNumber}
-                      onChange={(e) => setRangeEndNumber(String(e.target.value).replace(/[^0-9]/g, '').slice(0, 5))}
-                      placeholder=""
-                      maxLength="5"
-                    />
-                  </div>
-                )}
+                <div style={{ marginTop: '16px', padding: '12px 14px', borderRadius: '10px', background: '#eef4ff' }}>
+                  <strong>Selected Stock:</strong> {formatDisplayDate(stockTransferDate)} | {sessionMode} | {getPurchaseCategoryLabel(activePurchaseCategory)} | Amount {amount || '-'}
+                </div>
 
-                <button type="submit" className="add-btn" disabled={isEntryDeadlinePassed}>Add Entry</button>
-                {bookingError && <p style={{ color: '#d32f2f', fontWeight: '600', marginTop: '10px' }}>{bookingError}</p>}
-                {isEntryDeadlinePassed && (
-                  <p style={{ color: '#d32f2f', fontWeight: '600', marginTop: '10px' }}>
-                    Entry posting time ended for {sessionMode}. Last time was {sessionDeadlineLabel}
-                  </p>
-                )}
-              </form>
-
-              <div className="entries-section">
-                <h3>Pending Entries ({entries.length})</h3>
-                {entries.length > 0 ? (
-                  <div>
-                    {renderEntriesTable(amount6Entries, '6')}
-                    {renderEntriesTable(amount12Entries, '12')}
-                  </div>
-                ) : (
-                  <p>No pending entries</p>
-                )}
-
-                {(entries.length > 0 || totalAcceptedBookEntries > 0) && (
-                  <div className="total-section">
-                    <h3>
-                      Booking Date: {formatDisplayDate(bookingDate)} | Total Amount: Rs. {totalAmount.toFixed(2)} | Total Piece: {entries.reduce((sum, entry) => sum + parseFloat(entry.sem), 0)}
-                    </h3>
-                    <button className="send-btn" onClick={handleSendEntries} disabled={(!isFutureBookingDate && isSendDeadlinePassed) || sendingEntries} style={{ marginTop: '16px' }}>
-                      {sendingEntries ? 'Sending...' : 'Send Entries'}
-                    </button>
-                    {totalAcceptedBookEntries > 0 && (
-                      <p style={{ marginTop: '12px', color: '#333', fontWeight: '600' }}>
-                        Accepted seller entries ready to send: {totalAcceptedBookEntries}
-                      </p>
-                    )}
-                  </div>
-                )}
+                <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' }}>
+                  <button type="button" onClick={loadStockTransferEntries} disabled={stockTransferLoading}>
+                    {stockTransferLoading ? 'Loading...' : 'Preview Remaining Stock'}
+                  </button>
+                  <button type="button" onClick={handleStockTransfer} disabled={stockTransferLoading || stockTransferEntries.length === 0 || stockTransferTargetOptions.length === 0} style={{ backgroundColor: '#2f855a' }}>
+                    Transfer Full Remaining Stock
+                  </button>
+                </div>
               </div>
 
-              <div className="entries-section">
-                <h3>Accepted Seller Entries</h3>
-                {Object.keys(acceptedEntriesBySeller).length > 0 ? (
-                  Object.entries(acceptedEntriesBySeller).map(([sellerName, sellerEntries]) => (
-                    <React.Fragment key={sellerName}>
-                      <EntriesTableView
-                        entries={sellerEntries}
-                        title={sellerName}
-                        showStatus
-                        splitByAmount
-                        groupConsecutiveRows
-                        showSummary
-                        emptyMessage="No accepted seller entries"
-                      />
-                      {renderAcceptedSellerSummary(sellerEntries)}
-                    </React.Fragment>
-                  ))
-                ) : (
-                  <p>No accepted seller entries</p>
-                )}
+              <div style={{ marginTop: '16px', padding: '12px 14px', borderRadius: '10px', background: '#f6f8ff' }}>
+                <strong>Remaining Stock:</strong> Total Pieces {stockTransferTotalPieces} | Rs. {stockTransferTotalAmount.toFixed(2)}
               </div>
+
+              {stockTransferGroupedEntries.length > 0 ? (
+                <table className="entries-table" style={{ marginTop: '16px' }}>
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Session</th>
+                      <th>Amount</th>
+                      <th>SEM</th>
+                      <th>From</th>
+                      <th>To</th>
+                      <th>Total Pieces</th>
+                      <th>Current Holder</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stockTransferGroupedEntries.map((group) => (
+                      <tr key={`stock-transfer-${group.firstRow?.id}-${group.lastRow?.id}`}>
+                        <td>{formatDisplayDate(group.firstRow?.bookingDate)}</td>
+                        <td>{group.firstRow?.sessionMode || '-'}</td>
+                        <td>{group.firstRow?.amount || '-'}</td>
+                        <td>{group.firstRow?.boxValue || '-'}</td>
+                        <td>{group.firstRow?.number || '-'}</td>
+                        <td>{group.lastRow?.number || '-'}</td>
+                        <td>{group.rows.reduce((sum, row) => sum + Number(row.boxValue || row.sem || 0), 0)}</td>
+                        <td>{user?.username || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <p style={{ marginTop: '16px' }}>No remaining stock to transfer.</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {!activeTab && (
+          <div className="accordion-item" style={{ order: 1 }}>
+            <button
+              className={`accordion-header ${activeTab === 'unsold' ? 'active' : ''}`}
+              onClick={() => handleTabToggle('unsold')}
+            >
+              Unsold
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'unsold' && (
+          <div className="accordion-item" style={{ order: 1 }}>
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
+              Unsold
+            </button>
+            <div className="accordion-content">
+              <RetroPurchasePanel
+                formId="seller-unsold-form"
+                onSubmit={handleMarkUnsold}
+                screenCode="RAHUL"
+                panelTitle="Unsold"
+                screenTitle={entryCompanyLabel || 'SELLER UNSOLD'}
+                headerTimestamp={sellerUnsoldTimestamp}
+                memoNumber={defaultUnsoldMemoOption ? String(defaultUnsoldMemoOption.memoNumber) : '1'}
+                formRows={sellerUnsoldFormRows}
+                gridRows={sellerUnsoldGridRows}
+                editableRow={unsoldEditorVisible ? sellerUnsoldEditableRow : null}
+                editableRowIndex={unsoldActiveRowIndex}
+                activeGridRowIndex={unsoldEditorVisible && unsoldActiveRowIndex < unsoldDraftRows.length ? unsoldActiveRowIndex : null}
+                onGridRowClick={(_, index) => {
+                  const row = unsoldDraftRows[index];
+                  if (!row) {
+                    return;
+                  }
+                  setUnsoldEditorVisible(true);
+                  setUnsoldActiveRowIndex(index);
+                  setUnsoldCodeInput(row.code || '');
+                  setUnsoldTableFromInput(row.from || '');
+                  setUnsoldTableToInput(row.to || '');
+                  setUnsoldNumber(row.from || '');
+                  setUnsoldRangeEndNumber(row.to || '');
+                  window.requestAnimationFrame(() => unsoldCodeInputRef.current?.focus());
+                }}
+                memoProps={{
+                  ref: unsoldMemoRef,
+                  tabIndex: 0,
+                  onKeyDown: (e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      if (!unsoldMemoPopupOpen) {
+                        openUnsoldMemoPopup();
+                        return;
+                      }
+                      commitUnsoldMemoSelection();
+                    }
+
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      if (!unsoldMemoPopupOpen) {
+                        openUnsoldMemoPopup();
+                        return;
+                      }
+                      setUnsoldMemoSelectionIndex((currentIndex) => {
+                        const nextIndex = currentIndex + 1;
+                        if (nextIndex >= currentUnsoldMemoOptions.length) {
+                          return Math.max(currentUnsoldMemoOptions.length - 1, 0);
+                        }
+                        return nextIndex;
+                      });
+                    }
+
+                    if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      if (!unsoldMemoPopupOpen) {
+                        openUnsoldMemoPopup();
+                        return;
+                      }
+                      setUnsoldMemoSelectionIndex((currentIndex) => Math.max(currentIndex - 1, 0));
+                    }
+
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      if (unsoldMemoPopupOpen) {
+                        setUnsoldMemoPopupOpen(false);
+                      }
+                    }
+                  }
+                }}
+                memoSelector={{
+                  isOpen: unsoldMemoPopupOpen,
+                  options: currentUnsoldMemoOptions,
+                  activeIndex: unsoldMemoSelectionIndex,
+                  onHighlight: setUnsoldMemoSelectionIndex,
+                  onSelect: commitUnsoldMemoSelection,
+                  variant: 'table',
+                  className: 'table-popup'
+                }}
+                topShortcuts={SELLER_UNSOLD_SHORTCUTS}
+                footerActions={sellerUnsoldActions}
+                summaryQuantity={sellerUnsoldSummaryQuantity}
+                summaryAmount={sellerUnsoldSummaryAmount}
+                statusLabel={sessionMode}
+                windowClassName="full-page"
+                blockingWarning={activeTab === 'unsold' ? blockingWarning : null}
+                onBlockingWarningClose={clearBlockingWarning}
+              />
+            </div>
+          </div>
+        )}
+
+        {!activeTab && (
+          <div className="accordion-item" style={{ order: 1 }}>
+            <button
+              className={`accordion-header ${activeTab === 'unsold-remove' ? 'active' : ''}`}
+              onClick={() => handleTabToggle('unsold-remove')}
+            >
+              Unsold Remove
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'unsold-remove' && (
+          <div className="accordion-item" style={{ order: 1 }}>
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
+              Unsold Remove
+            </button>
+            <div className="accordion-content">
+              <RetroPurchasePanel
+                formId="seller-unsold-remove-form"
+                onSubmit={handleRemoveUnsold}
+                screenCode="RAHUL"
+                panelTitle="Unsold Remove"
+                screenTitle={entryCompanyLabel || 'UNSOLD REMOVE'}
+                headerTimestamp={sellerUnsoldTimestamp}
+                memoNumber={defaultUnsoldRemoveMemoOption ? String(defaultUnsoldRemoveMemoOption.memoNumber) : ''}
+                formRows={sellerUnsoldFormRows}
+                gridRows={sellerUnsoldGridRows}
+                editableRow={unsoldEditorVisible ? sellerUnsoldEditableRow : null}
+                editableRowIndex={unsoldActiveRowIndex}
+                activeGridRowIndex={unsoldEditorVisible && unsoldActiveRowIndex < unsoldDraftRows.length ? unsoldActiveRowIndex : null}
+                onGridRowClick={(_, index) => {
+                  const row = unsoldDraftRows[index];
+                  if (!row) {
+                    return;
+                  }
+                  setUnsoldEditorVisible(true);
+                  setUnsoldActiveRowIndex(index);
+                  setUnsoldCodeInput(row.code || '');
+                  setUnsoldTableFromInput(row.from || '');
+                  setUnsoldTableToInput(row.to || '');
+                  setUnsoldNumber(row.from || '');
+                  setUnsoldRangeEndNumber(row.to || '');
+                  window.requestAnimationFrame(() => unsoldCodeInputRef.current?.focus());
+                }}
+                memoProps={{
+                  ref: unsoldMemoRef,
+                  tabIndex: 0,
+                  onKeyDown: (e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      if (!unsoldMemoPopupOpen) {
+                        openUnsoldMemoPopup();
+                        return;
+                      }
+                      commitUnsoldMemoSelection();
+                    }
+
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      if (!unsoldMemoPopupOpen) {
+                        openUnsoldMemoPopup();
+                        return;
+                      }
+                      setUnsoldMemoSelectionIndex((currentIndex) => {
+                        const nextIndex = currentIndex + 1;
+                        if (nextIndex >= currentUnsoldMemoOptions.length) {
+                          return Math.max(currentUnsoldMemoOptions.length - 1, 0);
+                        }
+                        return nextIndex;
+                      });
+                    }
+
+                    if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      if (!unsoldMemoPopupOpen) {
+                        openUnsoldMemoPopup();
+                        return;
+                      }
+                      setUnsoldMemoSelectionIndex((currentIndex) => Math.max(currentIndex - 1, 0));
+                    }
+
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      if (unsoldMemoPopupOpen) {
+                        setUnsoldMemoPopupOpen(false);
+                      }
+                    }
+                  }
+                }}
+                memoSelector={{
+                  isOpen: unsoldMemoPopupOpen,
+                  options: currentUnsoldMemoOptions,
+                  activeIndex: unsoldMemoSelectionIndex,
+                  onHighlight: setUnsoldMemoSelectionIndex,
+                  onSelect: commitUnsoldMemoSelection,
+                  variant: 'table',
+                  className: 'table-popup'
+                }}
+                topShortcuts={SELLER_UNSOLD_SHORTCUTS}
+                footerActions={sellerUnsoldRemoveActions}
+                summaryQuantity={sellerUnsoldSummaryQuantity}
+                summaryAmount={sellerUnsoldSummaryAmount}
+                statusLabel={sessionMode}
+                windowClassName="full-page"
+                blockingWarning={activeTab === 'unsold-remove' ? blockingWarning : null}
+                onBlockingWarningClose={clearBlockingWarning}
+              />
             </div>
           </div>
         )}
         </div>
       )}
 
-      <div className="dashboard-accordion dashboard-secondary-actions">
+      <div className={`dashboard-accordion dashboard-secondary-actions ${!billOnlyMode && !activeTab ? 'dashboard-launcher-active' : ''}`.trim()}>
         {!billOnlyMode && !activeTab && (
           <div className="accordion-item">
             <button
@@ -1980,7 +6346,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
 
         {!billOnlyMode && activeTab === 'your-lot' && (
           <div className="accordion-item">
-            <button className="accordion-header active" onClick={handleTabBack}>
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
               Your Lot
             </button>
             <div className="accordion-content">
@@ -2017,7 +6383,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
 
         {!billOnlyMode && activeTab === 'send-record' && (
           <div className="accordion-item">
-            <button className="accordion-header active" onClick={handleTabBack}>
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
               Send Record
             </button>
             <div className="accordion-content">
@@ -2061,10 +6427,11 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
                 )}
 
                 <label style={{ marginTop: '12px', display: 'block' }}>Select Shift:</label>
-                <select value={historyShift} onChange={(e) => setHistoryShift(e.target.value)} style={{ marginTop: '8px' }}>
-                  <option value="">All</option>
+                <select value={historyShift} onChange={(e) => handleBillShiftChange(e.target.value)} style={{ marginTop: '8px' }}>
+                  <option value="ALL">ALL</option>
                   <option value="MORNING">MORNING</option>
-                  <option value="NIGHT">NIGHT</option>
+                  <option value="DAY">DAY</option>
+                  <option value="EVENING">EVENING</option>
                 </select>
 
                 <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' }}>
@@ -2100,7 +6467,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
 
         {!billOnlyMode && activeTab === 'track-number' && (
           <div className="accordion-item">
-            <button className="accordion-header active" onClick={handleTabBack}>
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
               Track Number
             </button>
             <div className="accordion-content">
@@ -2166,39 +6533,6 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
                     />
                   </>
                 )}
-                <label style={{ marginTop: '12px', display: 'block' }}>Amount:</label>
-                <div className="box-options" style={{ marginTop: '8px' }}>
-                  {hasMultipleAvailableAmounts && (
-                    <label className="checkbox-label">
-                      <input
-                        type="radio"
-                        name="trace-amount"
-                        value=""
-                        checked={traceAmount === ''}
-                        onChange={() => {
-                          setTraceAmount('');
-                          setTraceSem('');
-                        }}
-                      />
-                      ALL
-                    </label>
-                  )}
-                  {availableAmountOptions.map((amountOption) => (
-                    <label key={amountOption} className="checkbox-label">
-                      <input
-                        type="radio"
-                        name="trace-amount"
-                        value={amountOption}
-                        checked={traceAmount === amountOption}
-                        onChange={(e) => {
-                          setTraceAmount(e.target.value);
-                          setTraceSem('');
-                        }}
-                      />
-                      {amountOption}
-                    </label>
-                  ))}
-                </div>
                 <label style={{ marginTop: '12px', display: 'block' }}>SEM:</label>
                 <div className="box-options" style={{ marginTop: '8px' }}>
                   <label className="checkbox-label">
@@ -2238,81 +6572,53 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
           </div>
         )}
 
-        {billOnlyMode && !activeTab && (
+        {activeTab === 'generate-bill' && (
           <div className="accordion-item">
-            <button
-              className={`accordion-header ${activeTab === 'generate-bill' ? 'active' : ''}`}
-              onClick={() => handleTabToggle('generate-bill')}
-            >
-              Generate Bill
-            </button>
-          </div>
-        )}
-
-        {billOnlyMode && activeTab === 'generate-bill' && (
-          <div className="accordion-item">
-            <button className="accordion-header active" onClick={handleTabBack}>
-              Generate Bill
-            </button>
+            {!billOnlyMode && (
+              <button className="accordion-header active" onClick={requestExitConfirmation}>
+                Generate Bill
+              </button>
+            )}
             <div className="accordion-content">
               <h2>Generate Bill</h2>
               <div className="form-group">
-                <label>Filter Type:</label>
-                <select
-                  value={historyFilterMode}
-                  onChange={(e) => setHistoryFilterMode(e.target.value)}
-                  style={{ marginTop: '8px' }}
-                >
-                  <option value="single">Single Date</option>
-                  <option value="range">Date Range</option>
-                </select>
+                <label>From Date:</label>
+                <input
+                  type="date"
+                  value={historyFromDate}
+                  onChange={(e) => setHistoryFromDate(e.target.value)}
+                />
 
-                {historyFilterMode === 'range' ? (
-                  <>
-                    <label style={{ marginTop: '12px', display: 'block' }}>From Date:</label>
-                    <input
-                      type="date"
-                      value={historyFromDate}
-                      onChange={(e) => setHistoryFromDate(e.target.value)}
-                    />
-
-                    <label style={{ marginTop: '12px', display: 'block' }}>To Date:</label>
-                    <input
-                      type="date"
-                      value={historyToDate}
-                      onChange={(e) => setHistoryToDate(e.target.value)}
-                    />
-                  </>
-                ) : (
-                  <>
-                    <label style={{ marginTop: '12px', display: 'block' }}>Select Date:</label>
-                    <input
-                      type="date"
-                      value={historyDate}
-                      onChange={(e) => setHistoryDate(e.target.value)}
-                    />
-                  </>
-                )}
+                <label style={{ marginTop: '12px', display: 'block' }}>To Date:</label>
+                <input
+                  type="date"
+                  value={historyToDate}
+                  onChange={(e) => setHistoryToDate(e.target.value)}
+                />
 
                 <label style={{ marginTop: '12px', display: 'block' }}>Select Shift:</label>
-                <select value={historyShift} onChange={(e) => setHistoryShift(e.target.value)} style={{ marginTop: '8px' }}>
-                  <option value="">All</option>
+                <select value={historyShift} onChange={(e) => handleBillShiftChange(e.target.value)} style={{ marginTop: '8px' }}>
+                  <option value="ALL">ALL</option>
                   <option value="MORNING">MORNING</option>
-                  <option value="NIGHT">NIGHT</option>
+                  <option value="DAY">DAY</option>
+                  <option value="EVENING">EVENING</option>
                 </select>
 
                 <label style={{ marginTop: '12px', display: 'block' }}>Select Seller:</label>
-                <select value={historySellerFilter} onChange={(e) => setHistorySellerFilter(e.target.value)} style={{ marginTop: '8px' }}>
-                  <option value="">All Direct Sellers</option>
-                  {directChildSellers.map((seller) => (
-                    <option key={seller.id} value={seller.username}>
-                      {seller.username} ({getAllowedAmountsLabel(seller)})
-                    </option>
-                  ))}
-                </select>
+                <div style={{ marginTop: '8px' }}>
+                  <SearchableSellerSelect
+                    value={historySellerFilter}
+                    options={[{ id: '', username: '', label: 'All Direct Sellers', keyword: 'ALL', rateAmount6: 0, rateAmount12: 0 }, ...directChildSellers.map((seller) => ({ ...seller, id: seller.username }))]}
+                    onChange={(seller) => setHistorySellerFilter(String(seller?.id || ''))}
+                    getOptionValue={(seller) => seller.id}
+                    getOptionLabel={(seller) => seller.id === '' ? seller.label : `${seller.username} [${getPartyKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}
+                    getOptionSearchLabel={(seller) => seller.id === '' ? seller.label : `${getPartyKeyword(seller)} ${seller.username} ${getAllowedAmountsLabel(seller)}`}
+                    placeholder="All Direct Sellers ya keyword type karo"
+                  />
+                </div>
 
                 <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' }}>
-                  <button type="button" onClick={() => loadBillPreviewData(getHistoryFilters())}>
+                  <button type="button" onClick={() => loadBillPreviewData(getBillFilters())}>
                     Preview Bill Data
                   </button>
                   <button type="button" onClick={generateBill} style={{ backgroundColor: '#2f855a' }}>
@@ -2323,9 +6629,11 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
 
               {transferHistory.length > 0 && (
                 <div style={{ marginTop: '16px', padding: '14px', borderRadius: '12px', background: '#f6f8ff' }}>
-                  <strong>Selected Period:</strong> {historyPeriodLabel} | <strong>Shift:</strong> {historyShift || 'All'} |{' '}
+                  <strong>Selected Period:</strong> {historyPeriodLabel} | <strong>Shift:</strong> {historyShift === 'ALL' ? 'ALL' : (historyShift || 'All')} |{' '}
+                  <strong>Amount:</strong> {historyAmountFilter || '7'} |{' '}
                   <strong>Seller:</strong> {historySellerFilter || 'All Direct Sellers'} |{' '}
-                  <strong>Records:</strong> {billTransferHistoryTotals.recordCount} | <strong>Total Piece:</strong> {billTransferHistoryTotals.totalPiece.toFixed(2)} |{' '}
+                  <strong>Records:</strong> {billTransferHistoryTotals.recordCount} | <strong>Purchase:</strong> {Number(billTransferHistoryTotals.totalSentPiece || 0).toFixed(2)} |{' '}
+                  <strong>Unsold:</strong> {Number(billTransferHistoryTotals.totalUnsoldPiece || 0).toFixed(2)} | <strong>Sold:</strong> {Number(billTransferHistoryTotals.totalSoldPiece || 0).toFixed(2)} |{' '}
                   <strong>Total Sales:</strong> Rs. {billTransferHistoryTotals.totalSales.toFixed(2)} | <strong>Total Prize:</strong> Rs. {billTransferHistoryTotals.totalPrize.toFixed(2)} |{' '}
                   <strong>Total VC:</strong> Rs. {billTransferHistoryTotals.totalVc.toFixed(2)} | <strong>Total SVC:</strong> Rs. {billTransferHistoryTotals.totalSvc.toFixed(2)} |{' '}
                   <strong>Net Bill:</strong> {formatSignedRupees(billTransferHistoryTotals.netBill)}
@@ -2336,7 +6644,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
                 Object.entries(billTransferHistoryByActor).map(([billSellerName, records]) => (
                   <div key={billSellerName} className="entries-list-block" style={{ marginTop: '20px' }}>
                     {(() => {
-                      const amountBreakdown = billData.groupedAmountSummaries?.[billSellerName] || {};
+                      const amountBreakdown = billGroupedAmountSummaries?.[billSellerName] || {};
                       const allowedAmountsLabel = billData.rootSellerMeta?.[billSellerName]?.allowedAmountsLabel;
 
                       return (
@@ -2345,90 +6653,49 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
                     <table className="entries-table">
                       <thead>
                       <tr>
-                        <th>Seller</th>
-                        <th>Action</th>
-                        <th>From</th>
-                        <th>To</th>
-                        <th>Unique Code</th>
                         <th>Session</th>
                         <th>Amount</th>
-                        <th>Piece</th>
+                        <th>SEM</th>
+                        <th>Purchase</th>
+                        <th>Unsold</th>
+                        <th>Sold</th>
                         <th>Rate</th>
-                        <th>5-Digit Number</th>
-                        <th>Status</th>
-                        <th>Date Time</th>
                         <th>Bill</th>
                       </tr>
                     </thead>
                     <tbody>
                         {(() => {
-                          const sortedRecords = sortRowsForConsecutiveNumbers(
-                            records,
-                            (record) => [
-                              record.actorUsername,
-                              record.actionType,
-                              record.fromUsername,
-                              record.toUsername,
-                              record.amount,
-                              record.pieceCount,
-                              record.appliedRate,
-                              record.statusAfter
-                            ]
-                          );
-                          const groupedRecords = groupConsecutiveNumberRows(sortedRecords, (record) => [
-                            record.actorUsername,
-                            record.actionType,
-                            record.fromUsername,
-                            record.toUsername,
-                            record.amount,
-                            record.pieceCount,
-                            record.appliedRate,
-                            record.statusAfter
-                          ].join('|'));
-
-                          return groupedRecords.map((group) => {
-                            const record = group.firstRow;
-                            const groupedPieceCount = group.rows.reduce((sum, currentRecord) => (
-                              sum + Number(currentRecord.pieceCount || 0)
-                            ), 0);
-                            const uniqueCodeLabel = group.rows.length > 1 ? `${group.rows.length} codes` : record.uniqueCode;
-
+                          return records.map((record) => {
                             return (
-                              <tr key={group.rows.map((currentRecord) => currentRecord.id).join('-')}>
-                                <td>{record.actorUsername}</td>
-                                <td>{record.actionType}</td>
-                                <td>{record.fromUsername}</td>
-                                <td>{record.toUsername}</td>
-                                <td>{uniqueCodeLabel}</td>
+                              <tr key={record.id}>
                                 <td>{record.sessionMode}</td>
                                 <td>{record.amount}</td>
-                                <td>{groupedPieceCount}</td>
+                                <td>{record.boxValue}</td>
+                                <td>{Number(record.sentPiece || 0).toFixed(2)}</td>
+                                <td>{Number(record.unsoldPiece || 0).toFixed(2)}</td>
+                                <td>{Number(record.soldPiece || 0).toFixed(2)}</td>
                                 <td>{record.appliedRate}</td>
-                                <td>{group.label}</td>
-                                <td>{record.statusAfter}</td>
-                                <td>{new Date(record.createdAt).toLocaleString('en-IN')}</td>
-                                <td>Rs. {group.rows.reduce((sum, currentRecord) => (
-                                  sum + Number(currentRecord.billValue || 0)
-                                ), 0).toFixed(2)}</td>
+                                <td>Rs. {Number(record.billValue || 0).toFixed(2)}</td>
                               </tr>
                             );
-                          });
+                          })
                         })()}
                     </tbody>
                   </table>
                   <div style={{ marginTop: '12px', padding: '12px 14px', borderRadius: '12px', background: '#f6f8ff' }}>
-                    <strong>{billSellerName} Total:</strong> Records {billData.groupedSummaries[billSellerName]?.recordCount || 0} | Piece{' '}
-                    {billData.groupedSummaries[billSellerName]?.totalPiece?.toFixed(2) || '0.00'} | Sales Rs.{' '}
-                    {billData.groupedSummaries[billSellerName]?.totalSales?.toFixed(2) || '0.00'} | Prize Rs.{' '}
-                    {billData.groupedSummaries[billSellerName]?.totalPrize?.toFixed(2) || '0.00'} | Total VC Rs.{' '}
-                    {billData.groupedSummaries[billSellerName]?.totalVc?.toFixed(2) || '0.00'} | Total SVC Rs.{' '}
-                    {billData.groupedSummaries[billSellerName]?.totalSvc?.toFixed(2) || '0.00'} | Net{' '}
-                    {formatSignedRupees(billData.groupedSummaries[billSellerName]?.netBill || 0)}
+                    <strong>{billSellerName} Total:</strong> Records {billGroupedSummaries[billSellerName]?.recordCount || 0} | Purchase{' '}
+                    {Number(billGroupedSummaries[billSellerName]?.totalSentPiece || 0).toFixed(2)} | Unsold{' '}
+                    {Number(billGroupedSummaries[billSellerName]?.totalUnsoldPiece || 0).toFixed(2)} | Sold{' '}
+                    {Number(billGroupedSummaries[billSellerName]?.totalSoldPiece || 0).toFixed(2)} | Sales Rs.{' '}
+                    {billGroupedSummaries[billSellerName]?.totalSales?.toFixed(2) || '0.00'} | Prize Rs.{' '}
+                    {billGroupedSummaries[billSellerName]?.totalPrize?.toFixed(2) || '0.00'} | Total VC Rs.{' '}
+                    {billGroupedSummaries[billSellerName]?.totalVc?.toFixed(2) || '0.00'} | Total SVC Rs.{' '}
+                    {billGroupedSummaries[billSellerName]?.totalSvc?.toFixed(2) || '0.00'} | Net{' '}
+                    {formatSignedRupees(billGroupedSummaries[billSellerName]?.netBill || 0)}
                   </div>
                   {Object.keys(amountBreakdown).sort((left, right) => Number(left) - Number(right)).map((amountKey) => (
                     <div key={`${billSellerName}-${amountKey}`} style={{ marginTop: '10px', padding: '10px 14px', borderRadius: '12px', background: '#ffffff', border: '1px solid #dbe4ff' }}>
-                      <strong>Amount {amountKey} Bill:</strong> Records {amountBreakdown[amountKey].recordCount} | Piece{' '}
-                      {amountBreakdown[amountKey].totalPiece.toFixed(2)} | Sales Rs. {amountBreakdown[amountKey].totalSales.toFixed(2)} | Prize Rs. {amountBreakdown[amountKey].totalPrize.toFixed(2)} | Total VC Rs. {amountBreakdown[amountKey].totalVc.toFixed(2)} | Total SVC Rs. {amountBreakdown[amountKey].totalSvc.toFixed(2)} | Net {formatSignedRupees(amountBreakdown[amountKey].netBill)}
+                      <strong>Amount {amountKey} Bill:</strong> Records {amountBreakdown[amountKey].recordCount} | Purchase {Number(amountBreakdown[amountKey].totalSentPiece || 0).toFixed(2)} | Unsold {Number(amountBreakdown[amountKey].totalUnsoldPiece || 0).toFixed(2)} | Sold {Number(amountBreakdown[amountKey].totalSoldPiece || 0).toFixed(2)} | Sales Rs. {amountBreakdown[amountKey].totalSales.toFixed(2)} | Prize Rs. {amountBreakdown[amountKey].totalPrize.toFixed(2)} | Total VC Rs. {amountBreakdown[amountKey].totalVc.toFixed(2)} | Total SVC Rs. {amountBreakdown[amountKey].totalSvc.toFixed(2)} | Net {formatSignedRupees(amountBreakdown[amountKey].netBill)}
                     </div>
                   ))}
                         </>
@@ -2442,8 +6709,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
 
               {Object.keys(billTransferHistoryByActor).length > 0 && (
                 <div style={{ marginTop: '20px', padding: '14px 16px', borderRadius: '14px', background: '#eef2ff' }}>
-                  <strong>Grand Total:</strong> Total Records {billTransferHistoryTotals.recordCount} | Total Piece{' '}
-                  {billTransferHistoryTotals.totalPiece.toFixed(2)} | Total Sales Rs. {billTransferHistoryTotals.totalSales.toFixed(2)} | Total Prize Rs.{' '}
+                  <strong>Grand Total:</strong> Total Records {billTransferHistoryTotals.recordCount} | Purchase {Number(billTransferHistoryTotals.totalSentPiece || 0).toFixed(2)} | Unsold {Number(billTransferHistoryTotals.totalUnsoldPiece || 0).toFixed(2)} | Sold {Number(billTransferHistoryTotals.totalSoldPiece || 0).toFixed(2)} | Total Sales Rs. {billTransferHistoryTotals.totalSales.toFixed(2)} | Total Prize Rs.{' '}
                   {billTransferHistoryTotals.totalPrize.toFixed(2)} | Total VC Rs. {billTransferHistoryTotals.totalVc.toFixed(2)} | Total SVC Rs. {billTransferHistoryTotals.totalSvc.toFixed(2)} | Net {formatSignedRupees(billTransferHistoryTotals.netBill)}
                 </div>
               )}
@@ -2464,7 +6730,7 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
 
         {activeTab === 'accept-seller-lot' && (
           <div className="accordion-item">
-            <button className="accordion-header active" onClick={handleTabBack}>
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
               Accept Seller Lot
             </button>
             <div className="accordion-content">
@@ -2485,6 +6751,17 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
         )}
       </div>
 
+      {!activeTab && (
+        <div className="seller-dashboard-actions">
+          <PasswordSettingsMenu
+            currentUser={user}
+            onSuccess={setSuccess}
+            onError={setError}
+          />
+          <button className="logout-btn" onClick={onLogout}>Logout</button>
+        </div>
+      )}
+
       <>
         {error && <div className="alert alert-error">{error}</div>}
         {success && <div className="alert alert-success">{success}</div>}
@@ -2493,14 +6770,18 @@ const SellerDashboard = ({ user, onLogout, sessionMode, onExitSession, initialAc
   );
 };
 
-const AddSellerForm = ({ currentUser, onSuccess, onError }) => {
+const AddSellerForm = ({ currentUser, selectedAmount = '', onSuccess, onError }) => {
   const [newUsername, setNewUsername] = useState('');
+  const [newKeyword, setNewKeyword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [rateAmount6, setRateAmount6] = useState('');
   const [rateAmount12, setRateAmount12] = useState('');
+  const allowedSellerTypes = getAllowedChildSellerTypes(currentUser);
+  const [sellerType, setSellerType] = useState(allowedSellerTypes[0] || '');
   const [loading, setLoading] = useState(false);
-  const canAssignAmount6 = currentUser?.role === 'admin' || Number(currentUser?.rateAmount6 || 0) > 0;
-  const canAssignAmount12 = currentUser?.role === 'admin' || Number(currentUser?.rateAmount12 || 0) > 0;
+  const canAssignAmount6 = (String(selectedAmount) !== '12') && (currentUser?.role === 'admin' || Number(currentUser?.rateAmount6 || 0) > 0);
+  const canAssignAmount12 = (String(selectedAmount) !== '7') && (currentUser?.role === 'admin' || Number(currentUser?.rateAmount12 || 0) > 0);
+  const requiresLoginPassword = sellerType !== 'normal_seller';
 
   const handleCreateSeller = async (e) => {
     e.preventDefault();
@@ -2508,6 +6789,7 @@ const AddSellerForm = ({ currentUser, onSuccess, onError }) => {
     onError('');
 
     const trimmedUsername = newUsername.trim();
+    const trimmedKeyword = newKeyword.trim().toUpperCase();
 
     if (!trimmedUsername) {
       onError('Username is required');
@@ -2515,8 +6797,20 @@ const AddSellerForm = ({ currentUser, onSuccess, onError }) => {
       return;
     }
 
-    if (newPassword.length < 8) {
+    if (!trimmedKeyword) {
+      onError('Keyword is required');
+      setLoading(false);
+      return;
+    }
+
+    if (requiresLoginPassword && newPassword.length < 8) {
       onError('Password must be at least 8 characters');
+      setLoading(false);
+      return;
+    }
+
+    if (!sellerType) {
+      onError('Aap is user se aur seller create nahi kar sakte');
       setLoading(false);
       return;
     }
@@ -2524,11 +6818,14 @@ const AddSellerForm = ({ currentUser, onSuccess, onError }) => {
     try {
       await userService.createSeller(
         trimmedUsername,
-        newPassword,
+        trimmedKeyword,
+        requiresLoginPassword ? newPassword : '',
         canAssignAmount6 ? (rateAmount6 ? parseFloat(rateAmount6) : '') : 0,
-        canAssignAmount12 ? (rateAmount12 ? parseFloat(rateAmount12) : '') : 0
+        canAssignAmount12 ? (rateAmount12 ? parseFloat(rateAmount12) : '') : 0,
+        sellerType
       );
       setNewUsername('');
+      setNewKeyword('');
       setNewPassword('');
       setRateAmount6('');
       setRateAmount12('');
@@ -2545,7 +6842,15 @@ const AddSellerForm = ({ currentUser, onSuccess, onError }) => {
       <h2>Add New Seller</h2>
       <form onSubmit={handleCreateSeller} className="seller-form">
         <div className="form-group">
-          <label>Username:</label>
+          <label>Seller Type:</label>
+          <select value={sellerType} onChange={(e) => setSellerType(e.target.value)} required>
+            {allowedSellerTypes.map((type) => (
+              <option key={type} value={type}>{SELLER_TYPE_LABELS[type]}</option>
+            ))}
+          </select>
+        </div>
+        <div className="form-group">
+          <label>{sellerType === 'normal_seller' ? 'Normal Seller Name:' : 'Username:'}</label>
           <input
             type="text"
             value={newUsername}
@@ -2554,18 +6859,34 @@ const AddSellerForm = ({ currentUser, onSuccess, onError }) => {
           />
         </div>
         <div className="form-group">
-          <label>Password:</label>
+          <label>Keyword:</label>
           <input
-            type="password"
-            value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-            minLength="8"
+            type="text"
+            value={newKeyword}
+            onChange={(e) => setNewKeyword(e.target.value.replace(/[^a-zA-Z0-9]/g, '').slice(0, 10).toUpperCase())}
+            placeholder="Jaise SA, RU, TA"
             required
           />
         </div>
+        {requiresLoginPassword ? (
+          <div className="form-group">
+            <label>Password:</label>
+            <input
+              type="password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              minLength="8"
+              required
+            />
+          </div>
+        ) : (
+          <p style={{ marginTop: '0', color: '#666', fontSize: '14px' }}>
+            Normal seller ka login nahi banega. Bas naam save hoga aur usi naam par purchase/unsold/F10 summary chalegi.
+          </p>
+        )}
         {canAssignAmount6 && (
           <div className="form-group">
-            <label>Rate for Amount 6:</label>
+            <label>Rate for Amount 7:</label>
             <input
               type="text"
               value={rateAmount6}
@@ -2575,7 +6896,7 @@ const AddSellerForm = ({ currentUser, onSuccess, onError }) => {
                 const normalizedValue = parts.length > 2 ? `${parts[0]}.${parts.slice(1).join('')}` : nextValue;
                 setRateAmount6(normalizedValue);
               }}
-              placeholder="Enter rate for amount 6"
+              placeholder="Enter rate for amount 7"
               inputMode="decimal"
             />
           </div>
@@ -2598,11 +6919,11 @@ const AddSellerForm = ({ currentUser, onSuccess, onError }) => {
           </div>
         )}
         <p style={{ marginTop: '-4px', color: '#666', fontSize: '14px' }}>
-          If a rate is left blank, the seller will not be able to book lottery for that amount.
+          Agar rate blank raha to us naam par us amount ka maal assign nahi hoga.
         </p>
-        {currentUser?.role !== 'admin' && (
+        {requiresLoginPassword && currentUser?.role !== 'admin' && (
           <p style={{ marginTop: '0', color: '#666', fontSize: '14px' }}>
-            If a seller leaves a rate blank, the child seller will get the default rate automatically: 6 for amount 6 and 12 for amount 12.
+            If a seller leaves a rate blank, the child seller will get the default rate automatically: 7 for amount 7 and 12 for amount 12.
           </p>
         )}
         <button type="submit" disabled={loading}>

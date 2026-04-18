@@ -121,7 +121,7 @@ export const getNormalizedPrizeCalculatedAmount = (record) => {
   const sem = Number(record?.sem ?? record?.boxValue ?? 0);
 
   if (normalizedBaseAmount > 0 && amount > 0 && sem > 0) {
-    const multiplier = amount <= 6 ? 0.5 : 1;
+    const multiplier = amount <= 7 ? 0.5 : 1;
     return normalizedBaseAmount * sem * multiplier;
   }
 
@@ -141,12 +141,13 @@ export const getPrizeAdjustmentAmounts = (record) => {
     return { prize: getNormalizedPrizeCalculatedAmount(record), vc: 0, svc: 0 };
   }
 
-  const amountMultiplier = amount <= 6 ? 1 : 2;
+  const amountMultiplier = amount <= 7 ? 1 : 2;
+  const semMultiplier = Number(record?.sem ?? record?.boxValue ?? 0) || 1;
 
   return {
     prize: getNormalizedPrizeCalculatedAmount(record),
-    vc: baseAdjustments.vc * amountMultiplier,
-    svc: baseAdjustments.svc * amountMultiplier
+    vc: baseAdjustments.vc * amountMultiplier * semMultiplier,
+    svc: baseAdjustments.svc * amountMultiplier * semMultiplier
   };
 };
 
@@ -154,7 +155,7 @@ export const getAllowedAmountsLabel = (sellerNode) => {
   const allowedAmounts = [];
 
   if (Number(sellerNode?.rateAmount6 || 0) > 0) {
-    allowedAmounts.push('6');
+    allowedAmounts.push('7');
   }
 
   if (Number(sellerNode?.rateAmount12 || 0) > 0) {
@@ -166,6 +167,9 @@ export const getAllowedAmountsLabel = (sellerNode) => {
 
 const createEmptyBillTotals = () => ({
   recordCount: 0,
+  totalSentPiece: 0,
+  totalUnsoldPiece: 0,
+  totalSoldPiece: 0,
   totalPiece: 0,
   totalSales: 0,
   totalPrize: 0,
@@ -179,7 +183,7 @@ const getSellerRateForAmount = (sellerNode, amount) => {
     return 0;
   }
 
-  if (String(amount) === '6') {
+  if (String(amount) === '7') {
     return Number(sellerNode.rateAmount6 || 0);
   }
 
@@ -208,11 +212,26 @@ const flattenSellerTree = (node, directRootUsername = null, usernameMap = new Ma
   return usernameMap;
 };
 
-const BILLABLE_ACTION_TYPES = new Set(['sent', 'forwarded', 'queued', 'queue_forwarded']);
+const PURCHASE_BILLABLE_ACTION_TYPES = new Set([
+  'purchase_sent',
+  'purchase_forwarded',
+  'purchase_assigned',
+  'purchase_memo_updated',
+  'purchase_forward_memo_updated',
+  'purchase_self_memo_created',
+  'marked_unsold',
+  'unsold_accepted',
+  'unsold_auto_accepted'
+]);
+
+const PURCHASE_UNSOLD_BILL_ACTION_TYPES = new Set(['marked_unsold', 'unsold_accepted', 'unsold_auto_accepted']);
 
 export const summarizeBillRecords = (records = []) => records.reduce((totals, record) => {
   totals.recordCount += 1;
-  totals.totalPiece += Number(record.pieceCount || 0);
+  totals.totalSentPiece += Number(record.sentPiece || 0);
+  totals.totalUnsoldPiece += Number(record.unsoldPiece || 0);
+  totals.totalSoldPiece += Number(record.soldPiece || 0);
+  totals.totalPiece += Number(record.soldPiece || 0);
   totals.totalSales += Number(record.billValue || 0);
   return totals;
 }, createEmptyBillTotals());
@@ -225,7 +244,10 @@ export const summarizeBillRecordsByAmount = (records = []) => records.reduce((gr
   }
 
   groups[amountKey].recordCount += 1;
-  groups[amountKey].totalPiece += Number(record.pieceCount || 0);
+  groups[amountKey].totalSentPiece += Number(record.sentPiece || 0);
+  groups[amountKey].totalUnsoldPiece += Number(record.unsoldPiece || 0);
+  groups[amountKey].totalSoldPiece += Number(record.soldPiece || 0);
+  groups[amountKey].totalPiece += Number(record.soldPiece || 0);
   groups[amountKey].totalSales += Number(record.billValue || 0);
   return groups;
 }, {});
@@ -287,57 +309,106 @@ export const buildBillData = ({ records = [], prizeRecords = [], treeData, selec
     flattenSellerTree(directChild, directChild.username, accumulator)
   ), new Map());
 
-  const billRecords = records
-    .filter((record) => BILLABLE_ACTION_TYPES.has(String(record.actionType || '').trim().toLowerCase()))
+  const movementRows = records
+    .filter((record) => PURCHASE_BILLABLE_ACTION_TYPES.has(String(record.actionType || '').trim().toLowerCase()))
     .map((record) => {
-      const actorNode = usernameMap.get(record.actorUsername);
+      const normalizedActionType = String(record.actionType || '').trim().toLowerCase();
+      const billedUsername = PURCHASE_UNSOLD_BILL_ACTION_TYPES.has(normalizedActionType)
+        ? record.actorUsername
+        : (record.toUsername || record.actorUsername);
+      const billedNode = usernameMap.get(billedUsername);
 
-      if (!actorNode || !selectedRootSet.has(actorNode.directRootUsername)) {
+      if (!billedNode || !selectedRootSet.has(billedNode.directRootUsername)) {
         return null;
       }
 
-      const pieceCount = Number(record.boxValue || 0);
-      const appliedRate = getSellerRateForAmount(actorNode, record.amount);
-      const billValue = pieceCount * appliedRate;
-
       return {
         ...record,
-        pieceCount,
-        appliedRate,
-        billValue,
-        billRootUsername: actorNode.directRootUsername,
-        billSellerDisplayName: actorNode.directRootUsername,
-        rateOwnerUsername: actorNode.username
+        billedUsername,
+        billedNode,
+        billRootUsername: billedNode.directRootUsername,
+        billSellerDisplayName: billedNode.directRootUsername,
+        rateOwnerUsername: billedNode.username,
+        pieceCount: Number(record.boxValue || 0)
       };
     })
     .filter(Boolean);
 
-  const latestBillRecordByEntryId = billRecords.reduce((accumulator, record) => {
-    const entryKey = String(record.entryId || '').trim();
+  const aggregatedBillRecords = Object.values(movementRows.reduce((accumulator, record) => {
+    const appliedRate = getSellerRateForAmount(record.billedNode, record.amount);
+    const aggregationKey = [
+      record.billRootUsername,
+      record.billedUsername,
+      record.sessionMode,
+      record.amount,
+      record.boxValue,
+      appliedRate,
+      record.purchaseCategory || ''
+    ].join('|');
 
-    if (!entryKey) {
-      return accumulator;
+    if (!accumulator[aggregationKey]) {
+      accumulator[aggregationKey] = {
+        id: aggregationKey,
+        actorUsername: record.billedUsername,
+        billSellerDisplayName: record.billSellerDisplayName,
+        billRootUsername: record.billRootUsername,
+        rateOwnerUsername: record.rateOwnerUsername,
+        fromUsername: record.fromUsername,
+        toUsername: record.toUsername,
+        uniqueCode: '',
+        sessionMode: record.sessionMode,
+        purchaseCategory: record.purchaseCategory || '',
+        amount: record.amount,
+        boxValue: record.boxValue,
+        statusAfter: record.statusAfter,
+        createdAt: record.createdAt,
+        actionType: 'purchase_bill',
+        sentPiece: 0,
+        unsoldPiece: 0,
+        soldPiece: 0,
+        appliedRate,
+        billValue: 0,
+        numbers: []
+      };
     }
 
-    const existing = accumulator.get(entryKey);
-
-    if (!existing) {
-      accumulator.set(entryKey, record);
-      return accumulator;
+    if (PURCHASE_UNSOLD_BILL_ACTION_TYPES.has(String(record.actionType || '').trim().toLowerCase())) {
+      accumulator[aggregationKey].unsoldPiece += Number(record.pieceCount || 0);
+    } else {
+      accumulator[aggregationKey].sentPiece += Number(record.pieceCount || 0);
     }
 
-    const existingTime = new Date(existing.createdAt || 0).getTime();
-    const currentTime = new Date(record.createdAt || 0).getTime();
+    if (record.number) {
+      accumulator[aggregationKey].numbers.push(record.number);
+    }
 
-    if (currentTime > existingTime || (currentTime === existingTime && Number(record.id || 0) > Number(existing.id || 0))) {
-      accumulator.set(entryKey, record);
+    if (new Date(record.createdAt || 0).getTime() > new Date(accumulator[aggregationKey].createdAt || 0).getTime()) {
+      accumulator[aggregationKey].createdAt = record.createdAt;
     }
 
     return accumulator;
-  }, new Map());
+  }, {})).map((record) => {
+    const sentPiece = Number(record.sentPiece || 0);
+    const unsoldPiece = Number(record.unsoldPiece || 0);
+    const soldPiece = Math.max(sentPiece - unsoldPiece, 0);
 
-  const groupedRecords = groupBillRecordsByRoot(billRecords);
-  const baseTotals = summarizeBillRecords(billRecords);
+    return {
+      ...record,
+      sentPiece,
+      unsoldPiece,
+      soldPiece,
+      totalPiece: soldPiece,
+      billValue: soldPiece * Number(record.appliedRate || 0),
+      numberRangeLabel: record.numbers.length > 0
+        ? record.numbers.sort((left, right) => Number(left) - Number(right))[0] === record.numbers.sort((left, right) => Number(left) - Number(right))[record.numbers.length - 1]
+          ? record.numbers[0]
+          : `${record.numbers.sort((left, right) => Number(left) - Number(right))[0]} to ${record.numbers.sort((left, right) => Number(left) - Number(right))[record.numbers.length - 1]}`
+        : '-'
+    };
+  }).filter((record) => Number(record.sentPiece || 0) > 0 || Number(record.unsoldPiece || 0) > 0);
+
+  const groupedRecords = groupBillRecordsByRoot(aggregatedBillRecords);
+  const baseTotals = summarizeBillRecords(aggregatedBillRecords);
   const adjustmentTotalsByRoot = prizeRecords.reduce((accumulator, record) => {
     const actorNode = usernameMap.get(record.sellerUsername);
 
@@ -381,43 +452,6 @@ export const buildBillData = ({ records = [], prizeRecords = [], treeData, selec
     accumulator[rootName][amountKey].totalSvc += prizeAdjustments.svc;
     return accumulator;
   }, {});
-  const prizeDisplayByBillRecordId = prizeRecords.reduce((accumulator, record) => {
-    const actorNode = usernameMap.get(record.sellerUsername);
-    const entryKey = String(record.entryId || '').trim();
-
-    if (!actorNode || !selectedRootSet.has(actorNode.directRootUsername) || !entryKey) {
-      return accumulator;
-    }
-
-    const latestBillRecord = latestBillRecordByEntryId.get(entryKey);
-
-    if (!latestBillRecord) {
-      return accumulator;
-    }
-
-    const billRecordId = String(latestBillRecord.id);
-    const prizeAdjustments = getPrizeAdjustmentAmounts(record);
-
-    if (!accumulator[billRecordId]) {
-      accumulator[billRecordId] = { prize: 0, vc: 0, svc: 0 };
-    }
-
-    accumulator[billRecordId].prize += prizeAdjustments.prize;
-    accumulator[billRecordId].vc += prizeAdjustments.vc;
-    accumulator[billRecordId].svc += prizeAdjustments.svc;
-    return accumulator;
-  }, {});
-  const billRecordsWithAdjustments = billRecords.map((record) => {
-    const displayAdjustments = prizeDisplayByBillRecordId[String(record.id)] || { prize: 0, vc: 0, svc: 0 };
-
-    return {
-      ...record,
-      displayPrize: displayAdjustments.prize,
-      displayVc: displayAdjustments.vc,
-      displaySvc: displayAdjustments.svc
-    };
-  });
-  const groupedRecordsWithAdjustments = groupBillRecordsByRoot(billRecordsWithAdjustments);
   const groupedSummaries = Object.entries(groupedRecords).reduce((accumulator, [rootName, rootRecords]) => {
     accumulator[rootName] = buildBillSummaryWithPrize(rootRecords, adjustmentTotalsByRoot[rootName] || {});
     return accumulator;
@@ -440,8 +474,8 @@ export const buildBillData = ({ records = [], prizeRecords = [], treeData, selec
   }), { totalPrize: 0, totalVc: 0, totalSvc: 0 });
 
   return {
-    records: billRecordsWithAdjustments,
-    groupedRecords: groupedRecordsWithAdjustments,
+    records: aggregatedBillRecords,
+    groupedRecords,
     groupedSummaries,
     groupedAmountSummaries,
     prizeTotalsByRoot: adjustmentTotalsByRoot,
@@ -478,7 +512,9 @@ export const openTransferBill = ({
   const summaryHtml = `
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:20px 0;">
       <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Total Records</strong><br/><span style="display:block;word-break:break-word;">${totals.recordCount}</span></div>
-      <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Total Piece</strong><br/><span style="display:block;word-break:break-word;">${totals.totalPiece.toFixed(2)}</span></div>
+      <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Purchase</strong><br/><span style="display:block;word-break:break-word;">${Number(totals.totalSentPiece || 0).toFixed(2)}</span></div>
+      <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Unsold</strong><br/><span style="display:block;word-break:break-word;">${Number(totals.totalUnsoldPiece || 0).toFixed(2)}</span></div>
+      <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Sold Piece</strong><br/><span style="display:block;word-break:break-word;">${Number(totals.totalSoldPiece || 0).toFixed(2)}</span></div>
       <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Total Sales</strong><br/><span style="display:block;word-break:break-word;">Rs. ${totals.totalSales.toFixed(2)}</span></div>
       <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Total Prize</strong><br/><span style="display:block;word-break:break-word;">Rs. ${totals.totalPrize.toFixed(2)}</span></div>
       <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Total VC</strong><br/><span style="display:block;word-break:break-word;">Rs. ${Number(totals.totalVc || 0).toFixed(2)}</span></div>
@@ -499,7 +535,9 @@ export const openTransferBill = ({
           <div style="margin-top:8px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;background:#ffffff;font-size:13px;">
             <strong>Amount ${escapeHtml(amountKey)} Bill:</strong>
             Records ${amountTotals.recordCount} |
-            Piece ${amountTotals.totalPiece.toFixed(2)} |
+            Purchase ${Number(amountTotals.totalSentPiece || 0).toFixed(2)} |
+            Unsold ${Number(amountTotals.totalUnsoldPiece || 0).toFixed(2)} |
+            Sold ${Number(amountTotals.totalSoldPiece || 0).toFixed(2)} |
             Sales Rs. ${amountTotals.totalSales.toFixed(2)} |
             Prize Rs. ${amountTotals.totalPrize.toFixed(2)} |
             VC Rs. ${Number(amountTotals.totalVc || 0).toFixed(2)} |
@@ -512,29 +550,8 @@ export const openTransferBill = ({
       ? ` (${rootSellerMeta[billName].allowedAmountsLabel})`
       : '';
 
-    const aggregatedRows = Object.values(billRecords.reduce((accumulator, record) => {
-      const session = String(record.sessionMode ?? '').trim();
-      const amount = String(record.amount ?? '').trim();
-      const sem = String(record.boxValue ?? '').trim();
-      const rate = Number(record.appliedRate || 0);
-      const key = [session, amount, sem, rate].join('|');
-
-      if (!accumulator[key]) {
-        accumulator[key] = {
-          session,
-          amount,
-          sem,
-          rate,
-          totalPiece: 0,
-          totalBill: 0
-        };
-      }
-
-      accumulator[key].totalPiece += Number(record.pieceCount || 0);
-      accumulator[key].totalBill += Number(record.billValue || 0);
-      return accumulator;
-    }, {})).sort((left, right) => {
-      const sessionComparison = String(left.session || '').localeCompare(String(right.session || ''));
+    const aggregatedRows = [...billRecords].sort((left, right) => {
+      const sessionComparison = String(left.sessionMode || '').localeCompare(String(right.sessionMode || ''));
       if (sessionComparison !== 0) {
         return sessionComparison;
       }
@@ -544,21 +561,23 @@ export const openTransferBill = ({
         return amountDiff;
       }
 
-      const semDiff = Number(left.sem || 0) - Number(right.sem || 0);
+      const semDiff = Number(left.boxValue || 0) - Number(right.boxValue || 0);
       if (semDiff !== 0) {
         return semDiff;
       }
 
-      return Number(left.rate || 0) - Number(right.rate || 0);
+      return Number(left.appliedRate || 0) - Number(right.appliedRate || 0);
     });
     const rowsHtml = aggregatedRows.map((row) => `
       <tr>
-        <td>${escapeHtml(row.session || '-')}</td>
+        <td>${escapeHtml(row.sessionMode || '-')}</td>
         <td>${escapeHtml(row.amount)}</td>
-        <td>${escapeHtml(row.sem)}</td>
-        <td>${escapeHtml(row.totalPiece)}</td>
-        <td>${escapeHtml(row.rate)}</td>
-        <td>Rs. ${Number(row.totalBill || 0).toFixed(2)}</td>
+        <td>${escapeHtml(row.boxValue)}</td>
+        <td>${Number(row.sentPiece || 0).toFixed(2)}</td>
+        <td>${Number(row.unsoldPiece || 0).toFixed(2)}</td>
+        <td>${Number(row.soldPiece || 0).toFixed(2)}</td>
+        <td>${escapeHtml(row.appliedRate)}</td>
+        <td>Rs. ${Number(row.billValue || 0).toFixed(2)}</td>
       </tr>
     `).join('');
 
@@ -567,7 +586,7 @@ export const openTransferBill = ({
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
           <h3 style="margin:0;">${escapeHtml(billName)}${escapeHtml(sellerMetaLabel)}</h3>
           <div style="font-size:14px;color:#4a5568;">
-            Records: ${billRecords.length} | Piece: ${billTotals.totalPiece.toFixed(2)} | Sales: Rs. ${billTotals.totalSales.toFixed(2)} | Prize: Rs. ${billTotals.totalPrize.toFixed(2)} | Total VC: Rs. ${Number(billTotals.totalVc || 0).toFixed(2)} | Total SVC: Rs. ${Number(billTotals.totalSvc || 0).toFixed(2)} | Net: ${formatSignedRupees(billTotals.netBill)}
+            Records: ${billRecords.length} | Purchase: ${Number(billTotals.totalSentPiece || 0).toFixed(2)} | Unsold: ${Number(billTotals.totalUnsoldPiece || 0).toFixed(2)} | Sold: ${Number(billTotals.totalSoldPiece || 0).toFixed(2)} | Sales: Rs. ${billTotals.totalSales.toFixed(2)} | Prize: Rs. ${billTotals.totalPrize.toFixed(2)} | Total VC: Rs. ${Number(billTotals.totalVc || 0).toFixed(2)} | Total SVC: Rs. ${Number(billTotals.totalSvc || 0).toFixed(2)} | Net: ${formatSignedRupees(billTotals.netBill)}
           </div>
         </div>
         <table style="width:100%;border-collapse:collapse;font-size:13px;">
@@ -576,7 +595,9 @@ export const openTransferBill = ({
               <th>Session</th>
               <th>Amount</th>
               <th>SEM</th>
-              <th>Piece</th>
+              <th>Purchase</th>
+              <th>Unsold</th>
+              <th>Sold</th>
               <th>Rate</th>
               <th>Bill</th>
             </tr>
@@ -586,7 +607,9 @@ export const openTransferBill = ({
         <div style="margin-top:10px;padding:12px 14px;border:1px solid #d7defa;border-radius:12px;background:#f8faff;font-size:14px;">
           <strong>${escapeHtml(billName)} Total:</strong>
           Records ${billTotals.recordCount} |
-          Piece ${billTotals.totalPiece.toFixed(2)} |
+          Purchase ${Number(billTotals.totalSentPiece || 0).toFixed(2)} |
+          Unsold ${Number(billTotals.totalUnsoldPiece || 0).toFixed(2)} |
+          Sold ${Number(billTotals.totalSoldPiece || 0).toFixed(2)} |
           Sales Rs. ${billTotals.totalSales.toFixed(2)} |
           Prize Rs. ${billTotals.totalPrize.toFixed(2)} |
           Total VC Rs. ${Number(billTotals.totalVc || 0).toFixed(2)} |
@@ -634,7 +657,9 @@ export const openTransferBill = ({
         <div style="margin-top:24px;padding:14px 16px;border:1px solid #cbd5e1;border-radius:14px;background:#eef2ff;font-size:15px;">
           <strong>Grand Total:</strong>
           Total Records ${totals.recordCount} |
-          Total Piece ${totals.totalPiece.toFixed(2)} |
+          Purchase ${Number(totals.totalSentPiece || 0).toFixed(2)} |
+          Unsold ${Number(totals.totalUnsoldPiece || 0).toFixed(2)} |
+          Sold ${Number(totals.totalSoldPiece || 0).toFixed(2)} |
           Total Sales Rs. ${totals.totalSales.toFixed(2)} |
           Total Prize Rs. ${totals.totalPrize.toFixed(2)} |
           Total VC Rs. ${Number(totals.totalVc || 0).toFixed(2)} |

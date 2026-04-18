@@ -3,25 +3,35 @@ import Login from './components/Login';
 import Home from './components/Home';
 import SellerDashboard from './components/SellerDashboard';
 import AdminDashboard from './components/AdminDashboard';
+import EntrySelectionScreen from './components/EntrySelectionScreen';
 import { authService } from './services/api';
 import './styles/index.css';
 
+const canUseEntryAmount = (user, amount) => {
+  if (!user || user.role === 'admin') {
+    return true;
+  }
+
+  if (String(amount) === '7') {
+    return Number(user.rateAmount6 || 0) > 0;
+  }
+
+  if (String(amount) === '12') {
+    return Number(user.rateAmount12 || 0) > 0;
+  }
+
+  return false;
+};
+
 function App() {
   const [user, setUser] = useState(null);
-  const [sellerSessionMode, setSellerSessionMode] = useState('');
-  const [sellerEntryMode, setSellerEntryMode] = useState('');
+  const [entryConfig, setEntryConfig] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const restoreSession = async () => {
       const savedToken = localStorage.getItem('token');
-      const savedSellerSessionMode = localStorage.getItem('sellerSessionMode');
-
-      if (savedSellerSessionMode) {
-        const normalizedSellerSessionMode = savedSellerSessionMode === 'DAY' ? 'MORNING' : savedSellerSessionMode;
-        localStorage.setItem('sellerSessionMode', normalizedSellerSessionMode);
-        setSellerSessionMode(normalizedSellerSessionMode);
-      }
+      const savedEntryConfig = localStorage.getItem('entryConfig');
 
       if (!savedToken) {
         setLoading(false);
@@ -30,15 +40,30 @@ function App() {
 
       try {
         const response = await authService.getCurrentUser();
-        setUser(response.data);
-        localStorage.setItem('user', JSON.stringify(response.data));
+        const currentUser = response.data;
+        setUser(currentUser);
+        localStorage.setItem('user', JSON.stringify(currentUser));
+
+        if (savedEntryConfig) {
+          try {
+            const parsedEntryConfig = JSON.parse(savedEntryConfig);
+            if (canUseEntryAmount(currentUser, parsedEntryConfig.amount)) {
+              setEntryConfig(parsedEntryConfig);
+            } else {
+              localStorage.removeItem('entryConfig');
+              setEntryConfig(null);
+            }
+          } catch (error) {
+            localStorage.removeItem('entryConfig');
+            setEntryConfig(null);
+          }
+        }
       } catch (error) {
         localStorage.removeItem('token');
         localStorage.removeItem('user');
-        localStorage.removeItem('sellerSessionMode');
+        localStorage.removeItem('entryConfig');
         setUser(null);
-        setSellerSessionMode('');
-        setSellerEntryMode('');
+        setEntryConfig(null);
       } finally {
         setLoading(false);
       }
@@ -54,28 +79,25 @@ function App() {
   const handleLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
-    localStorage.removeItem('sellerSessionMode');
+    localStorage.removeItem('entryConfig');
     setUser(null);
-    setSellerSessionMode('');
-    setSellerEntryMode('');
+    setEntryConfig(null);
   };
 
-  const handleSellerSessionModeSelect = (mode) => {
-    localStorage.setItem('sellerSessionMode', mode);
-    setSellerSessionMode(mode);
-    setSellerEntryMode('session');
-  };
+  const handleEntryConfirm = (config) => {
+    if (!canUseEntryAmount(user, config.amount)) {
+      localStorage.removeItem('entryConfig');
+      setEntryConfig(null);
+      return;
+    }
 
-  const handleSellerBillSelect = () => {
-    localStorage.removeItem('sellerSessionMode');
-    setSellerSessionMode('');
-    setSellerEntryMode('generate-bill');
+    localStorage.setItem('entryConfig', JSON.stringify(config));
+    setEntryConfig(config);
   };
 
   const handleExitSession = () => {
-    setSellerSessionMode('');
-    setSellerEntryMode('');
-    localStorage.removeItem('sellerSessionMode');
+    setEntryConfig(null);
+    localStorage.removeItem('entryConfig');
   };
 
   if (loading) {
@@ -90,20 +112,24 @@ function App() {
     return <Home user={user} onLogout={handleLogout} />;
   }
 
-  if (user.role === 'admin') {
-    return <AdminDashboard user={user} onLogout={handleLogout} />;
+  if (!entryConfig) {
+    return <EntrySelectionScreen user={user} onConfirm={handleEntryConfirm} onLogout={handleLogout} />;
   }
 
-  if (!sellerSessionMode && sellerEntryMode !== 'generate-bill') {
+  if (user.role === 'admin') {
     return (
-      <div className="session-mode-container">
-        <div className="session-mode-box">
-          <h1>Choose Session</h1>
-          <button type="button" onClick={() => handleSellerSessionModeSelect('MORNING')}>MORNING</button>
-          <button type="button" onClick={() => handleSellerSessionModeSelect('NIGHT')}>NIGHT</button>
-          <button type="button" onClick={handleSellerBillSelect}>GENERATE BILL</button>
-        </div>
-      </div>
+      <AdminDashboard
+        user={user}
+        onLogout={handleLogout}
+        onExitSession={handleExitSession}
+        initialActiveTab={entryConfig.mode === 'generate-bill' ? 'generate-bill' : ''}
+        initialSessionMode={entryConfig.sessionMode}
+        initialPurchaseCategory={entryConfig.purchaseCategory}
+        initialAmount={entryConfig.amount}
+        initialBillAmount={entryConfig.mode === 'generate-bill' ? entryConfig.amount : ''}
+        initialBookingDate={entryConfig.bookingDate}
+        entryCompanyLabel={entryConfig.companyLabel || ''}
+      />
     );
   }
 
@@ -111,10 +137,15 @@ function App() {
     <SellerDashboard
       user={user}
       onLogout={handleLogout}
-      sessionMode={sellerSessionMode}
+      sessionMode={entryConfig.sessionMode}
+      purchaseCategory={entryConfig.purchaseCategory}
       onExitSession={handleExitSession}
-      initialActiveTab={sellerEntryMode === 'generate-bill' ? 'generate-bill' : ''}
-      billOnlyMode={sellerEntryMode === 'generate-bill'}
+      initialActiveTab={entryConfig.mode === 'generate-bill' ? 'generate-bill' : ''}
+      initialAmount={entryConfig.amount}
+      initialBillAmount={entryConfig.mode === 'generate-bill' ? entryConfig.amount : ''}
+      initialBookingDate={entryConfig.bookingDate}
+      billOnlyMode={entryConfig.mode === 'generate-bill'}
+      entryCompanyLabel={entryConfig.companyLabel || ''}
     />
   );
 }

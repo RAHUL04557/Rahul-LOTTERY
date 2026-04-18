@@ -10,6 +10,16 @@ const PRIZE_CONFIG = {
 
 const INDIA_TIMEZONE = 'Asia/Kolkata';
 const DATE_VALUE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
+const VALID_PURCHASE_CATEGORIES = ['M', 'D', 'E'];
+
+const normalizePurchaseCategory = (value) => {
+  if (!value) {
+    return '';
+  }
+
+  const normalized = String(value).trim().toUpperCase();
+  return VALID_PURCHASE_CATEGORIES.includes(normalized) ? normalized : '';
+};
 
 const getNormalizedPrizeConfig = (prizeKey, fallbackLabel = '', fallbackDigitLength = 0) => {
   const normalizedKey = String(prizeKey || '').trim().toLowerCase();
@@ -221,7 +231,7 @@ const getPrizeMultiplier = (amountValue, sameValue) => {
     return 0;
   }
 
-  const isHalfPrizeAmount = parsedAmount <= 6;
+  const isHalfPrizeAmount = parsedAmount <= 7;
   return parsedSame * (isHalfPrizeAmount ? 0.5 : 1);
 };
 
@@ -498,7 +508,7 @@ const getPrizeTracker = async (req, res) => {
            le.box_value AS sem,
            CASE
              WHEN le.id IS NULL THEN NULL
-             WHEN CAST(le.amount AS NUMERIC) <= 6
+             WHEN CAST(le.amount AS NUMERIC) <= 7
                THEN CAST(pr.prize_amount AS NUMERIC) * CAST(le.box_value AS NUMERIC) * 0.5
              ELSE CAST(pr.prize_amount AS NUMERIC) * CAST(le.box_value AS NUMERIC)
            END AS calculated_prize,
@@ -565,8 +575,10 @@ const getPrizeTracker = async (req, res) => {
 
 const getBillPrizes = async (req, res) => {
   try {
-    const { date, fromDate, toDate, shift } = req.query;
+    const { date, fromDate, toDate, shift, amount: rawAmount, purchaseCategory } = req.query;
     const sessionMode = String(shift || '').trim().toUpperCase();
+    const amount = String(rawAmount || '').trim();
+    const normalizedPurchaseCategory = normalizePurchaseCategory(purchaseCategory);
     const visibleUserIds = await getVisibleBranchIds(req.user.id, true);
 
     const prizeParams = [];
@@ -611,12 +623,25 @@ const getBillPrizes = async (req, res) => {
       entryShiftFilter = `AND le.session_mode = $${entryParams.length}`;
     }
 
+    let entryAmountFilter = '';
+    if (amount) {
+      entryParams.push(amount);
+      entryAmountFilter = `AND le.amount = $${entryParams.length}::numeric`;
+    }
+
+    let entryPurchaseCategoryFilter = '';
+    if (normalizedPurchaseCategory) {
+      entryParams.push(normalizedPurchaseCategory);
+      entryPurchaseCategoryFilter = `AND le.purchase_category = $${entryParams.length}`;
+    }
+
     const entriesResponse = await query(
       `SELECT
          le.id,
          le.number,
          le.booking_date,
          le.session_mode,
+         le.purchase_category,
          le.amount,
          le.box_value,
          le.status,
@@ -627,6 +652,8 @@ const getBillPrizes = async (req, res) => {
          AND le.status IN ('queued', 'sent', 'accepted', 'rejected')
          ${entryDateFilter.clause}
          ${entryShiftFilter}
+         ${entryAmountFilter}
+         ${entryPurchaseCategoryFilter}
        ORDER BY le.booking_date DESC, le.session_mode ASC, u.username ASC, le.number ASC`,
       entryParams
     );
@@ -657,6 +684,7 @@ const getBillPrizes = async (req, res) => {
           fullPrizeAmount: prize.fullPrizeAmount,
           calculatedPrize: prize.fullPrizeAmount * getPrizeMultiplier(entryAmount, entrySame),
           sessionMode: prize.sessionMode,
+          purchaseCategory: entry.purchase_category || (entry.session_mode === 'NIGHT' ? 'E' : 'M'),
           resultForDate: prize.resultForDate
         }));
     });

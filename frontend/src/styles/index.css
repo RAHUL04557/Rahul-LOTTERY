@@ -170,6 +170,32 @@ body {
   font-size: 28px;
 }
 
+.active-session-titlebar {
+  position: sticky;
+  top: 0;
+  z-index: 900;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: linear-gradient(180deg, #d5251d 0%, #b51614 100%);
+  color: #ffe9cb;
+  font-weight: 700;
+  font-size: 14px;
+  text-transform: uppercase;
+}
+
+.active-session-titlebar strong {
+  justify-self: center;
+  font-size: 22px;
+  letter-spacing: 0.02em;
+}
+
+.active-session-titlebar span:last-child {
+  justify-self: end;
+}
+
 .dashboard-home-link {
   background: transparent;
   border: none;
@@ -655,6 +681,62 @@ button:disabled {
 
 .price-result p {
   margin: 8px 0;
+}
+
+.exit-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(15, 23, 42, 0.14);
+}
+
+.exit-confirm-bar {
+  width: min(720px, 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border: 2px solid #173f6d;
+  border-radius: 8px;
+  background: #fff8d7;
+  color: #1f2937;
+  box-shadow: 0 -10px 30px rgba(15, 23, 42, 0.25);
+}
+
+.exit-confirm-bar strong {
+  font-size: 16px;
+}
+
+.exit-confirm-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.exit-confirm-actions button {
+  min-width: 76px;
+  padding: 8px 14px;
+  border: 1px solid #987100;
+  border-radius: 6px;
+  background: #f1d48a;
+  color: #3f2b00;
+}
+
+.exit-confirm-actions button.active,
+.exit-confirm-actions button:focus {
+  outline: 3px solid rgba(102, 126, 234, 0.34);
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.exit-confirm-bar span {
+  font-size: 13px;
+  color: #4b5563;
 }
 
 .tree-wrapper {

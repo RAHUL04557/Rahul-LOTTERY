@@ -9,7 +9,18 @@ const api = axios.create({
 // Add token to all requests
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');
-  const sellerSessionMode = localStorage.getItem('sellerSessionMode');
+  const savedEntryConfig = localStorage.getItem('entryConfig');
+  let activeSessionMode = '';
+
+  if (savedEntryConfig) {
+    try {
+      activeSessionMode = JSON.parse(savedEntryConfig)?.sessionMode || '';
+    } catch (error) {
+      activeSessionMode = '';
+    }
+  }
+
+  const sellerSessionMode = activeSessionMode || localStorage.getItem('sellerSessionMode');
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -25,7 +36,7 @@ export const authService = {
 };
 
 export const userService = {
-  createSeller: (username, password, rateAmount6, rateAmount12) => api.post('/users/create-seller', { username, password, rateAmount6, rateAmount12 }),
+  createSeller: (username, keyword, password, rateAmount6, rateAmount12, sellerType = 'seller') => api.post('/users/create-seller', { username, keyword, password, rateAmount6, rateAmount12, sellerType }),
   getChildSellers: () => api.get('/users/child-sellers'),
   getAllSellers: () => api.get('/users/all-sellers'),
   getUserTree: () => api.get('/users/tree'),
@@ -35,6 +46,84 @@ export const userService = {
 
 export const lotteryService = {
   addEntry: (payload) => api.post('/lottery/add-entry', payload),
+  addAdminPurchase: (payload) => api.post('/lottery/admin-purchases', payload),
+  replaceAdminPurchaseMemo: (payload) => api.put('/lottery/admin-purchases/memo', payload),
+  getAdminPurchases: ({ bookingDate, sessionMode, amount, boxValue, purchaseCategory } = {}, requestOptions = {}) =>
+    api.get('/lottery/admin-purchases', {
+      ...requestOptions,
+      params: {
+        ...(bookingDate && { bookingDate }),
+        ...(sessionMode && { sessionMode }),
+        ...(amount && { amount }),
+        ...(boxValue && { boxValue }),
+        ...(purchaseCategory && { purchaseCategory })
+      }
+    }),
+  sendAdminPurchase: (payload) => api.post('/lottery/purchases/send', payload),
+  replacePurchaseSendMemo: (payload) => api.put('/lottery/purchases/memo', payload),
+  sendPurchase: (payload) => api.post('/lottery/purchases/send', payload),
+  transferRemainingStock: (payload) => api.post('/lottery/purchases/stock-transfer', payload),
+  assignPurchase: (payload) => api.post('/lottery/purchases/assign', payload),
+  getPurchases: ({ bookingDate, sessionMode, sellerId, status, purchaseCategory, amount, boxValue, remaining } = {}, requestOptions = {}) =>
+    api.get('/lottery/purchases', {
+      ...requestOptions,
+      params: {
+        ...(bookingDate && { bookingDate }),
+        ...(sessionMode && { sessionMode }),
+        ...(sellerId && { sellerId }),
+        ...(status && { status }),
+        ...(purchaseCategory && { purchaseCategory })
+        ,...(amount && { amount })
+        ,...(boxValue && { boxValue })
+        ,...(remaining !== undefined && { remaining })
+      }
+    }),
+  getSellerPurchaseView: ({ bookingDate, sessionMode, sellerId, purchaseCategory, amount } = {}, requestOptions = {}) =>
+    api.get('/lottery/purchases/seller-view', {
+      ...requestOptions,
+      params: {
+        ...(bookingDate && { bookingDate }),
+        ...(sessionMode && { sessionMode }),
+        ...(sellerId && { sellerId }),
+        ...(purchaseCategory && { purchaseCategory }),
+        ...(amount && { amount })
+      }
+    }),
+  getPurchasePieceSummary: ({ bookingDate, sessionMode, purchaseCategory, amount } = {}, requestOptions = {}) =>
+    api.get('/lottery/purchases/piece-summary', {
+      ...requestOptions,
+      params: {
+        ...(bookingDate && { bookingDate }),
+        ...(sessionMode && { sessionMode }),
+        ...(purchaseCategory && { purchaseCategory }),
+        ...(amount && { amount })
+      }
+    }),
+  getPurchaseUnsoldSendSummary: ({ bookingDate, sessionMode, purchaseCategory, amount } = {}, requestOptions = {}) =>
+    api.get('/lottery/purchases/unsold-send-summary', {
+      ...requestOptions,
+      params: {
+        ...(bookingDate && { bookingDate }),
+        ...(sessionMode && { sessionMode }),
+        ...(purchaseCategory && { purchaseCategory }),
+        ...(amount && { amount })
+      }
+    }),
+  getPurchaseUnsoldRemoveMemo: ({ bookingDate, sessionMode, sellerId, purchaseCategory, amount } = {}, requestOptions = {}) =>
+    api.get('/lottery/purchases/unsold-remove-memo', {
+      ...requestOptions,
+      params: {
+        ...(bookingDate && { bookingDate }),
+        ...(sessionMode && { sessionMode }),
+        ...(sellerId && { sellerId }),
+        ...(purchaseCategory && { purchaseCategory }),
+        ...(amount && { amount })
+      }
+    }),
+  markPurchaseUnsold: (payload) => api.post('/lottery/purchases/mark-unsold', payload),
+  removePurchaseUnsold: (payload) => api.post('/lottery/purchases/remove-unsold', payload),
+  replacePurchaseUnsoldMemo: (payload) => api.put('/lottery/purchases/unsold-memo', payload),
+  sendPurchaseUnsold: (payload) => api.post('/lottery/purchases/send-unsold', payload),
   getPendingEntries: ({ bookingDate } = {}) =>
     api.get('/lottery/pending-entries', {
       params: {
@@ -74,7 +163,7 @@ export const lotteryService = {
         ...(bookingDate && { bookingDate })
       }
     }),
-  getTransferHistory: ({ date, fromDate, toDate, shift, includeBookings } = {}, requestOptions = {}) =>
+  getTransferHistory: ({ date, fromDate, toDate, shift, amount, purchaseCategory, includeBookings } = {}, requestOptions = {}) =>
     api.get('/lottery/transfer-history', {
       ...requestOptions,
       params: {
@@ -82,7 +171,21 @@ export const lotteryService = {
         ...(fromDate && { fromDate }),
         ...(toDate && { toDate }),
         ...(shift && { shift }),
+        ...(amount && { amount }),
+        ...(purchaseCategory && { purchaseCategory }),
         ...(includeBookings && { includeBookings })
+      }
+    }),
+  getPurchaseBillSummary: ({ date, fromDate, toDate, shift, amount, purchaseCategory } = {}, requestOptions = {}) =>
+    api.get('/lottery/purchases/bill-summary', {
+      ...requestOptions,
+      params: {
+        ...(date && { date }),
+        ...(fromDate && { fromDate }),
+        ...(toDate && { toDate }),
+        ...(shift && { shift }),
+        ...(amount && { amount }),
+        ...(purchaseCategory && { purchaseCategory })
       }
     }),
   traceNumber: ({ number, uniqueCode, date, fromDate, toDate, sessionMode, amount, sem } = {}, requestOptions = {}) =>
@@ -129,13 +232,15 @@ export const priceService = {
         sessionMode: sessionMode || 'ALL'
       }
     }),
-  getBillPrizes: ({ date, fromDate, toDate, shift } = {}) =>
+  getBillPrizes: ({ date, fromDate, toDate, shift, amount, purchaseCategory } = {}) =>
     api.get('/prices/bill-prizes', {
       params: {
         ...(date && { date }),
         ...(fromDate && { fromDate }),
         ...(toDate && { toDate }),
-        ...(shift && { shift })
+        ...(shift && { shift }),
+        ...(amount && { amount }),
+        ...(purchaseCategory && { purchaseCategory })
       }
     }),
   getPriceByCode: (uniqueCode) => api.get(`/prices/${uniqueCode}`),

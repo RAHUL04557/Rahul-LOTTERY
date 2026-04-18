@@ -38,9 +38,10 @@ const PasswordSettingsMenu = ({ currentUser, onSuccess, onError }) => {
 
     try {
       const response = await userService.getChildSellers();
-      setChildUsers(response.data || []);
-      if (response.data?.length > 0) {
-        setSelectedUserId(String(response.data[0].id));
+      const loginUsers = (response.data || []).filter((user) => user.canLogin !== false);
+      setChildUsers(loginUsers);
+      if (loginUsers.length > 0) {
+        setSelectedUserId(String(loginUsers[0].id));
       }
     } catch (err) {
       onError(err.response?.data?.message || `Error loading ${childRoleLabel} list`);
@@ -140,7 +141,7 @@ const PasswordSettingsMenu = ({ currentUser, onSuccess, onError }) => {
                   disabled={loadingChildren || childUsers.length === 0}
                 >
                   {childUsers.length === 0 ? (
-                    <option value="">{loadingChildren ? 'Loading...' : `No ${childRoleLabel} found`}</option>
+                    <option value="">{loadingChildren ? 'Loading...' : `No ${childRoleLabel} login found`}</option>
                   ) : (
                     childUsers.map((childUser) => (
                       <option key={childUser.id} value={childUser.id}>

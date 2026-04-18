@@ -5,8 +5,11 @@ const { query } = require('../config/database');
 const mapUser = (row) => ({
   id: row.id,
   username: row.username,
+  keyword: row.keyword || '',
   role: row.role,
+  sellerType: row.seller_type || (row.role === 'seller' ? 'seller' : 'admin'),
   parentId: row.parent_id,
+  canLogin: row.can_login !== undefined ? Boolean(row.can_login) : true,
   rateAmount6: row.rate_amount_6 !== undefined ? Number(row.rate_amount_6) : 0,
   rateAmount12: row.rate_amount_12 !== undefined ? Number(row.rate_amount_12) : 0
 });
@@ -25,17 +28,18 @@ const ensureDefaultAdminUser = async () => {
 
   if (!existingAdmin) {
     const insertedAdminResult = await query(
-      'INSERT INTO users (username, password, role, parent_id, rate_amount_6, rate_amount_12) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
-      [adminUsername, hashedPassword, 'admin', null, 0, 0]
+      'INSERT INTO users (username, password, role, seller_type, parent_id, rate_amount_6, rate_amount_12) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
+      [adminUsername, hashedPassword, 'admin', 'admin', null, 0, 0]
     );
     return insertedAdminResult.rows[0];
   }
 
-  await query('UPDATE users SET password = $1, role = $2 WHERE id = $3', [hashedPassword, 'admin', existingAdmin.id]);
+  await query('UPDATE users SET password = $1, role = $2, seller_type = $3 WHERE id = $4', [hashedPassword, 'admin', 'admin', existingAdmin.id]);
   return {
     ...existingAdmin,
     password: hashedPassword,
-    role: 'admin'
+    role: 'admin',
+    seller_type: 'admin'
   };
 };
 
@@ -66,6 +70,10 @@ const login = async (req, res) => {
       return res.status(401).json({ message: 'Invalid username or password' });
     }
 
+    if (user.can_login === false) {
+      return res.status(403).json({ message: 'Ye normal seller login ID nahi hai. Iska hisaab parent account se chalega.' });
+    }
+
     let isPasswordValid = false;
     try {
       isPasswordValid = await bcrypt.compare(password, user.password);
@@ -85,7 +93,7 @@ const login = async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: user.id, username: user.username, role: user.role, parentId: user.parent_id },
+      { id: user.id, username: user.username, role: user.role, sellerType: user.seller_type, parentId: user.parent_id },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
     );
@@ -103,7 +111,7 @@ const login = async (req, res) => {
 const getCurrentUser = async (req, res) => {
   try {
     const userResult = await query(
-      'SELECT id, username, role, parent_id, rate_amount_6, rate_amount_12, created_at FROM users WHERE id = $1 LIMIT 1',
+      'SELECT id, username, keyword, role, seller_type, parent_id, can_login, rate_amount_6, rate_amount_12, created_at FROM users WHERE id = $1 LIMIT 1',
       [req.user.id]
     );
 
