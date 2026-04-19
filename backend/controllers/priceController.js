@@ -83,6 +83,32 @@ const mapPrizeTrackerRow = (row) => {
   };
 };
 
+const mapPrizeFilterResultRow = (row) => {
+  const config = getNormalizedPrizeConfig(row.prize_key, row.prize_label, row.digit_length);
+  const amount = row.amount !== null && row.amount !== undefined ? Number(row.amount) : null;
+  const sem = row.sem !== null && row.sem !== undefined ? Number(row.sem) : null;
+
+  return {
+    id: row.id,
+    prizeId: row.prize_id,
+    sellerId: row.seller_id,
+    sellerUsername: row.seller_username || null,
+    bookingDate: row.booking_date,
+    sessionMode: row.session_mode,
+    purchaseCategory: row.purchase_category || (row.session_mode === 'NIGHT' ? 'E' : 'M'),
+    status: row.status,
+    soldStatus: row.sold_status,
+    number: row.number,
+    amount,
+    sem,
+    prizeKey: row.prize_key,
+    prizeLabel: config.label,
+    winningNumber: row.winning_number,
+    fullPrizeAmount: config.fullPrizeAmount,
+    calculatedPrize: config.fullPrizeAmount * getPrizeMultiplier(amount, sem)
+  };
+};
+
 const normalizeWinningNumber = (value) => String(value || '').trim();
 const normalizeDateValue = (value) => {
   if (!value) {
@@ -201,6 +227,40 @@ const buildDateRangeFilter = ({ date, fromDate, toDate }, params, columnName) =>
   return {
     clause: `AND ${columnName} = CURRENT_DATE`
   };
+};
+
+const normalizeShiftFilter = (value) => {
+  const normalized = String(value || '').trim().toUpperCase();
+  return ['ALL', 'MORNING', 'DAY', 'EVENING'].includes(normalized) ? normalized : 'ALL';
+};
+
+const normalizeSoldStatusFilter = (value) => {
+  const normalized = String(value || '').trim().toUpperCase();
+  return ['ALL', 'SOLD', 'UNSOLD'].includes(normalized) ? normalized : 'ALL';
+};
+
+const appendEntryShiftFilter = (shift, params, conditions, columnPrefix = 'le') => {
+  const purchaseCategoryExpression = `COALESCE(${columnPrefix}.purchase_category, CASE WHEN ${columnPrefix}.session_mode = 'NIGHT' THEN 'E' ELSE 'M' END)`;
+
+  if (shift === 'MORNING') {
+    params.push('MORNING', 'M');
+    conditions.push(`${columnPrefix}.session_mode = $${params.length - 1}`);
+    conditions.push(`${purchaseCategoryExpression} = $${params.length}`);
+    return;
+  }
+
+  if (shift === 'DAY') {
+    params.push('MORNING', 'D');
+    conditions.push(`${columnPrefix}.session_mode = $${params.length - 1}`);
+    conditions.push(`${purchaseCategoryExpression} = $${params.length}`);
+    return;
+  }
+
+  if (shift === 'EVENING') {
+    params.push('NIGHT', 'E');
+    conditions.push(`${columnPrefix}.session_mode = $${params.length - 1}`);
+    conditions.push(`${purchaseCategoryExpression} = $${params.length}`);
+  }
 };
 
 const validatePrizeEntry = (entry) => {
@@ -573,6 +633,83 @@ const getPrizeTracker = async (req, res) => {
   }
 };
 
+const getFilteredPrizeResults = async (req, res) => {
+  try {
+    const visibleUserIds = await getVisibleBranchIds(req.user.id, true);
+    const date = String(req.query?.date || '').trim();
+    const shift = normalizeShiftFilter(req.query?.shift);
+    const soldStatus = normalizeSoldStatusFilter(req.query?.soldStatus);
+    const sellerId = Number(req.query?.sellerId || 0);
+
+    if (!DATE_VALUE_REGEX.test(date)) {
+      return res.status(400).json({ message: 'Valid date required' });
+    }
+
+    if (sellerId && !visibleUserIds.includes(sellerId)) {
+      return res.status(403).json({ message: 'Selected seller is not available in your view' });
+    }
+
+    const params = [visibleUserIds, date];
+    const conditions = [
+      'le.user_id = ANY($1::int[])',
+      'le.booking_date = $2::date'
+    ];
+
+    if (sellerId) {
+      params.push(sellerId);
+      conditions.push(`le.user_id = $${params.length}`);
+    }
+
+    appendEntryShiftFilter(shift, params, conditions, 'le');
+
+    if (soldStatus === 'UNSOLD') {
+      conditions.push("LOWER(TRIM(le.status)) IN ('unsold_saved', 'unsold_sent', 'unsold')");
+    } else if (soldStatus === 'SOLD') {
+      conditions.push("LOWER(TRIM(le.status)) NOT IN ('unsold_saved', 'unsold_sent', 'unsold')");
+    }
+
+    const result = await query(
+      `SELECT
+         CONCAT(pr.id, '-', le.id) AS id,
+         pr.id AS prize_id,
+         le.user_id AS seller_id,
+         u.username AS seller_username,
+         le.booking_date,
+         le.session_mode,
+         COALESCE(le.purchase_category, CASE WHEN le.session_mode = 'NIGHT' THEN 'E' ELSE 'M' END) AS purchase_category,
+         le.status,
+         CASE
+           WHEN LOWER(TRIM(le.status)) IN ('unsold_saved', 'unsold_sent', 'unsold') THEN 'UNSOLD'
+           ELSE 'SOLD'
+         END AS sold_status,
+         le.number,
+         le.amount,
+         le.box_value AS sem,
+         pr.prize_key,
+         pr.prize_label,
+         pr.digit_length,
+         pr.winning_number
+       FROM lottery_entries le
+       INNER JOIN users u ON u.id = le.user_id
+       INNER JOIN prize_results pr
+         ON pr.result_for_date = le.booking_date
+        AND pr.session_mode = le.session_mode
+        AND RIGHT(le.number, pr.digit_length) = pr.winning_number
+       WHERE ${conditions.join(' AND ')}
+       ORDER BY le.booking_date DESC, le.session_mode ASC, u.username ASC, le.amount ASC, le.box_value ASC, le.number ASC, pr.prize_amount DESC`,
+      params
+    );
+
+    const rows = result.rows.map(mapPrizeFilterResultRow);
+    return res.json({
+      rows,
+      totalPrize: rows.reduce((sum, row) => sum + Number(row.calculatedPrize || 0), 0)
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
 const getBillPrizes = async (req, res) => {
   try {
     const { date, fromDate, toDate, shift, amount: rawAmount, purchaseCategory } = req.query;
@@ -904,4 +1041,14 @@ const checkPrize = async (req, res) => {
   }
 };
 
-module.exports = { uploadPrice, updatePrizeResult, getPriceByCode, getAllPrices, getPrizeTracker, getBillPrizes, checkPrize, getMyPrizes };
+module.exports = {
+  uploadPrice,
+  updatePrizeResult,
+  getPriceByCode,
+  getAllPrices,
+  getPrizeTracker,
+  getFilteredPrizeResults,
+  getBillPrizes,
+  checkPrize,
+  getMyPrizes
+};

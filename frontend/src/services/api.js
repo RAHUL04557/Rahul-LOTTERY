@@ -232,6 +232,15 @@ export const priceService = {
         sessionMode: sessionMode || 'ALL'
       }
     }),
+  getFilteredPrizeResults: ({ date, shift, sellerId, soldStatus } = {}) =>
+    api.get('/prices/results', {
+      params: {
+        ...(date && { date }),
+        ...(shift && { shift }),
+        ...(sellerId && { sellerId }),
+        ...(soldStatus && { soldStatus })
+      }
+    }),
   getBillPrizes: ({ date, fromDate, toDate, shift, amount, purchaseCategory } = {}) =>
     api.get('/prices/bill-prizes', {
       params: {

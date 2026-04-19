@@ -119,6 +119,18 @@ const getPurchaseSemValidationError = (amount, boxValue) => {
   return '';
 };
 
+const shouldDirectAssignPurchaseToTarget = ({ currentUser, targetSeller }) => {
+  if (!currentUser || !targetSeller) {
+    return false;
+  }
+
+  if (Number(targetSeller.id) === Number(currentUser.id)) {
+    return true;
+  }
+
+  return normalizeSellerType(targetSeller.seller_type) === SELLER_TYPE_NORMAL_SELLER;
+};
+
 const getPurchaseCategoryFromRequest = (req, sessionMode) => (
   normalizePurchaseCategory(req.body.purchaseCategory || req.query.purchaseCategory || req.headers['x-purchase-category'])
   || getDefaultPurchaseCategory(sessionMode)
@@ -474,6 +486,114 @@ const mapHistoryRecord = (row) => ({
   createdAt: row.created_at
 });
 
+const getLatestAcceptedUnsoldSnapshotRows = async ({
+  targetSellerId,
+  viewerUserId,
+  bookingDate = null,
+  sessionMode = null,
+  purchaseCategory = null,
+  amount = '',
+  boxValue = ''
+}) => {
+  const params = [targetSellerId];
+  const historyConditions = [
+    "h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')",
+    'le.user_id = $1'
+  ];
+  const rowConditions = ['snapshot.user_id = $1'];
+
+  if (bookingDate) {
+    params.push(bookingDate);
+    historyConditions.push(`h.booking_date = $${params.length}::date`);
+    rowConditions.push(`snapshot.booking_date = $${params.length}::date`);
+  }
+
+  if (sessionMode) {
+    params.push(sessionMode);
+    historyConditions.push(`h.session_mode = $${params.length}`);
+    rowConditions.push(`snapshot.session_mode = $${params.length}`);
+  }
+
+  if (purchaseCategory) {
+    params.push(purchaseCategory);
+    historyConditions.push(`h.purchase_category = $${params.length}`);
+    rowConditions.push(`snapshot.purchase_category = $${params.length}`);
+  }
+
+  if (amount) {
+    params.push(amount);
+    historyConditions.push(`h.amount = $${params.length}::numeric`);
+    rowConditions.push(`snapshot.amount = $${params.length}::numeric`);
+  }
+
+  if (boxValue) {
+    params.push(boxValue);
+    historyConditions.push(`h.box_value = $${params.length}`);
+    rowConditions.push(`snapshot.box_value = $${params.length}`);
+  }
+
+  params.push(viewerUserId);
+  const viewerParamIndex = params.length;
+
+  const result = await query(
+    `WITH latest_memo_batches AS (
+       SELECT
+         le.user_id,
+         h.memo_number,
+         h.booking_date,
+         h.session_mode,
+         MAX(h.created_at) AS latest_created_at
+       FROM lottery_entry_history h
+       INNER JOIN lottery_entries le ON le.id = h.entry_id
+       WHERE ${historyConditions.join(' AND ')}
+       GROUP BY le.user_id, h.memo_number, h.booking_date, h.session_mode
+     ),
+     snapshot AS (
+       SELECT
+         h.entry_id AS id,
+         le.user_id,
+         seller_user.username,
+         parent_user.username AS parent_username,
+         $${viewerParamIndex}::int AS forwarded_by,
+         actor_user.username AS forwarded_by_username,
+         NULL::varchar AS series,
+         h.number,
+         h.box_value,
+         h.unique_code,
+         h.amount,
+         h.session_mode,
+         '${UNSOLD_ACCEPTED_STATUS}'::varchar AS status,
+         '${PURCHASE_ENTRY_SOURCE}'::varchar AS entry_source,
+         h.memo_number,
+         h.memo_number AS purchase_memo_number,
+         h.purchase_category,
+         $${viewerParamIndex}::int AS sent_to_parent,
+         h.booking_date,
+         h.created_at,
+         h.created_at AS sent_at
+       FROM lottery_entry_history h
+       INNER JOIN lottery_entries le ON le.id = h.entry_id
+       INNER JOIN latest_memo_batches batch
+         ON batch.user_id = le.user_id
+        AND batch.memo_number = h.memo_number
+        AND batch.booking_date = h.booking_date
+        AND batch.session_mode = h.session_mode
+        AND batch.latest_created_at = h.created_at
+       LEFT JOIN users seller_user ON seller_user.id = le.user_id
+       LEFT JOIN users parent_user ON parent_user.id = $${viewerParamIndex}
+       LEFT JOIN users actor_user ON actor_user.id = h.actor_user_id
+       WHERE h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')
+     )
+     SELECT *
+     FROM snapshot
+     WHERE ${rowConditions.join(' AND ')}
+     ORDER BY snapshot.booking_date DESC, snapshot.session_mode ASC, snapshot.number ASC`,
+    params
+  );
+
+  return result.rows;
+};
+
 let historyStorageReadyPromise = null;
 
 const ensureHistoryStorage = async () => {
@@ -823,6 +943,27 @@ const getVisibleBranchIds = async (rootUserId, includeSelf = false) => {
   return result.rows
     .map((row) => row.id)
     .filter((id) => includeSelf || id !== rootUserId);
+};
+
+const getDirectSellerBranchIds = async (ownerUserId, sellerId) => {
+  const result = await query(
+    `WITH RECURSIVE branch_users AS (
+       SELECT id, parent_id
+       FROM users
+       WHERE id = $2
+         AND parent_id = $1
+         AND role = 'seller'
+       UNION ALL
+       SELECT u.id, u.parent_id
+       FROM users u
+       INNER JOIN branch_users bu ON u.parent_id = bu.id
+       WHERE u.role = 'seller'
+     )
+     SELECT id FROM branch_users`,
+    [ownerUserId, sellerId]
+  );
+
+  return result.rows.map((row) => Number(row.id)).filter(Boolean);
 };
 
 const normalizeQueuedEntries = async (visibleUserIds = []) => {
@@ -1553,6 +1694,8 @@ const insertDirectPurchaseEntries = async ({
   const usedCodes = new Set();
   const chunkSize = 1000;
   const columnsPerRow = 15;
+  const shouldDirectAssign = shouldDirectAssignPurchaseToTarget({ currentUser, targetSeller });
+  const effectiveMemoNumber = shouldDirectAssign ? memoNumber : null;
   const sentToParent = Number(targetSeller.id) === Number(currentUser.id)
     ? currentUser.id
     : (targetSeller.parent_id || currentUser.id);
@@ -1580,8 +1723,8 @@ const insertDirectPurchaseEntries = async ({
         sessionMode,
         bookingDate,
         PURCHASE_ENTRY_SOURCE,
-        memoNumber,
-        memoNumber,
+        effectiveMemoNumber,
+        effectiveMemoNumber,
         purchaseCategory,
         'accepted'
       );
@@ -1637,6 +1780,8 @@ const forwardSellerOwnedPurchaseEntries = async ({
   }
 
   const selectedIds = stockEntriesResult.rows.map((stockRow) => stockRow.id);
+  const shouldDirectAssign = shouldDirectAssignPurchaseToTarget({ currentUser, targetSeller });
+  const effectiveMemoNumber = shouldDirectAssign ? memoNumber : null;
   const sentToParent = Number(targetSeller.id) === Number(currentUser.id)
     ? currentUser.id
     : (targetSeller.parent_id || currentUser.id);
@@ -1656,7 +1801,7 @@ const forwardSellerOwnedPurchaseEntries = async ({
       targetSeller.id,
       sentToParent,
       currentUser.id,
-      memoNumber
+      effectiveMemoNumber
     ]
   );
 
@@ -2241,11 +2386,19 @@ const getPurchaseEntries = async (req, res) => {
     const remainingOnly = String(req.query.remaining || '').trim().toLowerCase() === 'true';
     const params = [PURCHASE_ENTRY_SOURCE];
     const conditions = ['le.entry_source = $1'];
+    let childSellerVisibilityParamIndex = null;
+    let adminScopedBranchIds = [];
 
     if (req.user.role === 'admin') {
       if (sellerId) {
-        params.push(sellerId);
-        conditions.push(`le.user_id = $${params.length}`);
+        adminScopedBranchIds = await getDirectSellerBranchIds(req.user.id, sellerId);
+
+        if (adminScopedBranchIds.length === 0) {
+          return res.status(404).json({ message: 'Seller not found' });
+        }
+
+        params.push(adminScopedBranchIds);
+        conditions.push(`le.user_id = ANY($${params.length}::int[])`);
       }
     } else if (sellerId && sellerId !== Number(req.user.id)) {
       const childSellerResult = await query(
@@ -2260,7 +2413,11 @@ const getPurchaseEntries = async (req, res) => {
       params.push(sellerId);
       conditions.push(`le.user_id = $${params.length}`);
       params.push(req.user.id);
-      conditions.push(`le.sent_to_parent = $${params.length}`);
+      childSellerVisibilityParamIndex = params.length;
+      conditions.push(`(
+        le.sent_to_parent = $${childSellerVisibilityParamIndex}
+        OR le.forwarded_by = $${childSellerVisibilityParamIndex}
+      )`);
     } else {
       params.push(req.user.id);
       conditions.push(`le.user_id = $${params.length}`);
@@ -2291,10 +2448,76 @@ const getPurchaseEntries = async (req, res) => {
       conditions.push(`le.box_value = $${params.length}`);
     }
 
+    const shouldUseAcceptedSnapshotView = (
+      status === UNSOLD_ACCEPTED_STATUS
+      && req.user.role !== 'admin'
+      && sellerId
+      && sellerId !== Number(req.user.id)
+    );
+
+    if (shouldUseAcceptedSnapshotView) {
+      const [snapshotRows, localSavedResult] = await Promise.all([
+        getLatestAcceptedUnsoldSnapshotRows({
+          targetSellerId: sellerId,
+          viewerUserId: req.user.id,
+          bookingDate,
+          sessionMode,
+          purchaseCategory,
+          amount,
+          boxValue
+        }),
+        query(
+          `SELECT le.*, u.username, parent_user.username AS parent_username, forwarded_user.username AS forwarded_by_username
+           FROM lottery_entries le
+           LEFT JOIN users u ON u.id = le.user_id
+           LEFT JOIN users parent_user ON parent_user.id = le.sent_to_parent
+           LEFT JOIN users forwarded_user ON forwarded_user.id = le.forwarded_by
+           WHERE le.entry_source = $1
+             AND le.user_id = $2
+             AND LOWER(TRIM(le.status)) = $3
+             AND (le.sent_to_parent = $4 OR le.forwarded_by = $4)
+             ${bookingDate ? 'AND le.booking_date = $5::date' : ''}
+             ${sessionMode ? `AND le.session_mode = $${bookingDate ? 6 : 5}` : ''}
+             ${purchaseCategory ? `AND le.purchase_category = $${(bookingDate ? 1 : 0) + (sessionMode ? 1 : 0) + 5}` : ''}
+             ${amount ? `AND le.amount = $${(bookingDate ? 1 : 0) + (sessionMode ? 1 : 0) + (purchaseCategory ? 1 : 0) + 5}::numeric` : ''}
+             ${boxValue ? `AND le.box_value = $${(bookingDate ? 1 : 0) + (sessionMode ? 1 : 0) + (purchaseCategory ? 1 : 0) + (amount ? 1 : 0) + 5}` : ''}
+           ORDER BY le.booking_date DESC, le.session_mode ASC, u.username ASC, le.number ASC`,
+          [
+            PURCHASE_ENTRY_SOURCE,
+            sellerId,
+            UNSOLD_LOCAL_STATUS,
+            req.user.id,
+            ...[
+              bookingDate,
+              sessionMode,
+              purchaseCategory,
+              amount,
+              boxValue
+            ].filter(Boolean)
+          ]
+        )
+      ]);
+
+      const combinedRows = [...snapshotRows, ...localSavedResult.rows];
+      res.json(combinedRows.map(mapLotteryEntry));
+      return;
+    }
+
     if (status) {
       if (status === UNSOLD_ACCEPTED_STATUS) {
         conditions.push(`LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`);
-        if (req.user.role === 'admin' && sellerId) {
+        if (req.user.role === 'admin' && sellerId && adminScopedBranchIds.length === 0) {
+          params.push(sellerId);
+          const selectedSellerParamIndex = params.length;
+          params.push(req.user.id);
+          const adminUserParamIndex = params.length;
+          conditions.push(`(
+            le.forwarded_by = $${selectedSellerParamIndex}
+            OR le.sent_to_parent = $${selectedSellerParamIndex}
+            OR le.forwarded_by = $${adminUserParamIndex}
+            OR le.sent_to_parent = $${adminUserParamIndex}
+          )`);
+        } else if (req.user.role === 'seller' && (!sellerId || sellerId === Number(req.user.id))) {
           params.push(req.user.id);
           conditions.push(`(
             le.forwarded_by = $${params.length}
@@ -2670,8 +2893,7 @@ const removePurchaseUnsoldEntries = async (req, res) => {
       sessionMode,
       purchaseCategory,
       bookingDate,
-      numbersToRemove.numbers,
-      normalizedMemoNumber
+      numbersToRemove.numbers
     ];
     const ownershipFilter = isAdminRole(req.user.role) || targetSellerId === Number(req.user.id)
       ? ''
@@ -2689,7 +2911,6 @@ const removePurchaseUnsoldEntries = async (req, res) => {
          AND le.purchase_category = $4
          AND le.booking_date = $5::date
          AND le.number = ANY($6::varchar[])
-         AND le.memo_number = $7
          AND LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
          ${ownershipFilter}
        ORDER BY le.number ASC`,
@@ -2697,7 +2918,7 @@ const removePurchaseUnsoldEntries = async (req, res) => {
     );
 
     if (selectedEntriesResult.rows.length === 0) {
-      return res.status(404).json({ message: `Selected unsold memo ${normalizedMemoNumber} me number nahi mila` });
+      return res.status(404).json({ message: 'Selected number current unsold me nahi mila' });
     }
 
     if (selectedEntriesResult.rows.length !== numbersToRemove.numbers.length) {
@@ -2706,7 +2927,7 @@ const removePurchaseUnsoldEntries = async (req, res) => {
       const missingLabel = missingNumbers.length > 5
         ? `${missingNumbers.slice(0, 5).join(', ')} +${missingNumbers.length - 5} more`
         : missingNumbers.join(', ');
-      return res.status(400).json({ message: `Ye number unsold me nahi hai: ${missingLabel}` });
+      return res.status(400).json({ message: `Ye number current unsold me nahi hai: ${missingLabel}` });
     }
 
     const selectedIds = selectedEntriesResult.rows.map((row) => row.id);
@@ -2715,6 +2936,7 @@ const removePurchaseUnsoldEntries = async (req, res) => {
        SET status = 'accepted',
            sent_to_parent = $2,
            forwarded_by = $3,
+           memo_number = COALESCE(purchase_memo_number, memo_number),
            sent_at = CURRENT_TIMESTAMP
        WHERE id = ANY($1::int[])
        RETURNING *`,
@@ -2909,7 +3131,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
        WHERE user_id = $1
          AND entry_source = $2
          AND forwarded_by = $3
-         AND COALESCE(purchase_memo_number, memo_number) = $4
+         AND memo_number = $4
          AND booking_date = $5::date
          AND session_mode = $6
          AND purchase_category = $7
@@ -2926,6 +3148,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
          SET status = 'accepted',
              sent_to_parent = $2,
              forwarded_by = $3,
+             memo_number = COALESCE(purchase_memo_number, memo_number),
              sent_at = CURRENT_TIMESTAMP
          WHERE id = ANY($1::int[])`,
         [
@@ -3090,67 +3313,70 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
       filters.push(`le.amount = $${params.length}::numeric`);
     }
 
-    const summaryResult = await query(
-      `SELECT u.id AS seller_id,
-              u.username AS seller_name,
-              COALESCE(SUM(CASE WHEN le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS total_piece,
-              COALESCE(SUM(CASE WHEN (
-                LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
-                OR (
-                  LOWER(TRIM(le.status)) = '${UNSOLD_LOCAL_STATUS}'
-                  AND (le.user_id = $${params.length + 1} OR le.sent_to_parent = $${params.length + 1})
-                )
-                OR (LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}' AND le.forwarded_by = $${params.length + 1})
-              ) AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS unsold_piece,
-              COALESCE(SUM(CASE WHEN (
-                (LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}' AND le.forwarded_by = $${params.length + 1})
-                OR (
-                  LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
-                  AND le.forwarded_by = $${params.length + 1}
-                  AND le.sent_to_parent IS NOT NULL
-                  AND le.sent_to_parent <> $${params.length + 1}
-                )
-              ) AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS already_sent_piece,
-              COALESCE(SUM(CASE WHEN (
-                (
-                  LOWER(TRIM(le.status)) = '${UNSOLD_LOCAL_STATUS}'
-                  AND (le.user_id = $${params.length + 1} OR le.sent_to_parent = $${params.length + 1})
-                )
-                OR (
-                  LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
-                  AND (
-                    le.sent_to_parent IS NULL
-                    OR le.sent_to_parent = $${params.length + 1}
-                    OR le.user_id = $${params.length + 1}
-                  )
-                  AND NOT (
-                    le.forwarded_by = $${params.length + 1}
-                    AND le.sent_to_parent IS NOT NULL
-                    AND le.sent_to_parent <> $${params.length + 1}
-                  )
-                )
-              ) AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS pending_send_piece,
-              COUNT(*) FILTER (WHERE (
-                LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
-                OR (
-                  LOWER(TRIM(le.status)) = '${UNSOLD_LOCAL_STATUS}'
-                  AND (le.user_id = $${params.length + 1} OR le.sent_to_parent = $${params.length + 1})
-                )
-                OR (LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}' AND le.forwarded_by = $${params.length + 1})
-              )) AS unsold_count
+    const entriesResult = await query(
+      `SELECT le.*, u.username AS seller_name
        FROM lottery_entries le
        INNER JOIN users u ON u.id = le.user_id
        WHERE ${filters.join(' AND ')}
-       GROUP BY u.id, u.username
-       ORDER BY u.username ASC`,
-      [...params, req.user.id]
+       ORDER BY u.username ASC, le.number ASC`,
+      params
     );
 
-    const totalPiece = summaryResult.rows.reduce((sum, row) => sum + Number(row.total_piece || 0), 0);
-    const unsoldPiece = summaryResult.rows.reduce((sum, row) => sum + Number(row.unsold_piece || 0), 0);
-    const alreadySentPiece = summaryResult.rows.reduce((sum, row) => sum + Number(row.already_sent_piece || 0), 0);
-    const pendingSendPiece = summaryResult.rows.reduce((sum, row) => sum + Number(row.pending_send_piece || 0), 0);
-    const unsoldCount = summaryResult.rows.reduce((sum, row) => sum + Number(row.unsold_count || 0), 0);
+    const numericPiece = (entry) => (String(entry.box_value || '').match(/^\d+(\.\d+)?$/) ? Number(entry.box_value) : 0);
+    const buildEntryKey = (entry) => ([
+      entry.user_id,
+      entry.booking_date instanceof Date ? entry.booking_date.toISOString().slice(0, 10) : String(entry.booking_date || ''),
+      String(entry.session_mode || ''),
+      String(entry.purchase_category || ''),
+      String(entry.amount || ''),
+      String(entry.box_value || ''),
+      String(entry.number || '')
+    ].join('|'));
+    const isCurrentUnsoldEntry = (entry) => {
+      const normalizedStatus = String(entry.status || '').trim().toLowerCase();
+      if (normalizedStatus === UNSOLD_LOCAL_STATUS) {
+        return Number(entry.user_id) === Number(req.user.id) || Number(entry.sent_to_parent) === Number(req.user.id);
+      }
+
+      if (normalizedStatus === UNSOLD_ACCEPTED_STATUS) {
+        return (
+          Number(entry.sent_to_parent || 0) === Number(req.user.id)
+          || Number(entry.user_id) === Number(req.user.id)
+          || !entry.sent_to_parent
+        ) && !(
+          Number(entry.forwarded_by || 0) === Number(req.user.id)
+          && entry.sent_to_parent
+          && Number(entry.sent_to_parent) !== Number(req.user.id)
+        );
+      }
+
+      return false;
+    };
+    const isAlreadySentEntry = (entry) => {
+      const normalizedStatus = String(entry.status || '').trim().toLowerCase();
+      return (
+        (normalizedStatus === UNSOLD_SENT_STATUS && Number(entry.forwarded_by || 0) === Number(req.user.id))
+        || (
+          normalizedStatus === UNSOLD_ACCEPTED_STATUS
+          && Number(entry.forwarded_by || 0) === Number(req.user.id)
+          && entry.sent_to_parent
+          && Number(entry.sent_to_parent) !== Number(req.user.id)
+        )
+      );
+    };
+
+    const allEntries = entriesResult.rows || [];
+    const currentUnsoldEntries = allEntries.filter(isCurrentUnsoldEntry);
+    const alreadySentEntries = allEntries.filter(isAlreadySentEntry);
+    const alreadySentKeySet = new Set(alreadySentEntries.map(buildEntryKey));
+    const alreadySentCurrentEntries = currentUnsoldEntries.filter((entry) => alreadySentKeySet.has(buildEntryKey(entry)));
+    const pendingSendEntries = currentUnsoldEntries.filter((entry) => !alreadySentKeySet.has(buildEntryKey(entry)));
+
+    const totalPiece = allEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
+    const unsoldPiece = currentUnsoldEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
+    const alreadySentPiece = alreadySentCurrentEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
+    const pendingSendPiece = pendingSendEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
+    const unsoldCount = currentUnsoldEntries.length;
     const aggregatedRow = totalPiece > 0 || unsoldPiece > 0 || alreadySentPiece > 0 || pendingSendPiece > 0
       ? [{
         sellerId: req.user.id,
@@ -3359,19 +3585,9 @@ const getPurchasePieceSummary = async (req, res) => {
         )
         SELECT bu.root_seller_id AS user_id,
                COALESCE(SUM(CASE WHEN le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS total_piece,
-               COALESCE(SUM(CASE WHEN (
-                 (
-                   LOWER(TRIM(le.status)) = '${UNSOLD_LOCAL_STATUS}'
-                   AND (le.user_id = $1 OR le.sent_to_parent = $1)
-                 )
-                 OR (
-                   LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
-                   AND (
-                     le.user_id = $1
-                     OR le.sent_to_parent = $1
-                   )
-                 )
-               ) AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS unsold_piece
+               COALESCE(SUM(CASE WHEN LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
+                 AND le.box_value ~ '^\\d+(\\.\\d+)?$'
+                 THEN le.box_value::numeric ELSE 0 END), 0) AS unsold_piece
         FROM lottery_entries le
         INNER JOIN branch_users bu ON bu.id = le.user_id
         WHERE ${adminConditions.join(' AND ')}
@@ -3478,15 +3694,72 @@ const getPurchasePieceSummary = async (req, res) => {
       untransferredParams
     );
     const stockNotTransferredPiece = Number(untransferredResult.rows[0]?.stock_not_transferred_piece || 0);
+    const sellerChildSnapshotUnsoldMap = new Map();
+
+    if (!currentUserIsAdmin) {
+      await Promise.all(
+        sellers
+          .filter((seller) => Number(seller.id) !== Number(req.user.id))
+          .map(async (seller) => {
+            const [snapshotRows, localSavedResult] = await Promise.all([
+              getLatestAcceptedUnsoldSnapshotRows({
+                targetSellerId: seller.id,
+                viewerUserId: req.user.id,
+                bookingDate,
+                sessionMode,
+                purchaseCategory,
+                amount: normalizedAmount,
+                boxValue: ''
+              }),
+              query(
+                `SELECT box_value
+                 FROM lottery_entries
+                 WHERE user_id = $1
+                   AND entry_source = $2
+                   AND LOWER(TRIM(status)) = $3
+                   AND (sent_to_parent = $4 OR forwarded_by = $4)
+                   ${bookingDate ? 'AND booking_date = $5::date' : ''}
+                   ${sessionMode ? `AND session_mode = $${bookingDate ? 6 : 5}` : ''}
+                   ${purchaseCategory ? `AND purchase_category = $${(bookingDate ? 1 : 0) + (sessionMode ? 1 : 0) + 5}` : ''}
+                   ${normalizedAmount ? `AND amount = $${(bookingDate ? 1 : 0) + (sessionMode ? 1 : 0) + (purchaseCategory ? 1 : 0) + 5}::numeric` : ''}`,
+                [
+                  seller.id,
+                  PURCHASE_ENTRY_SOURCE,
+                  UNSOLD_LOCAL_STATUS,
+                  req.user.id,
+                  ...[
+                    bookingDate,
+                    sessionMode,
+                    purchaseCategory,
+                    normalizedAmount
+                  ].filter(Boolean)
+                ]
+              )
+            ]);
+
+            const snapshotPiece = snapshotRows.reduce((sum, row) => (
+              sum + (String(row.box_value || '').match(/^\d+(\.\d+)?$/) ? Number(row.box_value) : 0)
+            ), 0);
+            const localSavedPiece = localSavedResult.rows.reduce((sum, row) => (
+              sum + (String(row.box_value || '').match(/^\d+(\.\d+)?$/) ? Number(row.box_value) : 0)
+            ), 0);
+
+            sellerChildSnapshotUnsoldMap.set(Number(seller.id), snapshotPiece + localSavedPiece);
+          })
+      );
+    }
 
     res.json(sellers.map((seller) => {
       const summary = summaryMap.get(Number(seller.id)) || {};
+      const resolvedUnsoldPiece = currentUserIsAdmin || Number(seller.id) === Number(req.user.id)
+        ? Number(summary.unsold_piece || 0)
+        : Number(sellerChildSnapshotUnsoldMap.get(Number(seller.id)) || 0);
       return {
         sellerId: seller.id,
         sellerName: seller.username,
         isSelf: Number(seller.id) === Number(req.user.id),
         totalPiece: Number(summary.total_piece || 0),
-        unsoldPiece: Number(summary.unsold_piece || 0),
+        unsoldPiece: resolvedUnsoldPiece,
         stockNotTransferredPiece
       };
     }));
@@ -3824,16 +4097,39 @@ const updateReceivedEntryStatus = async (req, res) => {
     const isPurchaseUnsoldEntry = entry.entry_source === PURCHASE_ENTRY_SOURCE && entry.status === UNSOLD_SENT_STATUS;
 
     if (isPurchaseUnsoldEntry) {
+      const memoScopeResult = await query(
+        `SELECT *
+         FROM lottery_entries
+         WHERE user_id = $1
+           AND memo_number = $2
+           AND booking_date = $3::date
+           AND session_mode = $4
+           AND sent_to_parent = $5
+           AND entry_source = $6
+           AND status = $7
+         ORDER BY number ASC`,
+        [
+          entry.user_id,
+          entry.memo_number,
+          entry.booking_date,
+          entry.session_mode,
+          req.user.id,
+          PURCHASE_ENTRY_SOURCE,
+          UNSOLD_SENT_STATUS
+        ]
+      );
+
+      const scopedIds = memoScopeResult.rows.map((row) => row.id);
       const updatedResult = await query(
         `UPDATE lottery_entries
          SET status = $2,
              sent_to_parent = $3,
              forwarded_by = $4,
              sent_at = CURRENT_TIMESTAMP
-         WHERE id = $1
+         WHERE id = ANY($1::int[])
          RETURNING *`,
         [
-          entryId,
+          scopedIds,
           action === 'accept' ? UNSOLD_ACCEPTED_STATUS : 'accepted',
           req.user.id,
           action === 'accept' ? req.user.id : entry.forwarded_by
@@ -3934,11 +4230,9 @@ const getAcceptedEntriesForBookLottery = async (req, res) => {
 
 const getSentEntries = async (req, res) => {
   try {
-    const visibleUserIds = await getVisibleBranchIds(req.user.id, false);
+    const visibleUserIds = await getVisibleBranchIds(req.user.id, true);
     const sessionMode = getOptionalSessionMode(req);
     const { date, fromDate, toDate } = req.query;
-
-    await normalizeAdminAcceptedEntries(visibleUserIds);
 
     if (visibleUserIds.length === 0) {
       return res.json([]);
@@ -3946,7 +4240,7 @@ const getSentEntries = async (req, res) => {
 
     const params = [visibleUserIds];
     let sessionFilter = '';
-    const dateFilterResult = buildDateFilter({ date, fromDate, toDate }, params, 'le.booking_date', true);
+    const dateFilterResult = buildDateFilter({ date, fromDate, toDate }, params, 'h.booking_date', true);
 
     if (dateFilterResult.error) {
       return res.status(400).json({ message: dateFilterResult.error });
@@ -3954,24 +4248,20 @@ const getSentEntries = async (req, res) => {
 
     if (sessionMode) {
       params.push(sessionMode);
-      sessionFilter = `AND le.session_mode = $${params.length}`;
+      sessionFilter = `AND h.session_mode = $${params.length}`;
     }
 
     const entriesResult = await query(
-      `SELECT le.*, u.username
-       , parent_user.username AS parent_username
-       , forwarded_user.username AS forwarded_by_username
-       FROM lottery_entries le
-       LEFT JOIN users u ON u.id = le.user_id
-       LEFT JOIN users parent_user ON parent_user.id = le.sent_to_parent
-       LEFT JOIN users forwarded_user ON forwarded_user.id = le.forwarded_by
-       WHERE le.user_id = ANY($1::int[]) AND le.status IN ('sent', 'accepted')
+      `SELECT h.*
+       FROM lottery_entry_history h
+       WHERE h.actor_user_id = ANY($1::int[])
+         AND h.action_type IN ('sent', 'forwarded', 'queued', 'queue_forwarded')
        ${dateFilterResult.dateFilter}
        ${sessionFilter}
-       ORDER BY le.sent_at DESC NULLS LAST`,
+       ORDER BY h.created_at DESC`,
       params
     );
-    res.json(entriesResult.rows.map(mapLotteryEntry));
+    res.json(entriesResult.rows.map(mapHistoryRecord));
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }

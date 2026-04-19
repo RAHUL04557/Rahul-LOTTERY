@@ -1,5 +1,15 @@
 const express = require('express');
-const { uploadPrice, updatePrizeResult, getPriceByCode, getAllPrices, getPrizeTracker, getBillPrizes, checkPrize, getMyPrizes } = require('../controllers/priceController');
+const {
+  uploadPrice,
+  updatePrizeResult,
+  getPriceByCode,
+  getAllPrices,
+  getPrizeTracker,
+  getFilteredPrizeResults,
+  getBillPrizes,
+  checkPrize,
+  getMyPrizes
+} = require('../controllers/priceController');
 const { authenticateToken, authorizeRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -18,6 +28,9 @@ router.get('/my-prizes', authenticateToken, getMyPrizes);
 
 // Prize tracker with winners
 router.get('/tracker', authenticateToken, authorizeRole(['admin']), getPrizeTracker);
+
+// Filtered sold/unsold prize results
+router.get('/results', authenticateToken, getFilteredPrizeResults);
 
 // Bill prize deductions
 router.get('/bill-prizes', authenticateToken, getBillPrizes);

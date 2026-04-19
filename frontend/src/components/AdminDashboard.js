@@ -632,6 +632,7 @@ const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, option
       id: `purchase-send-memo-${row.id || index}`,
       itemName: String(firstEntry.displaySeller || firstEntry.username || row.itemName || '').toUpperCase(),
       isExistingUnsoldMemoRow: Boolean(options.existingUnsoldMemo),
+      isEditedUnsoldRemoveRow: false,
       entryIds: entries
         .filter((entry) => (
           String(entry.boxValue || entry.sem || '') === String(row.semValue || '')
@@ -739,6 +740,16 @@ const buildDirectSellerLookup = (treeRoot) => {
   return lookup;
 };
 
+const getAdminRootSellerName = (treeRoot, sellerName = '') => {
+  const normalizedSellerName = String(sellerName || '').trim();
+  if (!normalizedSellerName) {
+    return '';
+  }
+
+  const directSellerLookup = buildDirectSellerLookup(treeRoot);
+  return directSellerLookup.get(normalizedSellerName) || normalizedSellerName;
+};
+
 const flattenSellerNodes = (treeRoot) => {
   const sellers = [];
 
@@ -756,6 +767,22 @@ const flattenSellerNodes = (treeRoot) => {
 
   visit(treeRoot);
   return sellers;
+};
+
+const getPrizeShiftLabel = (shift) => {
+  if (shift === 'DAY') {
+    return 'DAY';
+  }
+
+  if (shift === 'EVENING') {
+    return 'EVENING';
+  }
+
+  if (shift === 'MORNING') {
+    return 'MORNING';
+  }
+
+  return 'ALL';
 };
 
 const normalizePrizeTrackerRowsForAdmin = (rows = [], treeRoot) => {
@@ -1101,8 +1128,11 @@ const AdminDashboard = ({
   const [traceLoading, setTraceLoading] = useState(false);
   const [prizeTrackerDate, setPrizeTrackerDate] = useState(getTodayDateValue());
   const [prizeTrackerSessionMode, setPrizeTrackerSessionMode] = useState('ALL');
+  const [prizeTrackerSellerId, setPrizeTrackerSellerId] = useState('');
+  const [prizeTrackerSoldStatus, setPrizeTrackerSoldStatus] = useState('ALL');
   const [prizeTrackerSearchPerformed, setPrizeTrackerSearchPerformed] = useState(false);
   const [prizeTrackerResults, setPrizeTrackerResults] = useState([]);
+  const [prizeTrackerTotalPrize, setPrizeTrackerTotalPrize] = useState(0);
   const [adminStockBookingDate, setAdminStockBookingDate] = useState(getTodayDateValue());
   const [adminStockSessionMode, setAdminStockSessionMode] = useState(initialSessionMode);
   const [adminStockPurchaseCategory, setAdminStockPurchaseCategory] = useState(String(initialPurchaseCategory || '').trim().toUpperCase() || (initialSessionMode === 'NIGHT' ? 'E' : 'M'));
@@ -1161,6 +1191,7 @@ const AdminDashboard = ({
   const adminStockCodeInputRef = useRef(null);
   const adminStockFromInputRef = useRef(null);
   const adminStockToInputRef = useRef(null);
+  const prizeTrackerResultTypeRef = useRef(null);
   const adminSendSellerSelectRef = useRef(null);
   const adminSendDateInputRef = useRef(null);
   const adminSendMemoRef = useRef(null);
@@ -1321,6 +1352,7 @@ const AdminDashboard = ({
       return;
     }
 
+    loadPurchaseEntries(purchaseBookingDate, purchaseSessionMode, purchaseSellerId, purchaseCategory);
     loadAdminUnsoldRemoveMemoEntries(purchaseBookingDate, purchaseSessionMode, purchaseSellerId);
   }, [activeTab, purchaseBookingDate, purchaseSessionMode, purchaseSellerId, purchaseAmount, purchaseCategory]);
 
@@ -1521,7 +1553,16 @@ const AdminDashboard = ({
           }
         }
       );
-      setSummaryEntries(response.data.map(mapApiEntry));
+      setSummaryEntries((response.data || []).map((entry) => ({
+        id: entry.id,
+        uniqueCode: entry.uniqueCode || entry.unique_code,
+        sem: entry.boxValue || entry.box_value,
+        amount: String(entry.amount || ''),
+        number: entry.number,
+        status: entry.statusAfter || entry.status_after || '',
+        createdAt: entry.createdAt || entry.created_at,
+        sentAt: entry.createdAt || entry.created_at
+      })));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading summary');
     } finally {
@@ -1990,9 +2031,21 @@ const AdminDashboard = ({
         })
       ]);
 
-      setPurchaseEntries(assignedResponse.data.map(mapApiEntry));
+      const selectedSellerName = directAdminSellers.find((seller) => String(seller.id) === String(selectedSellerId))?.username || '';
+      const normalizeSelectedSellerEntry = (entry) => {
+        const mappedEntry = mapApiEntry(entry);
+        const resolvedSellerName = selectedSellerName || mappedEntry.displaySeller || mappedEntry.username;
+
+        return {
+          ...mappedEntry,
+          username: resolvedSellerName,
+          displaySeller: resolvedSellerName
+        };
+      };
+
+      setPurchaseEntries((assignedResponse.data || []).map(normalizeSelectedSellerEntry));
       setUnsoldPurchaseEntries((unsoldResponse.data || [])
-        .map(mapApiEntry)
+        .map(normalizeSelectedSellerEntry)
         .filter((entry) => activeTab === 'unsold-remove' ? isRemovableUnsoldEntry(entry) : true));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading purchase record');
@@ -2169,9 +2222,21 @@ const AdminDashboard = ({
           amount: initialAmount || purchaseAmount
         }, { withSessionMode: false })
       ]);
+      const normalizeAdminSeePurchaseEntry = (entry, sourceType) => {
+        const resolvedSellerName = getAdminRootSellerName(
+          treeData,
+          entry.displaySeller || entry.username || entry.forwardedByUsername || ''
+        );
 
-      setSeePurchaseStockEntries((stockResponse.data || []).map((entry) => normalizeSeePurchaseEntry(entry, 'admin_stock')));
-      setSeePurchaseSentEntries((sentResponse.data || []).map((entry) => normalizeSeePurchaseEntry(entry, 'seller_purchase')));
+        return normalizeSeePurchaseEntry({
+          ...entry,
+          username: resolvedSellerName || entry.username,
+          displaySeller: resolvedSellerName || entry.displaySeller || entry.username
+        }, sourceType);
+      };
+
+      setSeePurchaseStockEntries((stockResponse.data || []).map((entry) => normalizeAdminSeePurchaseEntry(entry, 'admin_stock')));
+      setSeePurchaseSentEntries((sentResponse.data || []).map((entry) => normalizeAdminSeePurchaseEntry(entry, 'seller_purchase')));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading see purchase data');
       setSeePurchaseStockEntries([]);
@@ -2273,17 +2338,9 @@ const AdminDashboard = ({
       ));
       const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, purchaseAmount);
       setPurchaseDraftRows(draftRows);
-
-      if (draftRows.length > 0) {
-        const firstRow = draftRows[0];
-        setPurchaseCodeInput(firstRow.code || '');
-        setPurchaseFromInput(firstRow.from || '');
-        setPurchaseToInput(firstRow.to || '');
-        setPurchaseActiveRowIndex(0);
-      } else {
-        setPurchaseActiveRowIndex(0);
-        resetPurchaseSendEntryInputs();
-      }
+      resetPurchaseSendEntryInputs();
+      setPurchaseEditorVisible(true);
+      setPurchaseActiveRowIndex(draftRows.length);
     }
     window.requestAnimationFrame(() => adminSendCodeInputRef.current?.focus());
   };
@@ -2347,7 +2404,7 @@ const AdminDashboard = ({
       resetPurchaseSendEntryInputs();
     } else {
       if (activeTab === 'unsold-remove') {
-        hydrateAdminUnsoldRemoveDraftRowsForMemo(option.memoNumber);
+        hydrateAdminUnsoldRemoveDraftRowsForMemo(option.memoNumber, adminUnsoldRemoveMemoEntries);
       } else {
         const selectedEntries = unsoldPurchaseEntries.filter((entry) => (
           Number(entry.memoNumber) === Number(option.memoNumber)
@@ -2530,8 +2587,7 @@ const AdminDashboard = ({
     }
 
     const conflictingPurchaseEntries = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
-      !(isEditingExistingPurchaseMemo && Number(entry.memoNumber) === Number(purchaseMemoNumber))
-      && String(entry.sem || '') === String(result.row.semValue || '')
+      String(entry.sem || '') === String(result.row.semValue || '')
       && String(entry.sessionMode || '') === String(result.row.resolvedSessionMode || '')
       && String(entry.purchaseCategory || '') === String(result.row.resolvedPurchaseCategory || '')
       && String(formatDateOnly(entry.bookingDate || '')) === String(result.row.drawDate || '')
@@ -2602,8 +2658,7 @@ const AdminDashboard = ({
     }
 
     const conflictingPurchaseEntries = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
-      !(isEditingExistingPurchaseMemo && Number(entry.memoNumber) === Number(purchaseMemoNumber))
-      && String(entry.sem || '') === String(result.row.semValue || '')
+      String(entry.sem || '') === String(result.row.semValue || '')
       && String(entry.sessionMode || '') === String(result.row.resolvedSessionMode || '')
       && String(entry.purchaseCategory || '') === String(result.row.resolvedPurchaseCategory || '')
       && String(formatDateOnly(entry.bookingDate || '')) === String(result.row.drawDate || '')
@@ -2618,6 +2673,34 @@ const AdminDashboard = ({
         )),
         'Duplicate Number'
       );
+      return;
+    }
+
+    try {
+      const serverEntriesResponse = await lotteryService.getPurchases({
+        bookingDate: result.row.drawDate || purchaseBookingDate,
+        sessionMode: result.row.resolvedSessionMode || purchaseSessionMode,
+        sellerId: purchaseSellerId,
+        purchaseCategory: result.row.resolvedPurchaseCategory || purchaseCategory,
+        amount: result.row.bookingAmount || purchaseAmount,
+        boxValue: result.row.semValue
+      });
+      const serverConflicts = (serverEntriesResponse.data || []).filter((entry) => (
+        numberFallsWithinRange(entry.number, result.row.from, result.row.to)
+      ));
+
+      if (serverConflicts.length > 0) {
+        openBlockingWarning(
+          'Number already added.',
+          serverConflicts.slice(0, 5).map((entry) => (
+            `Seller ${entry.displaySeller || entry.username || 'Unknown'} | Memo No. ${entry.memoNumber || 'N/A'}`
+          )),
+          'Duplicate Number'
+        );
+        return;
+      }
+    } catch (err) {
+      openBlockingWarning(err.response?.data?.message || 'Purchase send check nahi ho paya', [], 'Warning');
       return;
     }
 
@@ -2647,7 +2730,12 @@ const AdminDashboard = ({
         const updatedRows = [...currentRows];
         updatedRows[purchaseActiveRowIndex] = {
           ...result.row,
-          id: currentRows[purchaseActiveRowIndex].id
+          id: currentRows[purchaseActiveRowIndex].id,
+          isExistingUnsoldMemoRow: currentRows[purchaseActiveRowIndex].isExistingUnsoldMemoRow,
+          isEditedUnsoldRemoveRow: activeTab === 'unsold-remove'
+            ? true
+            : currentRows[purchaseActiveRowIndex].isEditedUnsoldRemoveRow,
+          entryIds: currentRows[purchaseActiveRowIndex].entryIds || []
         };
         return updatedRows;
       }
@@ -2669,6 +2757,19 @@ const AdminDashboard = ({
       adminSendFromInputRef.current?.focus();
       adminSendFromInputRef.current?.select?.();
     });
+  };
+
+  const handleAdminPurchaseSendAddAction = async () => {
+    if (blockingWarning) {
+      return;
+    }
+
+    if (!hasPendingPurchaseSendEditorValues()) {
+      startNewPurchaseSendRow();
+      return;
+    }
+
+    await commitPurchaseSendDraftRow();
   };
 
   const movePurchaseDraftSelection = (direction) => {
@@ -2722,30 +2823,16 @@ const AdminDashboard = ({
       return;
     }
 
-    let rowsForSaveResult;
-    try {
-      rowsForSaveResult = await getPurchaseSendRowsForSave();
-    } catch (err) {
-      openBlockingWarning(err.response?.data?.message || err.message || 'Purchase save nahi ho paya', [], 'Warning');
+    if (hasPendingPurchaseSendEditorValues()) {
+      openBlockingWarning('Pehle A-Add karke row confirm karo, uske baad Save karo', [], 'Warning');
       return;
     }
 
-    if (rowsForSaveResult.error) {
-      openBlockingWarning(rowsForSaveResult.error, rowsForSaveResult.details || [], rowsForSaveResult.title || 'Warning');
-      return;
-    }
-
-    const rowsToSave = rowsForSaveResult.rows || [];
+    const rowsToSave = [...purchaseDraftRows];
 
     if (rowsToSave.length === 0 && !isEditingExistingPurchaseMemo) {
       openBlockingWarning('Save karne ke liye row add karo');
       return;
-    }
-
-    if (rowsForSaveResult.consumedEditor) {
-      setPurchaseDraftRows(rowsToSave);
-      resetPurchaseSendEntryInputs();
-      setPurchaseActiveRowIndex(rowsToSave.length);
     }
 
     setPurchaseLoading(true);
@@ -2811,7 +2898,12 @@ const AdminDashboard = ({
       await loadPurchaseEntries(purchaseBookingDate, purchaseSessionMode, purchaseSellerId);
     } catch (err) {
       const rawErrorMessage = err.response?.data?.message || err.message || '';
-      if (String(rawErrorMessage).toLowerCase().includes('purchase stock me nahi hai')) {
+      const normalizedErrorMessage = String(rawErrorMessage).toLowerCase();
+      if (
+        normalizedErrorMessage.includes('purchase stock me nahi hai')
+        || normalizedErrorMessage.includes('selected date, shift, category aur sem me pehle se use ho chuka hai')
+        || normalizedErrorMessage.includes('number already added')
+      ) {
         setError('');
         return;
       }
@@ -2821,21 +2913,108 @@ const AdminDashboard = ({
         || err.message
         || 'Error saving purchase';
       setError(errorMessage);
-      if (errorMessage.includes('Number already added')) {
-        openBlockingWarning(errorMessage, [], 'Duplicate Number');
-      }
     } finally {
       setPurchaseLoading(false);
     }
   };
 
-  const validateAdminUnsoldRowInStock = async (row) => {
+  const validateAdminUnsoldRowInStock = async (row, options = {}) => {
+    const currentMemoNumber = Number(options.currentMemoNumber || 0);
     const requestedNumbers = buildConsecutiveNumbers(row.from, row.to);
     if (requestedNumbers.error) {
       return { error: requestedNumbers.error };
     }
 
+    const matchingUnsoldEntries = unsoldPurchaseEntries.filter((entry) => (
+      String(entry.sem || '') === String(row.semValue || '')
+      && String(entry.amount || '') === String(row.bookingAmount || purchaseAmount || '')
+      && String(entry.sessionMode || '') === String(row.resolvedSessionMode || purchaseSessionMode || '')
+      && String(entry.purchaseCategory || '') === String(row.resolvedPurchaseCategory || purchaseCategory || '')
+      && getDateOnlyValue(entry.bookingDate) === getDateOnlyValue(row.drawDate || purchaseBookingDate)
+    ));
+    const duplicateUnsoldEntries = matchingUnsoldEntries.filter((entry) => (
+      Number(entry.memoNumber || 0) !== currentMemoNumber
+      && requestedNumbers.numbers.includes(String(entry.number || '').padStart(5, '0'))
+    ));
+
+    if (duplicateUnsoldEntries.length > 0) {
+      const memoNumbers = [...new Set(
+        duplicateUnsoldEntries
+          .map((entry) => Number(entry.memoNumber || 0))
+          .filter((memoNumber) => Number.isInteger(memoNumber) && memoNumber > 0)
+      )];
+      return {
+        error: memoNumbers.length > 0
+          ? `Ye number already unsold at memo number ${memoNumbers.join(', ')}`
+          : `Ye number pehle se unsold me save hai: ${formatMissingNumberLabel(duplicateUnsoldEntries.map((entry) => String(entry.number || '').padStart(5, '0')))}`
+      };
+    }
+
+    const currentMemoEntries = currentMemoNumber > 0
+      ? matchingUnsoldEntries.filter((entry) => (
+        Number(entry.memoNumber || 0) === currentMemoNumber
+      ))
+      : [];
+    const currentMemoDraftNumbers = purchaseDraftRows.flatMap((draftRow) => {
+      if (!draftRow?.isExistingUnsoldMemoRow) {
+        return [];
+      }
+
+      const sameContext = (
+        String(draftRow.semValue || '') === String(row.semValue || '')
+        && String(draftRow.bookingAmount || purchaseAmount || '') === String(row.bookingAmount || purchaseAmount || '')
+        && String(draftRow.resolvedSessionMode || purchaseSessionMode || '') === String(row.resolvedSessionMode || purchaseSessionMode || '')
+        && String(draftRow.resolvedPurchaseCategory || purchaseCategory || '') === String(row.resolvedPurchaseCategory || purchaseCategory || '')
+        && getDateOnlyValue(draftRow.drawDate || purchaseBookingDate) === getDateOnlyValue(row.drawDate || purchaseBookingDate)
+      );
+
+      if (!sameContext) {
+        return [];
+      }
+
+      const draftNumbers = buildConsecutiveNumbers(draftRow.from, draftRow.to);
+      return draftNumbers.error ? [] : draftNumbers.numbers;
+    });
+
+    const response = await lotteryService.getPurchases({
+      bookingDate: row.drawDate || purchaseBookingDate,
+      sessionMode: row.resolvedSessionMode || purchaseSessionMode,
+      sellerId: purchaseSellerId,
+      status: 'accepted',
+      purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
+      amount: row.bookingAmount || purchaseAmount,
+      boxValue: row.semValue
+    });
+
+    const availableNumbers = new Set(
+      [
+        ...(response.data || [])
+          .filter((entry) => {
+            const hasMemo = entry.memoNumber !== null && entry.memoNumber !== undefined && String(entry.memoNumber).trim() !== '';
+            return hasMemo;
+          })
+          .map((entry) => String(entry.number || '').padStart(5, '0')),
+        ...currentMemoEntries.map((entry) => String(entry.number || '').padStart(5, '0')),
+        ...currentMemoDraftNumbers.map((entry) => String(entry || '').padStart(5, '0'))
+      ]
+    );
+    const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !availableNumbers.has(currentNumber));
+
+    if (missingNumbers.length > 0) {
+      return {
+        error: `${formatAdminUnsoldErrorDate(row.drawDate || purchaseBookingDate)} date me ${getSelectedAdminUnsoldSellerName()} ke purchase stock me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
+      };
+    }
+
     return { ok: true };
+  };
+
+  const getActiveAdminUnsoldMemoNumber = () => {
+    if (activeTab === 'unsold-remove') {
+      return Number(purchaseRemoveMemoNumber || selectedAdminUnsoldRemoveMemoOption?.memoNumber || 0);
+    }
+
+    return Number(purchaseMemoNumber || selectedAdminUnsoldMemoOption?.memoNumber || 0);
   };
 
   const addAdminUnsoldDraftRow = async () => {
@@ -2848,6 +3027,10 @@ const AdminDashboard = ({
       openBlockingWarning(result.error);
       return;
     }
+
+    const isUnsoldRemoveMode = activeTab === 'unsold-remove';
+    const editingExistingUnsoldRow = Boolean(purchaseDraftRows[purchaseActiveRowIndex]?.isExistingUnsoldMemoRow);
+    const editingExistingAdminUnsoldMemo = Boolean(selectedAdminUnsoldMemoOption && !selectedAdminUnsoldMemoOption.isNew);
 
     const conflictingDraft = purchaseDraftRows.find((row, index) => (
       index !== purchaseActiveRowIndex
@@ -2864,13 +3047,27 @@ const AdminDashboard = ({
     }
 
     try {
-      const stockValidation = await validateAdminUnsoldRowInStock(result.row);
+      const stockValidation = editingExistingUnsoldRow || editingExistingAdminUnsoldMemo || isUnsoldRemoveMode
+        ? { ok: true }
+        : await validateAdminUnsoldRowInStock(result.row, {
+          currentMemoNumber: getActiveAdminUnsoldMemoNumber()
+        });
       if (stockValidation.error) {
-        openBlockingWarning(stockValidation.error, [], 'Stock Missing', focusAdminUnsoldFromInput);
+        openBlockingWarning(
+          stockValidation.error,
+          [],
+          isUnsoldRemoveMode ? 'Unsold Missing' : 'Stock Missing',
+          focusAdminUnsoldFromInput
+        );
         return;
       }
     } catch (err) {
-      openBlockingWarning(err.response?.data?.message || 'Stock check nahi ho paya', [], 'Stock Missing', focusAdminUnsoldFromInput);
+      openBlockingWarning(
+        err.response?.data?.message || (isUnsoldRemoveMode ? 'Unsold check nahi ho paya' : 'Stock check nahi ho paya'),
+        [],
+        isUnsoldRemoveMode ? 'Unsold Missing' : 'Stock Missing',
+        focusAdminUnsoldFromInput
+      );
       return;
     }
 
@@ -2902,6 +3099,11 @@ const AdminDashboard = ({
       return { error: requestedNumbers.error };
     }
 
+    const effectiveMemoNumber = purchaseRemoveMemoNumber || selectedAdminUnsoldRemoveMemoOption?.memoNumber;
+    if (!effectiveMemoNumber) {
+      return { error: 'Unsold remove memo select karo' };
+    }
+
     const response = await lotteryService.getPurchases({
       bookingDate: row.drawDate || purchaseBookingDate,
       sessionMode: row.resolvedSessionMode || purchaseSessionMode,
@@ -2913,23 +3115,22 @@ const AdminDashboard = ({
     });
 
     const sellerLabel = getSelectedAdminUnsoldSellerName();
-    const targetMemoNumber = Number(
-      selectedAdminUnsoldRemoveMemoOption?.memoNumber
-      || purchaseRemoveMemoNumber
-      || row.memoNumber
-      || 0
-    );
     const removableNumbers = new Set((response.data || [])
       .filter((entry) => (
         isRemovableUnsoldEntry(entry)
-        && (!targetMemoNumber || Number(entry.memoNumber) === targetMemoNumber)
+        && Number(entry.memoNumber ?? entry.memo_number ?? 0) === Number(effectiveMemoNumber)
+        && String(entry.sem || entry.boxValue || '') === String(row.semValue || '')
+        && String(entry.amount || '') === String(row.bookingAmount || purchaseAmount || '')
+        && String(entry.sessionMode || entry.session_mode || '') === String(row.resolvedSessionMode || purchaseSessionMode || '')
+        && String(entry.purchaseCategory || '') === String(row.resolvedPurchaseCategory || purchaseCategory || '')
+        && getDateOnlyValue(entry.bookingDate || '') === getDateOnlyValue(row.drawDate || purchaseBookingDate)
       ))
       .map((entry) => String(entry.number || '').padStart(5, '0')));
     const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !removableNumbers.has(currentNumber));
 
     if (missingNumbers.length > 0) {
       return {
-        error: `${formatAdminUnsoldErrorDate(row.drawDate || purchaseBookingDate)} date me ${sellerLabel} ke unsold memo ${targetMemoNumber || ''} me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
+        error: `${formatAdminUnsoldErrorDate(row.drawDate || purchaseBookingDate)} date me ${sellerLabel} ke unsold memo ${effectiveMemoNumber} me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
       };
     }
 
@@ -2938,7 +3139,9 @@ const AdminDashboard = ({
 
   const validateAdminDraftRowAgainstActiveTab = async (row) => {
     if (activeTab === 'unsold') {
-      return validateAdminUnsoldRowInStock(row);
+      return validateAdminUnsoldRowInStock(row, {
+        currentMemoNumber: getActiveAdminUnsoldMemoNumber()
+      });
     }
 
     if (activeTab === 'unsold-remove') {
@@ -2955,22 +3158,32 @@ const AdminDashboard = ({
       return false;
     }
 
+    const isUnsoldRemoveMode = activeTab === 'unsold-remove';
+    const editingExistingUnsoldRow = Boolean(purchaseDraftRows[purchaseActiveRowIndex]?.isExistingUnsoldMemoRow);
+    const editingExistingAdminUnsoldMemo = Boolean(selectedAdminUnsoldMemoOption && !selectedAdminUnsoldMemoOption.isNew);
+
     try {
-      const stockValidation = await validateAdminDraftRowAgainstActiveTab(result.row);
+      const stockValidation = editingExistingUnsoldRow || editingExistingAdminUnsoldMemo
+        ? { ok: true }
+        : isUnsoldRemoveMode
+          ? await validateAdminUnsoldRowInRemovableStock(result.row)
+          : await validateAdminUnsoldRowInStock(result.row, {
+            currentMemoNumber: getActiveAdminUnsoldMemoNumber()
+          });
       if (stockValidation.error) {
         openBlockingWarning(
           stockValidation.error,
           [],
-          activeTab === 'unsold-remove' ? 'Unsold Missing' : 'Stock Missing',
+          isUnsoldRemoveMode ? 'Unsold Missing' : 'Stock Missing',
           focusAdminUnsoldFromInput
         );
         return false;
       }
     } catch (err) {
       openBlockingWarning(
-        err.response?.data?.message || (activeTab === 'unsold-remove' ? 'Unsold check nahi ho paya' : 'Stock check nahi ho paya'),
+        err.response?.data?.message || (isUnsoldRemoveMode ? 'Unsold check nahi ho paya' : 'Stock check nahi ho paya'),
         [],
-        activeTab === 'unsold-remove' ? 'Unsold Missing' : 'Stock Missing',
+        isUnsoldRemoveMode ? 'Unsold Missing' : 'Stock Missing',
         focusAdminUnsoldFromInput
       );
       return false;
@@ -3006,17 +3219,20 @@ const AdminDashboard = ({
       return;
     }
 
-    let rowsToSave = [...purchaseDraftRows];
+    let rowsToSave = mode === 'remove'
+      ? purchaseDraftRows.filter((row) => (
+        !row.isExistingUnsoldMemoRow || row.isEditedUnsoldRemoveRow
+      ))
+      : [...purchaseDraftRows];
     if (hasPendingPurchaseSendEditorValues()) {
-      const result = buildPurchaseSendDraftRow();
-      if (result.error) {
-        openBlockingWarning(result.error);
-        return;
-      }
-      rowsToSave = [...rowsToSave, result.row];
+      openBlockingWarning('Pehle A-Add karke row confirm karo, uske baad Save karo', [], 'Warning', focusAdminUnsoldFromInput);
+      return;
     }
 
     const editingExistingAdminUnsoldMemo = mode === 'mark' && Boolean(selectedAdminUnsoldMemoOption && !selectedAdminUnsoldMemoOption.isNew);
+    const effectiveMemoNumber = mode === 'remove'
+      ? (purchaseRemoveMemoNumber || selectedAdminUnsoldRemoveMemoOption?.memoNumber || nextAdminUnsoldRemoveMemoNumber)
+      : (purchaseMemoNumber || selectedAdminUnsoldMemoOption?.memoNumber || nextAdminUnsoldMemoNumber);
 
     if (rowsToSave.length === 0 && !editingExistingAdminUnsoldMemo) {
       openBlockingWarning('Save karne ke liye row add karo');
@@ -3037,17 +3253,21 @@ const AdminDashboard = ({
         return;
       }
     } else {
-      try {
-        for (const row of rowsToSave) {
-          const stockValidation = await validateAdminUnsoldRowInStock(row);
-          if (stockValidation.error) {
-            openBlockingWarning(stockValidation.error, [], 'Stock Missing', focusAdminUnsoldFromInput);
-            return;
+      if (!editingExistingAdminUnsoldMemo) {
+        try {
+          for (const row of rowsToSave) {
+            const stockValidation = await validateAdminUnsoldRowInStock(row, {
+              currentMemoNumber: 0
+            });
+            if (stockValidation.error) {
+              openBlockingWarning(stockValidation.error, [], 'Stock Missing', focusAdminUnsoldFromInput);
+              return;
+            }
           }
+        } catch (err) {
+          openBlockingWarning(err.response?.data?.message || 'Stock check nahi ho paya', [], 'Stock Missing', focusAdminUnsoldFromInput);
+          return;
         }
-      } catch (err) {
-        openBlockingWarning(err.response?.data?.message || 'Stock check nahi ho paya', [], 'Stock Missing', focusAdminUnsoldFromInput);
-        return;
       }
     }
 
@@ -3056,10 +3276,6 @@ const AdminDashboard = ({
     setSuccess('');
 
     try {
-      const effectiveMemoNumber = mode === 'remove'
-        ? (purchaseRemoveMemoNumber || selectedAdminUnsoldRemoveMemoOption?.memoNumber || nextAdminUnsoldRemoveMemoNumber)
-        : (purchaseMemoNumber || selectedAdminUnsoldMemoOption?.memoNumber || nextAdminUnsoldMemoNumber);
-
       if (mode === 'remove' && !effectiveMemoNumber) {
         openBlockingWarning('Unsold memo select karo');
         return;
@@ -3104,8 +3320,16 @@ const AdminDashboard = ({
       }
 
       setSuccess(mode === 'remove' ? `Unsold removed successfully in memo ${effectiveMemoNumber}` : `Unsold saved successfully in memo ${effectiveMemoNumber}`);
-      setPurchaseMemoNumber(null);
-      setPurchaseRemoveMemoNumber(null);
+      if (mode === 'remove') {
+        setPurchaseMemoNumber(nextAdminUnsoldMemoNumber);
+        setPurchaseRemoveMemoNumber(effectiveMemoNumber + 1);
+      } else if (editingExistingAdminUnsoldMemo) {
+        setPurchaseMemoNumber(effectiveMemoNumber);
+        setPurchaseRemoveMemoNumber(nextAdminUnsoldRemoveMemoNumber);
+      } else {
+        setPurchaseMemoNumber(effectiveMemoNumber + 1);
+        setPurchaseRemoveMemoNumber(nextAdminUnsoldRemoveMemoNumber);
+      }
       setPurchaseMemoSelectionIndex(0);
       setPurchaseMemoPopupOpen(false);
       setPurchaseDraftRows([]);
@@ -3563,6 +3787,10 @@ const AdminDashboard = ({
   }
 
   const handleTabToggle = (tabName) => {
+    if (tabName === 'unsold-remove') {
+      return;
+    }
+
     setError('');
     setSuccess('');
 
@@ -3580,12 +3808,8 @@ const AdminDashboard = ({
 
     window.history.pushState({ adminTab: tabName }, '');
 
-    if (tabName === 'record' || tabName === 'generate-bill') {
-      if (tabName === 'record') {
-        loadRecordHistory();
-      } else {
-        loadBillPreviewData(getBillFilters());
-      }
+    if (tabName === 'generate-bill') {
+      loadBillPreviewData(getBillFilters());
     }
 
     if (tabName === 'today-summary') {
@@ -3617,6 +3841,12 @@ const AdminDashboard = ({
 
     setActiveTab(tabName);
   };
+
+  useEffect(() => {
+    if (activeTab === 'unsold-remove') {
+      setActiveTab('unsold');
+    }
+  }, [activeTab]);
 
   const handleTabBack = () => {
     setError('');
@@ -3743,10 +3973,7 @@ const AdminDashboard = ({
 
   useFunctionShortcuts(activeTab === 'purchase-send', {
     A: () => {
-      if (blockingWarning) {
-        return;
-      }
-      startNewPurchaseSendRow();
+      void handleAdminPurchaseSendAddAction();
     },
     F2: () => {
       if (blockingWarning) {
@@ -3811,6 +4038,16 @@ const AdminDashboard = ({
   });
 
   const directAdminSellers = (treeData?.children || []).filter((node) => node.role === 'seller');
+  const adminPrizeTrackerSellerOptions = [
+    { id: '', username: 'All Sellers', keyword: 'ALL' },
+    ...directAdminSellers
+      .filter((seller) => seller.id)
+      .map((seller) => ({
+        id: seller.id,
+        username: seller.username,
+        keyword: seller.keyword || ''
+      }))
+  ];
   const loadPieceSummary = async (dateOverride = '') => {
     const summaryDateValue = dateOverride || pieceSummaryDate || getTodayDateValue();
     const summarySessionValue = initialSessionMode || purchaseSessionMode || adminStockSessionMode;
@@ -3980,16 +4217,17 @@ const AdminDashboard = ({
   ];
   const selectedAdminUnsoldRemoveMemoOption = adminUnsoldRemoveMemoOptions.find((option) => (
     !option.isNew && Number(option.memoNumber) === Number(purchaseRemoveMemoNumber)
-  )) || adminUnsoldRemoveMemoOptions[0] || null;
+  )) || adminUnsoldRemoveMemoOptions.find((option) => Number(option.memoNumber) === Number(purchaseRemoveMemoNumber)) || adminUnsoldRemoveMemoOptions[0] || null;
   const defaultAdminUnsoldMemoOption = selectedAdminUnsoldMemoOption
     || adminUnsoldMemoOptions.find((option) => !option.isNew)
     || adminUnsoldMemoOptions[0]
     || null;
   const defaultAdminUnsoldRemoveMemoOption = selectedAdminUnsoldRemoveMemoOption
-    || adminUnsoldRemoveMemoOptions.find((option) => !option.isNew)
     || adminUnsoldRemoveMemoOptions[0]
     || null;
-  const currentAdminUnsoldMemoOptions = activeTab === 'unsold-remove' ? adminUnsoldRemoveMemoOptions : adminUnsoldMemoOptions;
+  const currentAdminUnsoldMemoOptions = activeTab === 'unsold-remove'
+    ? adminUnsoldRemoveMemoOptions
+    : adminUnsoldMemoOptions;
   const currentAdminUnsoldMemoNumber = activeTab === 'unsold-remove' ? purchaseRemoveMemoNumber : purchaseMemoNumber;
   const highlightedAdminUnsoldMemoOption = currentAdminUnsoldMemoOptions[purchaseMemoSelectionIndex]
     || (activeTab === 'unsold-remove' ? selectedAdminUnsoldRemoveMemoOption : selectedAdminUnsoldMemoOption)
@@ -4104,9 +4342,9 @@ const AdminDashboard = ({
       return;
     }
 
-    const latestExistingMemoOption = [...adminUnsoldRemoveMemoOptions].reverse().find((option) => !option.isNew);
-    if (latestExistingMemoOption) {
-      setPurchaseRemoveMemoNumber(latestExistingMemoOption.memoNumber);
+    const latestRemoveMemoOption = adminUnsoldRemoveMemoOptions[0];
+    if (latestRemoveMemoOption) {
+      setPurchaseRemoveMemoNumber(latestRemoveMemoOption.memoNumber);
     }
   }, [activeTab, purchaseRemoveMemoNumber, adminUnsoldRemoveMemoOptions, purchaseMemoPopupOpen]);
 
@@ -4145,7 +4383,6 @@ const AdminDashboard = ({
   })));
   const summaryAmount6Entries = summaryEntries.filter((entry) => entry.amount === '7');
   const summaryAmount12Entries = summaryEntries.filter((entry) => entry.amount === '12');
-  const normalizedPrizeTrackerResults = normalizePrizeTrackerRowsForAdmin(prizeTrackerResults, treeData);
   const uploadedPrizeResultsByKey = uploadedPrizeResults.reduce((accumulator, entry) => {
     if (!accumulator[entry.prizeKey]) {
       accumulator[entry.prizeKey] = [];
@@ -4728,6 +4965,11 @@ const AdminDashboard = ({
                   return;
                 }
 
+                if (activeTab === 'purchase-send') {
+                  await commitPurchaseSendDraftRow();
+                  return;
+                }
+
                 await addAdminUnsoldDraftRow();
               })();
             }
@@ -4842,7 +5084,9 @@ const AdminDashboard = ({
       label: 'Add (A)',
       shortcut: 'A',
       disabled: Boolean(blockingWarning),
-      onClick: startNewPurchaseSendRow
+      onClick: () => {
+        void handleAdminPurchaseSendAddAction();
+      }
     },
     {
       label: purchaseLoading ? 'Saving...' : 'Save (F2)',
@@ -5225,15 +5469,19 @@ const AdminDashboard = ({
     setPrizeTrackerSearchPerformed(false);
 
     try {
-      const response = await priceService.getPrizeTracker({
-        resultForDate: prizeTrackerDate,
-        sessionMode: prizeTrackerSessionMode
+      const response = await priceService.getFilteredPrizeResults({
+        date: prizeTrackerDate,
+        shift: prizeTrackerSessionMode || 'ALL',
+        sellerId: prizeTrackerSellerId,
+        soldStatus: prizeTrackerSoldStatus || 'ALL'
       });
-      setPrizeTrackerResults(response.data);
+      setPrizeTrackerResults(response.data?.rows || []);
+      setPrizeTrackerTotalPrize(Number(response.data?.totalPrize || 0));
       setPrizeTrackerSearchPerformed(true);
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading prize tracker');
       setPrizeTrackerResults([]);
+      setPrizeTrackerTotalPrize(0);
     }
   };
 
@@ -5246,14 +5494,14 @@ const AdminDashboard = ({
     const sortedRows = sortRowsForConsecutiveNumbers(
       rows,
       (row) => includeSeller
-        ? [row.bookingDate, row.sessionMode, row.amount, row.boxValue, row.sellerName, row.memoNumber, row.status]
+        ? [row.bookingDate, row.sessionMode, row.amount, row.boxValue, row.sellerName, row.memoNumber]
         : [row.bookingDate, row.sessionMode, row.amount, row.boxValue]
     );
 
     return groupConsecutiveNumberRows(
       sortedRows,
       (row) => includeSeller
-        ? [row.bookingDate, row.sessionMode, row.amount, row.boxValue, row.sellerName, row.memoNumber, row.status].join('|')
+        ? [row.bookingDate, row.sessionMode, row.amount, row.boxValue, row.sellerName, row.memoNumber].join('|')
         : [row.bookingDate, row.sessionMode, row.amount, row.boxValue].join('|')
     );
   };
@@ -5329,10 +5577,8 @@ const AdminDashboard = ({
     { tab: 'add-seller', label: 'Add New Seller' },
     { tab: 'purchase-send', label: 'Purchase Send' },
     { tab: 'unsold', label: 'Unsold' },
-    { tab: 'unsold-remove', label: 'Unsold Remove', shortcutLetter: 'R' },
     { tab: 'accept-entries', label: 'Accept Entries' },
     { tab: 'today-summary', label: 'Today Summary' },
-    { tab: 'record', label: 'Record' },
     { tab: 'generate-bill', label: 'Generate Bill' },
     { tab: 'track-number', label: 'Track Number' },
     { tab: 'prize-tracker', label: 'Prize Tracker' },
@@ -6128,111 +6374,6 @@ const AdminDashboard = ({
         {!activeTab && (
           <div className="accordion-item">
             <button
-              className={`accordion-header ${activeTab === 'unsold-remove' ? 'active' : ''}`}
-              onClick={() => handleTabToggle('unsold-remove')}
-            >
-              Unsold Remove
-            </button>
-          </div>
-        )}
-
-        {activeTab === 'unsold-remove' && (
-          <div className="accordion-item">
-            <button className="accordion-header active" onClick={requestExitConfirmation}>
-              Unsold Remove
-            </button>
-            <div className="accordion-content">
-              <RetroPurchasePanel
-                screenCode="RAHUL"
-                panelTitle="Unsold Remove"
-                screenTitle={entryCompanyLabel || 'ADMIN UNSOLD REMOVE'}
-                headerTimestamp={adminPurchaseTimestamp}
-                memoNumber={defaultAdminUnsoldRemoveMemoOption ? String(defaultAdminUnsoldRemoveMemoOption.memoNumber) : ''}
-                formRows={adminUnsoldFormRows}
-                entries={[]}
-                gridRows={adminPurchaseGridRows}
-                editableRow={purchaseEditorVisible ? adminPurchaseEditableRow : null}
-                editableRowIndex={purchaseActiveRowIndex}
-                activeGridRowIndex={purchaseEditorVisible && purchaseActiveRowIndex < purchaseDraftRows.length ? purchaseActiveRowIndex : null}
-                onGridRowClick={(_, index) => {
-                  loadPurchaseDraftIntoEditor(index);
-                  window.requestAnimationFrame(() => {
-                    adminSendCodeInputRef.current?.focus();
-                    adminSendCodeInputRef.current?.select?.();
-                  });
-                }}
-                memoProps={{
-                  ref: adminSendMemoRef,
-                  tabIndex: 0,
-                  onFocus: openAdminUnsoldMemoPopup,
-                  onClick: () => {
-                    if (!purchaseMemoPopupOpen) {
-                      openAdminUnsoldMemoPopup();
-                    }
-                  },
-                  onKeyDown: (e) => {
-                    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-                      e.preventDefault();
-                      if (!purchaseMemoPopupOpen) {
-                        openAdminUnsoldMemoPopup();
-                      }
-                      setPurchaseMemoSelectionIndex((currentIndex) => {
-                        const delta = e.key === 'ArrowDown' ? 1 : -1;
-                        const nextIndex = currentIndex + delta;
-                        if (nextIndex < 0) {
-                          return 0;
-                        }
-                        if (nextIndex >= currentAdminUnsoldMemoOptions.length) {
-                          return Math.max(currentAdminUnsoldMemoOptions.length - 1, 0);
-                        }
-                        return nextIndex;
-                      });
-                      return;
-                    }
-
-                    if (e.key === 'Escape') {
-                      e.preventDefault();
-                      closePurchaseMemoPopup();
-                      return;
-                    }
-
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      if (!purchaseMemoPopupOpen) {
-                        openAdminUnsoldMemoPopup();
-                        return;
-                      }
-                      commitAdminUnsoldMemoSelection();
-                    }
-                  }
-                }}
-                memoSelector={{
-                  isOpen: purchaseMemoPopupOpen,
-                  options: currentAdminUnsoldMemoOptions,
-                  activeIndex: purchaseMemoSelectionIndex,
-                  variant: 'table',
-                  onHighlight: setPurchaseMemoSelectionIndex,
-                  onSelect: (option, index) => {
-                    setPurchaseMemoSelectionIndex(index);
-                    commitAdminUnsoldMemoSelection(option);
-                  }
-                }}
-                topShortcuts={ADMIN_UNSOLD_SHORTCUTS}
-                footerActions={adminUnsoldRemoveActions}
-                summaryQuantity={adminSendVisibleQuantity}
-                summaryAmount={adminSendVisibleAmount}
-                showStatusField={false}
-                windowClassName="full-page"
-                blockingWarning={activeTab === 'unsold-remove' ? blockingWarning : null}
-                onBlockingWarningClose={clearBlockingWarning}
-              />
-            </div>
-          </div>
-        )}
-
-        {!activeTab && (
-          <div className="accordion-item">
-            <button
               className={`accordion-header ${activeTab === 'see-purchase' ? 'active' : ''}`}
               onClick={() => handleTabToggle('see-purchase')}
             >
@@ -6899,11 +7040,37 @@ const AdminDashboard = ({
                   onChange={(e) => setPrizeTrackerDate(e.target.value)}
                 />
 
-                <label style={{ marginTop: '12px', display: 'block' }}>Search Session:</label>
+                <label style={{ marginTop: '12px', display: 'block' }}>Shift:</label>
                 <select value={prizeTrackerSessionMode} onChange={(e) => setPrizeTrackerSessionMode(e.target.value)} style={{ marginTop: '8px' }}>
-                  <option value="">ALL</option>
+                  <option value="ALL">ALL</option>
                   <option value="MORNING">MORNING</option>
-                  <option value="NIGHT">NIGHT</option>
+                  <option value="DAY">DAY</option>
+                  <option value="EVENING">EVENING</option>
+                </select>
+
+                <label style={{ marginTop: '12px', display: 'block' }}>Seller:</label>
+                <SearchableSellerSelect
+                  options={adminPrizeTrackerSellerOptions}
+                  value={prizeTrackerSellerId}
+                  onChange={(seller) => setPrizeTrackerSellerId(String(seller?.id || ''))}
+                  placeholder="Keyword ya seller name type karo"
+                  getOptionValue={(option) => option.id}
+                  getOptionLabel={(option) => option.id ? option.username : 'All Sellers'}
+                  onEnter={() => {
+                    window.requestAnimationFrame(() => prizeTrackerResultTypeRef.current?.focus());
+                  }}
+                />
+
+                <label style={{ marginTop: '12px', display: 'block' }}>Result Type:</label>
+                <select
+                  ref={prizeTrackerResultTypeRef}
+                  value={prizeTrackerSoldStatus}
+                  onChange={(e) => setPrizeTrackerSoldStatus(e.target.value)}
+                  style={{ marginTop: '8px' }}
+                >
+                  <option value="ALL">ALL</option>
+                  <option value="SOLD">SOLD</option>
+                  <option value="UNSOLD">UNSOLD</option>
                 </select>
 
                 <button type="button" onClick={handlePrizeTrackerSearch} style={{ marginTop: '12px' }}>
@@ -6919,45 +7086,43 @@ const AdminDashboard = ({
                     <thead>
                       <tr>
                         <th>Date</th>
-                        <th>Session</th>
-                        <th>Prize</th>
-                        <th>Winning Number</th>
+                        <th>Shift</th>
                         <th>Seller</th>
-                        <th>Booked Number</th>
+                        <th>Type</th>
                         <th>Amount</th>
                         <th>SEM</th>
-                        <th>Base Prize</th>
-                        <th>Total Prize</th>
+                        <th>Number</th>
+                        <th>Prize</th>
+                        <th>Winning Number</th>
+                        <th>Price</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {normalizedPrizeTrackerResults.length > 0 ? (
-                        normalizedPrizeTrackerResults.map((entry) => (
+                      {prizeTrackerResults.length > 0 ? (
+                        prizeTrackerResults.map((entry) => (
                           <tr key={entry.id}>
-                            <td>{formatDisplayDate(entry.resultForDate)}</td>
-                            <td>{entry.sessionMode}</td>
-                            <td>{entry.prizeLabel}</td>
-                            <td>{entry.winningNumber}</td>
-                            <td>{entry.sellerUsername || 'No winner'}</td>
-                            <td>{entry.bookedNumber || '-'}</td>
+                            <td>{formatDisplayDate(entry.bookingDate || entry.resultForDate)}</td>
+                            <td>{getPrizeShiftLabel(entry.purchaseCategory === 'D' ? 'DAY' : (entry.purchaseCategory === 'E' ? 'EVENING' : 'MORNING'))}</td>
+                            <td>{entry.sellerUsername || '-'}</td>
+                            <td>{entry.soldStatus || '-'}</td>
                             <td>{entry.amount ?? '-'}</td>
                             <td>{entry.sem ?? '-'}</td>
-                            <td>Rs. {Number(entry.fullPrizeAmount).toFixed(2)}</td>
+                            <td>{entry.number || '-'}</td>
+                            <td>{entry.prizeLabel}</td>
+                            <td>{entry.winningNumber}</td>
                             <td>{entry.calculatedPrize !== null && entry.calculatedPrize !== undefined ? `Rs. ${Number(entry.calculatedPrize).toFixed(2)}` : '-'}</td>
                           </tr>
                         ))
                       ) : (
                         <tr>
-                          <td colSpan="10">No uploaded result found for selected date/session</td>
+                          <td colSpan="10">Selected filter me koi sold/unsold winning number nahi mila</td>
                         </tr>
                       )}
                     </tbody>
                   </table>
-                  {normalizedPrizeTrackerResults.length > 0 && (
+                  {prizeTrackerResults.length > 0 && (
                     <div style={{ marginTop: '14px', padding: '14px 16px', borderRadius: '14px', background: '#eef2ff' }}>
-                      <strong>Total Prize Payout:</strong> Rs. {normalizedPrizeTrackerResults.reduce((sum, entry) => (
-                        sum + Number(entry.calculatedPrize || 0)
-                      ), 0).toFixed(2)}
+                      <strong>Total Prize Payout:</strong> Rs. {Number(prizeTrackerTotalPrize || 0).toFixed(2)}
                     </div>
                   )}
                 </div>

@@ -275,6 +275,37 @@ const getBillApiShift = (shift) => {
   return shift === 'EVENING' || shift === 'NIGHT' ? 'NIGHT' : 'MORNING';
 };
 
+const flattenVisibleSellerNodes = (treeRoot) => {
+  const sellers = [];
+
+  const visit = (node) => {
+    if (!node) {
+      return;
+    }
+
+    if (node.role === 'seller') {
+      sellers.push(node);
+    }
+
+    (node.children || []).forEach(visit);
+  };
+
+  visit(treeRoot);
+  return sellers;
+};
+
+const getPrizeShiftLabel = (purchaseCategory = '', sessionMode = '') => {
+  if (purchaseCategory === 'D') {
+    return 'DAY';
+  }
+
+  if (purchaseCategory === 'E' || sessionMode === 'NIGHT') {
+    return 'EVENING';
+  }
+
+  return 'MORNING';
+};
+
 const openSelectPicker = (selectElement) => {
   if (!selectElement) {
     return;
@@ -548,6 +579,7 @@ const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, option
       numberStart: entry.number || '',
       numberEnd: group.lastRow?.number || entry.number || '',
       isExistingUnsoldMemoRow: Boolean(options.existingUnsoldMemo),
+      isEditedUnsoldRemoveRow: false,
       entryIds: group.rows.map((row) => row.id).filter(Boolean)
     };
   })
@@ -777,6 +809,10 @@ const SellerDashboard = ({
   const [myPrizeMessage, setMyPrizeMessage] = useState('');
   const [myPrizeSearchPerformed, setMyPrizeSearchPerformed] = useState(false);
   const [myPrizeTotal, setMyPrizeTotal] = useState(0);
+  const [myPrizeDate, setMyPrizeDate] = useState(getTodayDateValue());
+  const [myPrizeShift, setMyPrizeShift] = useState('ALL');
+  const [myPrizeSellerId, setMyPrizeSellerId] = useState('');
+  const [myPrizeSoldStatus, setMyPrizeSoldStatus] = useState('ALL');
   const [purchaseEntries, setPurchaseEntries] = useState([]);
   const [purchaseSendMemoEntries, setPurchaseSendMemoEntries] = useState([]);
   const [unsoldMemoEntries, setUnsoldMemoEntries] = useState([]);
@@ -827,6 +863,7 @@ const SellerDashboard = ({
   const [stockLookupLoading, setStockLookupLoading] = useState(false);
   const purchaseDateInputRef = useRef(null);
   const purchaseSellerSelectRef = useRef(null);
+  const myPrizeResultTypeRef = useRef(null);
   const purchaseMemoRef = useRef(null);
   const unsoldDateInputRef = useRef(null);
   const unsoldPartySelectRef = useRef(null);
@@ -1015,6 +1052,16 @@ const SellerDashboard = ({
       rateAmount12: seller.rateAmount12 || 0
     }))
   ].filter((party) => party?.id);
+  const myPrizeSellerOptions = [
+    { id: '', username: 'All Sellers', keyword: 'ALL' },
+    ...directChildSellers
+      .filter((seller) => seller.id)
+      .map((seller) => ({
+        id: seller.id,
+        username: seller.username,
+        keyword: seller.keyword || ''
+      }))
+  ];
   const stockTransferTargetOptions = [
     selfPartyOption,
     ...directChildSellers.filter((seller) => (
@@ -1789,6 +1836,10 @@ const SellerDashboard = ({
   }
 
   const handleTabToggle = (tabName) => {
+    if (tabName === 'unsold-remove') {
+      return;
+    }
+
     if (activeTab === tabName) {
       resetSellerMemoOptionState(tabName);
       resetDateFieldsToToday();
@@ -1871,6 +1922,12 @@ const SellerDashboard = ({
     window.history.pushState({ sellerDashboardRoot: true, sellerTab: tabName }, '', '#' + tabName);
     setActiveTab(tabName);
   };
+
+  useEffect(() => {
+    if (activeTab === 'unsold-remove') {
+      setActiveTab('unsold');
+    }
+  }, [activeTab]);
 
   const handleTabBack = () => {
     if (billOnlyMode) {
@@ -2681,11 +2738,17 @@ const SellerDashboard = ({
           remaining: (isUnsoldLookup || isUnsoldRemoveLookup) ? undefined : true
         });
       const lookupEntries = isUnsoldRemoveLookup
-        ? (response.data || []).filter((entry) => (
+        ? unsoldMemoEntries.filter((entry) => (
           isRemovableUnsoldEntry(entry)
           && entry.memoNumber !== null
           && entry.memoNumber !== undefined
           && String(entry.memoNumber).trim() !== ''
+          && Number(entry.memoNumber) === Number(unsoldRemoveMemoNumber || selectedUnsoldRemoveMemoOption?.memoNumber || 0)
+          && String(entry.sessionMode || '') === String(filter.sessionMode || '')
+          && String(entry.purchaseCategory || '') === String(filter.purchaseCategory || '')
+          && (!filter.boxValue || String(entry.boxValue || entry.sem || '') === String(filter.boxValue))
+          && getDateOnlyValue(entry.bookingDate || '') === getDateOnlyValue(bookingDate)
+          && String(entry.userId || entry.user_id || selectedUnsoldParty?.id || user?.id || '') === String(targetSellerId || user?.id || '')
         ))
         : isUnsoldLookup
         ? (response.data || []).filter((entry) => {
@@ -3081,10 +3144,7 @@ const SellerDashboard = ({
 
   useFunctionShortcuts(!billOnlyMode && (activeTab === 'unsold' || activeTab === 'unsold-remove'), {
     A: () => {
-      if (blockingWarning) {
-        return;
-      }
-      startNewUnsoldRow();
+      void handleAddUnsoldAction();
     },
     F2: () => {
       if (blockingWarning) {
@@ -3372,6 +3432,25 @@ const SellerDashboard = ({
       return { error: requestedNumbers.error };
     }
 
+    const existingUnsoldNumbers = new Set(
+      unsoldMemoEntries
+        .filter((entry) => (
+          String(entry.sem || '') === String(row.semValue || '')
+          && String(entry.amount || '') === String(row.bookingAmount || amount || '')
+          && String(entry.sessionMode || '') === String(row.resolvedSessionMode || sessionMode || '')
+          && String(entry.purchaseCategory || '') === String(row.resolvedPurchaseCategory || activePurchaseCategory || '')
+          && getDateOnlyValue(entry.bookingDate) === getDateOnlyValue(row.drawDate || bookingDate)
+        ))
+        .map((entry) => String(entry.number || '').padStart(5, '0'))
+    );
+    const duplicateUnsoldNumbers = requestedNumbers.numbers.filter((currentNumber) => existingUnsoldNumbers.has(currentNumber));
+
+    if (duplicateUnsoldNumbers.length > 0) {
+      return {
+        error: `Ye number pehle se unsold me save hai: ${formatMissingNumberLabel(duplicateUnsoldNumbers)}`
+      };
+    }
+
     const response = await lotteryService.getPurchases({
       bookingDate: row.drawDate || bookingDate,
       sessionMode: row.resolvedSessionMode || sessionMode,
@@ -3408,6 +3487,24 @@ const SellerDashboard = ({
     return { ok: true };
   };
 
+  const handleAddUnsoldAction = async () => {
+    if (blockingWarning) {
+      return;
+    }
+
+    if (!hasPendingUnsoldEditorValues()) {
+      startNewUnsoldRow();
+      return;
+    }
+
+    const canCommit = await validateUnsoldEditorRowBeforeCommit();
+    if (!canCommit) {
+      return;
+    }
+
+    await addUnsoldDraftRow();
+  };
+
   const validateUnsoldRowInRemovableStock = async (row) => {
     const requestedNumbers = buildConsecutiveNumbers(row.numberStart || row.from, row.numberEnd || row.to);
     if (requestedNumbers.error) {
@@ -3419,23 +3516,18 @@ const SellerDashboard = ({
       return { error: 'Unsold remove memo select karo' };
     }
 
-    const effectivePartyId = String(row.partyId || selectedUnsoldParty?.id || user?.id || '');
-    const response = await lotteryService.getPurchases({
-      bookingDate: row.drawDate || bookingDate,
-      sessionMode: row.resolvedSessionMode || sessionMode,
-      sellerId: effectivePartyId === String(user?.id) ? undefined : effectivePartyId,
-      status: 'unsold',
-      purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
-      amount: row.bookingAmount || amount,
-      boxValue: row.semValue
-    });
-
-    const partyId = effectivePartyId;
+    const partyId = String(row.partyId || selectedUnsoldParty?.id || user?.id || '');
     const partyOption = unsoldPartyOptions.find((party) => String(party.id) === partyId) || selectedUnsoldParty || {};
-    const removableNumbers = new Set((response.data || [])
+    const removableNumbers = new Set(unsoldMemoEntries
       .filter((entry) => (
         isRemovableUnsoldEntry(entry)
         && Number(entry.memoNumber ?? entry.memo_number ?? 0) === Number(effectiveMemoNumber)
+        && String(entry.sem || entry.boxValue || '') === String(row.semValue || '')
+        && String(entry.amount || '') === String(row.bookingAmount || amount || '')
+        && String(entry.sessionMode || entry.session_mode || '') === String(row.resolvedSessionMode || sessionMode || '')
+        && String(entry.purchaseCategory || '') === String(row.resolvedPurchaseCategory || activePurchaseCategory || '')
+        && getDateOnlyValue(entry.bookingDate || '') === getDateOnlyValue(row.drawDate || bookingDate)
+        && String(entry.userId || entry.user_id || partyId) === String(partyId)
       ))
       .map((entry) => String(entry.number || '').padStart(5, '0')));
     const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !removableNumbers.has(currentNumber));
@@ -3499,6 +3591,9 @@ const SellerDashboard = ({
           ...result.row,
           id: currentRows[unsoldActiveRowIndex].id,
           isExistingUnsoldMemoRow: currentRows[unsoldActiveRowIndex].isExistingUnsoldMemoRow,
+          isEditedUnsoldRemoveRow: activeTab === 'unsold-remove'
+            ? true
+            : currentRows[unsoldActiveRowIndex].isEditedUnsoldRemoveRow,
           entryIds: currentRows[unsoldActiveRowIndex].entryIds || []
         };
         return updatedRows;
@@ -3565,7 +3660,9 @@ const SellerDashboard = ({
     setError('');
     setSuccess('');
 
-    let rowsToSave = unsoldDraftRows.filter((row) => !row.isExistingUnsoldMemoRow);
+    let rowsToSave = unsoldDraftRows.filter((row) => (
+      !row.isExistingUnsoldMemoRow || row.isEditedUnsoldRemoveRow
+    ));
 
     if (hasPendingUnsoldEditorValues()) {
       const result = buildUnsoldDraftRow();
@@ -3653,35 +3750,8 @@ const SellerDashboard = ({
     let rowsToSave = [...unsoldDraftRows];
 
     if (hasPendingUnsoldEditorValues()) {
-      const result = buildUnsoldDraftRow();
-      if (result.error) {
-        openBlockingWarning(result.error);
-        return;
-      }
-      const editingExistingUnsoldRow = Boolean(unsoldDraftRows[unsoldActiveRowIndex]?.isExistingUnsoldMemoRow);
-      try {
-      if (!editingExistingUnsoldRow && !result.row.isExistingUnsoldMemoRow) {
-        const stockValidation = await validateUnsoldRowInStock(result.row);
-        if (stockValidation.error) {
-          openBlockingWarning(stockValidation.error, [], 'Stock Missing', focusUnsoldFromInput);
-          return;
-        }
-      }
-      } catch (err) {
-        openBlockingWarning(err.response?.data?.message || 'Stock check nahi ho paya', [], 'Stock Missing', focusUnsoldFromInput);
-        return;
-      }
-      const rowToSave = editingExistingUnsoldRow
-        ? {
-          ...result.row,
-          id: unsoldDraftRows[unsoldActiveRowIndex].id,
-          isExistingUnsoldMemoRow: true,
-          entryIds: unsoldDraftRows[unsoldActiveRowIndex].entryIds || []
-        }
-        : result.row;
-      rowsToSave = editingExistingUnsoldRow
-        ? rowsToSave.map((row, index) => (index === unsoldActiveRowIndex ? rowToSave : row))
-        : [...rowsToSave, rowToSave];
+      openBlockingWarning('Pehle A-Add karke row confirm karo, uske baad Save karo', [], 'Warning', focusUnsoldFromInput);
+      return;
     }
 
     const editingExistingUnsoldMemo = Boolean(selectedUnsoldMemoOption && !selectedUnsoldMemoOption.isNew);
@@ -3755,7 +3825,7 @@ const SellerDashboard = ({
         setUnsoldMemoNumber(effectiveMemoNumber);
         hydrateUnsoldDraftRowsForMemo(effectiveMemoNumber, refreshedUnsoldEntries);
       } else {
-        setUnsoldMemoNumber(null);
+        setUnsoldMemoNumber(effectiveMemoNumber + 1);
         setUnsoldDraftRows([]);
         setUnsoldActiveRowIndex(0);
         setUnsoldEditorVisible(true);
@@ -4436,7 +4506,9 @@ const SellerDashboard = ({
     {
       label: 'Add (A)',
       shortcut: 'A',
-      onClick: startNewUnsoldRow
+      onClick: () => {
+        void handleAddUnsoldAction();
+      }
     },
     {
       label: unsoldLoading ? 'Saving...' : 'Save (F2)',
@@ -4911,25 +4983,21 @@ const SellerDashboard = ({
     setMyPrizeMessage('');
 
     try {
-      const response = await priceService.getMyPrizes({
-        sessionMode,
-        amount: '',
-        sem: ''
+      const response = await priceService.getFilteredPrizeResults({
+        date: myPrizeDate,
+        shift: myPrizeShift || 'ALL',
+        sellerId: myPrizeSellerId,
+        soldStatus: myPrizeSoldStatus || 'ALL'
       });
-      const allResults = response.data.results || [];
-      const filteredResults = allResults.filter((entry) => {
-        const amountMatches = !myPrizeAmount || String(entry.amount) === String(myPrizeAmount);
-        const semMatches = !myPrizeSem || String(entry.same) === String(myPrizeSem);
-        return amountMatches && semMatches;
-      });
+      const allResults = response.data?.rows || [];
 
       setMyPrizeAllResults(allResults);
-      setMyPrizeResults(filteredResults);
-      setMyPrizeTotal(filteredResults.reduce((sum, entry) => sum + Number(entry.calculatedPrize || 0), 0));
+      setMyPrizeResults(allResults);
+      setMyPrizeTotal(Number(response.data?.totalPrize || 0));
       setMyPrizeMessage(
-        filteredResults.length > 0
+        allResults.length > 0
           ? 'Prize found'
-          : `No prize today for Amount ${myPrizeAmount || 'ALL'} and SEM ${myPrizeSem || 'ALL'}`
+          : 'Selected filter me koi prize nahi mila'
       );
       setMyPrizeSearchPerformed(true);
     } catch (err) {
@@ -5194,7 +5262,6 @@ const SellerDashboard = ({
     { tab: 'purchase-send', label: 'Purchase Send' },
     { tab: 'see-purchase', label: 'See Purchase' },
     { tab: 'unsold', label: 'Unsold' },
-    { tab: 'unsold-remove', label: 'Unsold Remove', shortcutLetter: 'R' },
     { tab: 'check-price', label: 'Check Price' },
     { tab: 'tree', label: 'Tree' },
     { tab: 'add-seller', label: 'Add New Seller' },
@@ -5549,35 +5616,45 @@ const SellerDashboard = ({
             <div className="accordion-content">
               <h2>My Prizes</h2>
               <div className="form-group">
-                <div style={{ marginBottom: '12px', padding: '12px 14px', borderRadius: '12px', background: '#f6f8ff' }}>
-                  <strong>Date:</strong> {formatDisplayDate(getTodayDateValue())} | <strong>Session:</strong> {sessionMode}
-                </div>
+                <label>Date:</label>
+                <input
+                  type="date"
+                  value={myPrizeDate}
+                  onChange={(e) => setMyPrizeDate(e.target.value)}
+                />
 
-                <label style={{ marginTop: '12px', display: 'block' }}>SEM:</label>
-                <div className="box-options" style={{ marginTop: '8px' }}>
-                  <label className="checkbox-label">
-                    <input
-                      type="radio"
-                      name="my-prize-sem"
-                      value=""
-                      checked={myPrizeSem === ''}
-                      onChange={() => setMyPrizeSem('')}
-                    />
-                    ALL
-                  </label>
-                  {getAvailableMyPrizeSemOptions().map((group) => (
-                    <label key={group} className="checkbox-label">
-                      <input
-                        type="radio"
-                        name="my-prize-sem"
-                        value={group}
-                        checked={myPrizeSem === group}
-                        onChange={(e) => setMyPrizeSem(e.target.value)}
-                      />
-                      {group}
-                    </label>
-                  ))}
-                </div>
+                <label style={{ marginTop: '12px', display: 'block' }}>Shift:</label>
+                <select value={myPrizeShift} onChange={(e) => setMyPrizeShift(e.target.value)} style={{ marginTop: '8px' }}>
+                  <option value="ALL">ALL</option>
+                  <option value="MORNING">MORNING</option>
+                  <option value="DAY">DAY</option>
+                  <option value="EVENING">EVENING</option>
+                </select>
+
+                <label style={{ marginTop: '12px', display: 'block' }}>Seller:</label>
+                <SearchableSellerSelect
+                  options={myPrizeSellerOptions}
+                  value={myPrizeSellerId}
+                  onChange={(seller) => setMyPrizeSellerId(String(seller?.id || ''))}
+                  placeholder="Keyword ya seller name type karo"
+                  getOptionValue={(option) => option.id}
+                  getOptionLabel={(option) => option.id ? option.username : 'All Sellers'}
+                  onEnter={() => {
+                    window.requestAnimationFrame(() => myPrizeResultTypeRef.current?.focus());
+                  }}
+                />
+
+                <label style={{ marginTop: '12px', display: 'block' }}>Result Type:</label>
+                <select
+                  ref={myPrizeResultTypeRef}
+                  value={myPrizeSoldStatus}
+                  onChange={(e) => setMyPrizeSoldStatus(e.target.value)}
+                  style={{ marginTop: '8px' }}
+                >
+                  <option value="ALL">ALL</option>
+                  <option value="SOLD">SOLD</option>
+                  <option value="UNSOLD">UNSOLD</option>
+                </select>
 
                 <button type="button" onClick={handleMyPrizeSearch} style={{ marginTop: '12px' }} disabled={myPrizeLoading}>
                   {myPrizeLoading ? 'Checking...' : 'Check'}
@@ -5588,7 +5665,7 @@ const SellerDashboard = ({
                 <div className="entries-list-block" style={{ marginTop: '20px' }}>
                   <h3>My Prize Result</h3>
                   <div style={{ marginBottom: '14px', padding: '12px 14px', borderRadius: '12px', background: '#f6f8ff' }}>
-                    <strong>Applied Filter:</strong> Amount {myPrizeAmount || 'ALL'} | SEM {myPrizeSem || 'ALL'}
+                    <strong>Applied Filter:</strong> Date {formatDisplayDate(myPrizeDate)} | Shift {myPrizeShift || 'ALL'} | Type {myPrizeSoldStatus || 'ALL'}
                   </div>
                   {myPrizeResults.length > 0 ? (
                     <>
@@ -5598,57 +5675,47 @@ const SellerDashboard = ({
                       <div style={{ marginBottom: '14px', padding: '12px 14px', borderRadius: '12px', background: '#f6f8ff' }}>
                         <strong>Total Matched Entries:</strong> {myPrizeResults.length} | <strong>Available Today:</strong> {myPrizeAllResults.length}
                       </div>
-                      {Object.entries(myPrizeResultsBySeller).map(([sellerName, sellerEntries]) => (
-                        <div key={sellerName} className="entries-list-block" style={{ marginTop: '18px' }}>
-                          <h3>{sellerName}</h3>
-                          <div style={{ marginBottom: '12px', padding: '12px 14px', borderRadius: '12px', background: '#f6f8ff' }}>
-                            <strong>{sellerName} Prize Total:</strong> Rs. {sellerEntries.reduce((sum, entry) => (
-                              sum + Number(entry.calculatedPrize || 0)
-                            ), 0).toFixed(2)}
-                          </div>
-                          <table className="entries-table">
-                            <thead>
-                              <tr>
-                                <th>Date</th>
-                                <th>Session</th>
-                                <th>Seller</th>
-                                <th>Prize From</th>
-                                <th>Booked Number</th>
-                                <th>Amount</th>
-                                <th>SEM</th>
-                                <th>Prize</th>
-                                <th>Winning Number</th>
-                                <th>Prize Value</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {sellerEntries.map((entry) => (
-                                <tr key={`${entry.prizeId}-${entry.ownedEntryId}`}>
-                                  <td>{formatDisplayDate(getTodayDateValue())}</td>
-                                  <td>{sessionMode}</td>
-                                  <td>{entry.seller || '-'}</td>
-                                  <td>{entry.prizeSource}</td>
-                                  <td>{entry.bookedNumber}</td>
-                                  <td>{entry.amount}</td>
-                                  <td>{entry.same}</td>
-                                  <td>{entry.prizeLabel}</td>
-                                  <td>{entry.bookedNumber || entry.winningNumber}</td>
-                                  <td>Rs. {Number(entry.calculatedPrize || 0).toFixed(2)}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      ))}
+                      <table className="entries-table">
+                        <thead>
+                          <tr>
+                            <th>Date</th>
+                            <th>Shift</th>
+                            <th>Seller</th>
+                            <th>Type</th>
+                            <th>Amount</th>
+                            <th>SEM</th>
+                            <th>Number</th>
+                            <th>Prize</th>
+                            <th>Winning Number</th>
+                            <th>Price</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {myPrizeResults.map((entry) => (
+                            <tr key={entry.id}>
+                              <td>{formatDisplayDate(entry.bookingDate || myPrizeDate)}</td>
+                              <td>{getPrizeShiftLabel(entry.purchaseCategory, entry.sessionMode)}</td>
+                              <td>{entry.sellerUsername || '-'}</td>
+                              <td>{entry.soldStatus || '-'}</td>
+                              <td>{entry.amount}</td>
+                              <td>{entry.sem}</td>
+                              <td>{entry.number}</td>
+                              <td>{entry.prizeLabel}</td>
+                              <td>{entry.winningNumber}</td>
+                              <td>Rs. {Number(entry.calculatedPrize || 0).toFixed(2)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
                       <div style={{ marginTop: '18px', padding: '14px 16px', borderRadius: '14px', background: '#dfe8ff', fontSize: '24px', fontWeight: '700' }}>
                         <strong>Grand Total Prize:</strong> Rs. {myPrizeTotal.toFixed(2)}
                       </div>
                       <div style={{ marginTop: '14px', padding: '14px 16px', borderRadius: '14px', background: '#eef3ff' }}>
-                        <strong>Prize Numbers:</strong> {[...new Set(myPrizeResults.map((entry) => entry.bookedNumber))].join(', ')}
+                        <strong>Prize Numbers:</strong> {[...new Set(myPrizeResults.map((entry) => entry.number))].join(', ')}
                       </div>
                     </>
                   ) : (
-                    <p style={{ fontWeight: '600' }}>{myPrizeMessage || `No prize today for Amount ${myPrizeAmount || 'ALL'} and SEM ${myPrizeSem || 'ALL'}`}</p>
+                    <p style={{ fontWeight: '600' }}>{myPrizeMessage || 'Selected filter me koi prize nahi mila'}</p>
                   )}
                 </div>
               )}
@@ -6219,116 +6286,6 @@ const SellerDashboard = ({
           </div>
         )}
 
-        {!activeTab && (
-          <div className="accordion-item" style={{ order: 1 }}>
-            <button
-              className={`accordion-header ${activeTab === 'unsold-remove' ? 'active' : ''}`}
-              onClick={() => handleTabToggle('unsold-remove')}
-            >
-              Unsold Remove
-            </button>
-          </div>
-        )}
-
-        {activeTab === 'unsold-remove' && (
-          <div className="accordion-item" style={{ order: 1 }}>
-            <button className="accordion-header active" onClick={requestExitConfirmation}>
-              Unsold Remove
-            </button>
-            <div className="accordion-content">
-              <RetroPurchasePanel
-                formId="seller-unsold-remove-form"
-                onSubmit={handleRemoveUnsold}
-                screenCode="RAHUL"
-                panelTitle="Unsold Remove"
-                screenTitle={entryCompanyLabel || 'UNSOLD REMOVE'}
-                headerTimestamp={sellerUnsoldTimestamp}
-                memoNumber={defaultUnsoldRemoveMemoOption ? String(defaultUnsoldRemoveMemoOption.memoNumber) : ''}
-                formRows={sellerUnsoldFormRows}
-                gridRows={sellerUnsoldGridRows}
-                editableRow={unsoldEditorVisible ? sellerUnsoldEditableRow : null}
-                editableRowIndex={unsoldActiveRowIndex}
-                activeGridRowIndex={unsoldEditorVisible && unsoldActiveRowIndex < unsoldDraftRows.length ? unsoldActiveRowIndex : null}
-                onGridRowClick={(_, index) => {
-                  const row = unsoldDraftRows[index];
-                  if (!row) {
-                    return;
-                  }
-                  setUnsoldEditorVisible(true);
-                  setUnsoldActiveRowIndex(index);
-                  setUnsoldCodeInput(row.code || '');
-                  setUnsoldTableFromInput(row.from || '');
-                  setUnsoldTableToInput(row.to || '');
-                  setUnsoldNumber(row.from || '');
-                  setUnsoldRangeEndNumber(row.to || '');
-                  window.requestAnimationFrame(() => unsoldCodeInputRef.current?.focus());
-                }}
-                memoProps={{
-                  ref: unsoldMemoRef,
-                  tabIndex: 0,
-                  onKeyDown: (e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      if (!unsoldMemoPopupOpen) {
-                        openUnsoldMemoPopup();
-                        return;
-                      }
-                      commitUnsoldMemoSelection();
-                    }
-
-                    if (e.key === 'ArrowDown') {
-                      e.preventDefault();
-                      if (!unsoldMemoPopupOpen) {
-                        openUnsoldMemoPopup();
-                        return;
-                      }
-                      setUnsoldMemoSelectionIndex((currentIndex) => {
-                        const nextIndex = currentIndex + 1;
-                        if (nextIndex >= currentUnsoldMemoOptions.length) {
-                          return Math.max(currentUnsoldMemoOptions.length - 1, 0);
-                        }
-                        return nextIndex;
-                      });
-                    }
-
-                    if (e.key === 'ArrowUp') {
-                      e.preventDefault();
-                      if (!unsoldMemoPopupOpen) {
-                        openUnsoldMemoPopup();
-                        return;
-                      }
-                      setUnsoldMemoSelectionIndex((currentIndex) => Math.max(currentIndex - 1, 0));
-                    }
-
-                    if (e.key === 'Escape') {
-                      e.preventDefault();
-                      if (unsoldMemoPopupOpen) {
-                        setUnsoldMemoPopupOpen(false);
-                      }
-                    }
-                  }
-                }}
-                memoSelector={{
-                  isOpen: unsoldMemoPopupOpen,
-                  options: currentUnsoldMemoOptions,
-                  activeIndex: unsoldMemoSelectionIndex,
-                  onHighlight: setUnsoldMemoSelectionIndex,
-                  onSelect: commitUnsoldMemoSelection,
-                  variant: 'table',
-                  className: 'table-popup'
-                }}
-                topShortcuts={SELLER_UNSOLD_SHORTCUTS}
-                footerActions={sellerUnsoldRemoveActions}
-                summaryQuantity={sellerUnsoldSummaryQuantity}
-                summaryAmount={sellerUnsoldSummaryAmount}
-                statusLabel={sessionMode}
-                windowClassName="full-page"
-                blockingWarning={activeTab === 'unsold-remove' ? blockingWarning : null}
-                onBlockingWarningClose={clearBlockingWarning}
-              />
-            </div>
-          </div>
-        )}
         </div>
       )}
 

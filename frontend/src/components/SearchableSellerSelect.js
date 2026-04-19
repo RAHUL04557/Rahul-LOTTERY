@@ -25,8 +25,11 @@ const SearchableSellerSelect = ({
 }) => {
   const wrapperRef = useRef(null);
   const [isOpen, setIsOpen] = useState(false);
-  const [highlightedIndex, setHighlightedIndex] = useState(0);
+  const [highlightedIndex, setHighlightedIndex] = useState(-1);
   const [query, setQuery] = useState('');
+  const [showAllOptions, setShowAllOptions] = useState(false);
+  const [isFocused, setIsFocused] = useState(false);
+  const [advanceOnEnter, setAdvanceOnEnter] = useState(false);
 
   const selectedOption = useMemo(
     () => options.find((option) => String(getOptionValue(option)) === String(value)) || null,
@@ -36,12 +39,12 @@ const SearchableSellerSelect = ({
     () => (selectedOption ? String(getOptionLabel(selectedOption) || '') : ''),
     [getOptionLabel, selectedOption]
   );
-  const displayValue = isOpen ? query : (query || selectedOptionLabel);
+  const displayValue = isFocused ? query : (query || selectedOptionLabel);
 
   const filteredOptions = useMemo(() => {
     const normalizedQuery = String(query || '').trim().toUpperCase();
     if (!normalizedQuery) {
-      return options;
+      return showAllOptions ? options : [];
     }
 
     return [...options]
@@ -76,17 +79,53 @@ const SearchableSellerSelect = ({
         return String(getOptionLabel(left.option)).localeCompare(String(getOptionLabel(right.option)));
       })
       .map((entry) => entry.option);
-  }, [getOptionLabel, getOptionSearchLabel, options, query]);
+  }, [getOptionLabel, getOptionSearchLabel, options, query, showAllOptions]);
+  const dropdownMaxHeight = filteredOptions.length <= 6
+    ? `${Math.max(filteredOptions.length, 1) * 54}px`
+    : '320px';
 
   useEffect(() => {
     if (!isOpen) {
       setQuery('');
+      setShowAllOptions(false);
+      setHighlightedIndex(-1);
     }
   }, [isOpen, selectedOption]);
 
   useEffect(() => {
-    setHighlightedIndex(0);
+    if (!isOpen) {
+      setHighlightedIndex(-1);
+      return;
+    }
+
+    setHighlightedIndex(String(query || '').trim() ? 0 : -1);
   }, [query, isOpen]);
+
+  const focusNextControl = () => {
+    const inputElement = wrapperRef.current?.querySelector('input');
+    if (!(inputElement instanceof HTMLElement)) {
+      return;
+    }
+
+    const root = inputElement.closest('[data-enter-navigation-root]') || document;
+    const focusableElements = Array.from(root.querySelectorAll('input, select, textarea, button'))
+      .filter((element) => (
+        element instanceof HTMLElement
+        && !element.disabled
+        && element.tabIndex !== -1
+        && element.offsetParent !== null
+        && element.getAttribute('type') !== 'hidden'
+      ));
+    const currentIndex = focusableElements.indexOf(inputElement);
+    const nextElement = currentIndex >= 0 ? focusableElements[currentIndex + 1] : null;
+
+    if (nextElement instanceof HTMLElement) {
+      window.requestAnimationFrame(() => {
+        nextElement.focus();
+        nextElement.select?.();
+      });
+    }
+  };
 
   const commitSelection = (option, shouldMoveNext = false) => {
     if (!option) {
@@ -95,10 +134,17 @@ const SearchableSellerSelect = ({
 
     setQuery('');
     setIsOpen(false);
+    setShowAllOptions(false);
+    setIsFocused(false);
+    setAdvanceOnEnter(!shouldMoveNext);
     onChange?.(option);
 
     if (shouldMoveNext) {
-      onEnter?.(option);
+      if (onEnter) {
+        onEnter(option);
+      } else {
+        focusNextControl();
+      }
     }
   };
 
@@ -110,13 +156,24 @@ const SearchableSellerSelect = ({
 
       setIsOpen(false);
       setQuery('');
+      setShowAllOptions(false);
+      setIsFocused(false);
     }, 120);
   };
 
   return (
     <div ref={wrapperRef} style={{ position: 'relative', width: '100%' }}>
       <input
-        ref={inputRef}
+        ref={(node) => {
+          if (!inputRef) {
+            return;
+          }
+          if (typeof inputRef === 'function') {
+            inputRef(node);
+            return;
+          }
+          inputRef.current = node;
+        }}
         type="text"
         value={displayValue}
         placeholder={placeholder}
@@ -124,11 +181,20 @@ const SearchableSellerSelect = ({
         required={required}
         form={form}
         autoComplete="off"
-        onFocus={() => setIsOpen(true)}
+        onFocus={() => {
+          setIsFocused(true);
+          setQuery('');
+          setHighlightedIndex(-1);
+          setShowAllOptions(false);
+          setIsOpen(false);
+          setAdvanceOnEnter(false);
+        }}
         onBlur={handleInputBlur}
         onChange={(event) => {
           setQuery(event.target.value);
-          setIsOpen(true);
+          setShowAllOptions(false);
+          setIsOpen(Boolean(String(event.target.value || '').trim()));
+          setAdvanceOnEnter(false);
         }}
         onKeyDown={(event) => {
           if (disabled) {
@@ -138,16 +204,20 @@ const SearchableSellerSelect = ({
           if (event.key === ' ' && !String(query || '').trim()) {
             event.preventDefault();
             setIsOpen(true);
+            setShowAllOptions(true);
             return;
           }
 
           if (event.key === 'ArrowDown') {
             event.preventDefault();
             setIsOpen(true);
+            setShowAllOptions(true);
             setHighlightedIndex((currentIndex) => (
               filteredOptions.length === 0
-                ? 0
-                : Math.min(currentIndex + 1, filteredOptions.length - 1)
+                ? -1
+                : currentIndex < 0
+                  ? 0
+                  : Math.min(currentIndex + 1, filteredOptions.length - 1)
             ));
             return;
           }
@@ -155,7 +225,14 @@ const SearchableSellerSelect = ({
           if (event.key === 'ArrowUp') {
             event.preventDefault();
             setIsOpen(true);
-            setHighlightedIndex((currentIndex) => Math.max(currentIndex - 1, 0));
+            setShowAllOptions(true);
+            setHighlightedIndex((currentIndex) => (
+              filteredOptions.length === 0
+                ? -1
+                : currentIndex < 0
+                  ? Math.max(filteredOptions.length - 1, 0)
+                  : Math.max(currentIndex - 1, 0)
+            ));
             return;
           }
 
@@ -163,12 +240,48 @@ const SearchableSellerSelect = ({
             event.preventDefault();
             setIsOpen(false);
             setQuery('');
+            setShowAllOptions(false);
+            setIsFocused(false);
+            setAdvanceOnEnter(false);
+            return;
+          }
+
+          if (event.key === 'Backspace' && !String(query || '').trim() && selectedOption) {
+            event.preventDefault();
+            onChange?.(null);
+            setIsOpen(false);
+            setShowAllOptions(false);
+            setAdvanceOnEnter(false);
             return;
           }
 
           if (event.key === 'Enter') {
             event.preventDefault();
-            const optionToCommit = filteredOptions[highlightedIndex] || selectedOption || null;
+            if (!isOpen) {
+              if (advanceOnEnter && selectedOption) {
+                commitSelection(selectedOption, true);
+                return;
+              }
+
+              setQuery('');
+              setIsOpen(true);
+              setShowAllOptions(true);
+              setHighlightedIndex(-1);
+              return;
+            }
+
+            if (highlightedIndex < 0) {
+              if (String(query || '').trim() && filteredOptions.length > 0) {
+                commitSelection(filteredOptions[0], true);
+                return;
+              }
+              setIsOpen(true);
+              setShowAllOptions(true);
+              setHighlightedIndex(-1);
+              return;
+            }
+
+            const optionToCommit = filteredOptions[highlightedIndex] || null;
             if (optionToCommit) {
               commitSelection(optionToCommit, true);
             } else {
@@ -185,7 +298,7 @@ const SearchableSellerSelect = ({
         }}
       />
 
-      {isOpen ? (
+      {isOpen && filteredOptions.length > 0 ? (
         <div
           style={{
             position: 'absolute',
@@ -193,45 +306,42 @@ const SearchableSellerSelect = ({
             left: 0,
             right: 0,
             zIndex: 40,
-            maxHeight: '220px',
+            maxHeight: dropdownMaxHeight,
             overflowY: 'auto',
             border: '1px solid #3f6285',
             background: '#f8fbff',
             boxShadow: '0 12px 24px rgba(4, 21, 43, 0.28)'
           }}
         >
-          {filteredOptions.length > 0 ? (
-            filteredOptions.map((option, index) => {
-              const optionKeyword = getNormalizedKeyword(option?.keyword, option?.username);
-              const optionLabel = getOptionLabel(option);
-              const optionValue = getOptionValue(option);
+          {filteredOptions.map((option, index) => {
+            const optionKeyword = getNormalizedKeyword(option?.keyword, option?.username);
+            const optionLabel = getOptionLabel(option);
+            const optionValue = getOptionValue(option);
 
-              return (
-                <button
-                  key={optionValue}
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => commitSelection(option)}
-                  onMouseEnter={() => setHighlightedIndex(index)}
-                  style={{
-                    width: '100%',
-                    textAlign: 'left',
-                    padding: '10px 12px',
-                    border: 'none',
-                    cursor: 'pointer',
-                    color: '#0f2942',
-                    fontWeight: 700,
-                    background: index === highlightedIndex ? '#8fb6de' : '#f8fbff',
-                    borderBottom: '1px solid #b5c9dd'
-                  }}
-                >
-                  <strong style={{ color: '#0b3d68' }}>{optionKeyword}</strong> {optionLabel}
-                </button>
-              );
-            })
-          ) : (
-            <div style={{ padding: '10px 12px', color: '#27496d', fontWeight: 600 }}>No seller found</div>
-          )}
+            return (
+              <button
+                key={optionValue}
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => commitSelection(option)}
+                onMouseEnter={() => setHighlightedIndex(index)}
+                style={{
+                  width: '100%',
+                  textAlign: 'left',
+                  padding: '10px 12px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  color: '#0f2942',
+                  fontWeight: 700,
+                  whiteSpace: 'nowrap',
+                  background: index === highlightedIndex ? '#8fb6de' : '#f8fbff',
+                  borderBottom: '1px solid #b5c9dd'
+                }}
+              >
+                <strong style={{ color: '#0b3d68' }}>{optionKeyword}</strong> {optionLabel}
+              </button>
+            );
+          })}
         </div>
       ) : null}
     </div>
