@@ -300,6 +300,24 @@ const formatDuplicateNumberLabel = (numbers = []) => (
     : numbers.join(', ')
 );
 
+const formatDuplicateSellerLabel = (rows = []) => {
+  const sellerNames = [...new Set(
+    rows
+      .map((row) => String(row.seller_name || row.username || '').trim())
+      .filter(Boolean)
+  )];
+
+  if (sellerNames.length === 0) {
+    return 'another seller';
+  }
+
+  if (sellerNames.length > 5) {
+    return `${sellerNames.slice(0, 5).join(', ')} +${sellerNames.length - 5} more`;
+  }
+
+  return sellerNames.join(', ');
+};
+
 const findExistingPurchaseNumbers = async ({
   db,
   numbers,
@@ -357,6 +375,52 @@ const findExistingPurchaseNumbers = async ({
   return result.rows.map((row) => row.number);
 };
 
+const findExistingPurchaseAllocations = async ({
+  db,
+  numbers,
+  bookingDate,
+  sessionMode,
+  purchaseCategory,
+  boxValue,
+  excludeEntryIds = []
+}) => {
+  if (!Array.isArray(numbers) || numbers.length === 0) {
+    return [];
+  }
+
+  const params = [
+    [PURCHASE_ENTRY_SOURCE, ADMIN_PURCHASE_ENTRY_SOURCE],
+    bookingDate,
+    sessionMode,
+    purchaseCategory,
+    boxValue,
+    numbers
+  ];
+  let excludeClause = '';
+
+  if (excludeEntryIds.length > 0) {
+    params.push(excludeEntryIds);
+    excludeClause = `AND le.id <> ALL($${params.length}::int[])`;
+  }
+
+  const result = await db.query(
+    `SELECT DISTINCT le.number, le.memo_number, COALESCE(u.username, 'Unknown') AS seller_name
+     FROM lottery_entries le
+     LEFT JOIN users u ON u.id = le.user_id
+     WHERE le.entry_source = ANY($1::varchar[])
+       AND le.booking_date = $2::date
+       AND le.session_mode = $3
+       AND le.purchase_category = $4
+       AND le.box_value = $5
+       AND le.number = ANY($6::varchar[])
+       ${excludeClause}
+     ORDER BY seller_name ASC, le.number ASC`,
+    params
+  );
+
+  return result.rows;
+};
+
 const ensureAdminPurchaseNumbersAreAssignable = async ({
   db,
   numbers,
@@ -365,19 +429,18 @@ const ensureAdminPurchaseNumbersAreAssignable = async ({
   purchaseCategory,
   boxValue
 }) => {
-  const duplicateNumbers = await findExistingPurchaseNumbers({
+  const duplicateAllocations = await findExistingPurchaseAllocations({
     db,
     numbers,
     bookingDate,
     sessionMode,
     purchaseCategory,
-    boxValue,
-    ignoreAmount: true
+    boxValue
   });
 
-  if (duplicateNumbers.length > 0) {
+  if (duplicateAllocations.length > 0) {
     return {
-      error: `Ye number selected date, shift, category aur SEM me pehle se use ho chuka hai: ${formatDuplicateNumberLabel(duplicateNumbers)}`
+      error: `You already send this stock to ${formatDuplicateSellerLabel(duplicateAllocations)}`
     };
   }
 
@@ -923,6 +986,25 @@ const insertHistoryRecords = async ({
       values
     );
   }
+};
+
+const deleteUnsoldRemoveHistoryForEntries = async (entries = [], client = null) => {
+  const entryIds = [...new Set(
+    entries
+      .map((entry) => Number(entry.id || entry.entry_id || 0))
+      .filter((entryId) => Number.isInteger(entryId) && entryId > 0)
+  )];
+
+  if (entryIds.length === 0) {
+    return;
+  }
+
+  await ensureHistoryStorage();
+  const db = client || { query };
+  await db.query(
+    "DELETE FROM lottery_entry_history WHERE action_type = 'unsold_removed' AND entry_id = ANY($1::int[])",
+    [entryIds]
+  );
 };
 
 const getVisibleBranchIds = async (rootUserId, includeSelf = false) => {
@@ -2673,7 +2755,7 @@ const markPurchaseEntriesUnsold = async (req, res) => {
   try {
     await ensureHistoryStorage();
 
-    const { number, rangeStart, rangeEnd, bookingDate: rawBookingDate, sellerId, sellerUserId, memoNumber } = req.body;
+    const { number, rangeStart, rangeEnd, bookingDate: rawBookingDate, sellerId, sellerUserId, memoNumber, amount, boxValue } = req.body;
     const sessionMode = getRequiredSessionMode(req, res);
     const bookingDate = normalizeBookingDate(rawBookingDate);
     const purchaseCategory = getPurchaseCategoryFromRequest(req, sessionMode);
@@ -2808,6 +2890,8 @@ const markPurchaseEntriesUnsold = async (req, res) => {
       [selectedIds, req.user.id, resolvedMemoNumber, UNSOLD_LOCAL_STATUS]
     );
 
+    await deleteUnsoldRemoveHistoryForEntries(updatedEntriesResult.rows);
+
     await insertHistoryRecords({
       entries: updatedEntriesResult.rows,
       actionType: 'saved_unsold',
@@ -2833,7 +2917,7 @@ const removePurchaseUnsoldEntries = async (req, res) => {
   try {
     await ensureHistoryStorage();
 
-    const { number, rangeStart, rangeEnd, bookingDate: rawBookingDate, sellerId, sellerUserId, memoNumber } = req.body;
+    const { number, rangeStart, rangeEnd, bookingDate: rawBookingDate, sellerId, sellerUserId, memoNumber, amount, boxValue } = req.body;
     const sessionMode = getRequiredSessionMode(req, res);
     const bookingDate = normalizeBookingDate(rawBookingDate);
     const purchaseCategory = getPurchaseCategoryFromRequest(req, sessionMode);
@@ -2895,6 +2979,15 @@ const removePurchaseUnsoldEntries = async (req, res) => {
       bookingDate,
       numbersToRemove.numbers
     ];
+    const stockFilters = [];
+    const normalizedAmount = String(amount || '').trim();
+    const normalizedBoxValue = String(boxValue || '').trim();
+    if (normalizedAmount) {
+      stockFilters.push(`AND le.amount = $${params.push(normalizedAmount)}::numeric`);
+    }
+    if (normalizedBoxValue) {
+      stockFilters.push(`AND le.box_value = $${params.push(normalizedBoxValue)}`);
+    }
     const ownershipFilter = isAdminRole(req.user.role) || targetSellerId === Number(req.user.id)
       ? ''
       : `AND (
@@ -2912,6 +3005,7 @@ const removePurchaseUnsoldEntries = async (req, res) => {
          AND le.booking_date = $5::date
          AND le.number = ANY($6::varchar[])
          AND LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
+         ${stockFilters.join('\n         ')}
          ${ownershipFilter}
        ORDER BY le.number ASC`,
       params
@@ -3242,6 +3336,8 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
       );
       updatedEntries.push(...updatedEntriesResult.rows);
     }
+
+    await deleteUnsoldRemoveHistoryForEntries(updatedEntries, client);
 
     await insertHistoryRecords({
       entries: updatedEntries,

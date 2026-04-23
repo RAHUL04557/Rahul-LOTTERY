@@ -579,6 +579,7 @@ const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, option
       numberStart: entry.number || '',
       numberEnd: group.lastRow?.number || entry.number || '',
       isExistingUnsoldMemoRow: Boolean(options.existingUnsoldMemo),
+      isExistingUnsoldRemoveMemoRow: Boolean(options.existingUnsoldRemoveMemo),
       isEditedUnsoldRemoveRow: false,
       entryIds: group.rows.map((row) => row.id).filter(Boolean)
     };
@@ -1631,6 +1632,7 @@ const SellerDashboard = ({
 
   useEffect(() => {
     if (activeTab === 'unsold-remove' && unsoldPartyId) {
+      loadUnsoldMemoEntries(unsoldPartyId, bookingDate);
       loadUnsoldRemoveMemoEntries(unsoldPartyId, bookingDate);
     }
   }, [activeTab, unsoldPartyId, bookingDate, sessionMode, activePurchaseCategory, amount]);
@@ -1836,10 +1838,6 @@ const SellerDashboard = ({
   }
 
   const handleTabToggle = (tabName) => {
-    if (tabName === 'unsold-remove') {
-      return;
-    }
-
     if (activeTab === tabName) {
       resetSellerMemoOptionState(tabName);
       resetDateFieldsToToday();
@@ -1904,6 +1902,7 @@ const SellerDashboard = ({
 
     if (tabName === 'unsold-remove') {
       resetSellerMemoOptionState('unsold-remove');
+      loadUnsoldMemoEntries(unsoldPartyId, bookingDate);
       loadUnsoldRemoveMemoEntries(unsoldPartyId, bookingDate);
     }
 
@@ -1922,12 +1921,6 @@ const SellerDashboard = ({
     window.history.pushState({ sellerDashboardRoot: true, sellerTab: tabName }, '', '#' + tabName);
     setActiveTab(tabName);
   };
-
-  useEffect(() => {
-    if (activeTab === 'unsold-remove') {
-      setActiveTab('unsold');
-    }
-  }, [activeTab]);
 
   const handleTabBack = () => {
     if (billOnlyMode) {
@@ -2452,7 +2445,10 @@ const SellerDashboard = ({
     const selectedEntries = sourceEntries.filter((entry) => (
       Number(entry.memoNumber) === Number(memoNumber)
     ));
-    const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, amount, { existingUnsoldMemo: true });
+    const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, amount, {
+      existingUnsoldMemo: true,
+      existingUnsoldRemoveMemo: true
+    });
     setUnsoldDraftRows(draftRows);
     setUnsoldEditorVisible(true);
 
@@ -2738,18 +2734,18 @@ const SellerDashboard = ({
           remaining: (isUnsoldLookup || isUnsoldRemoveLookup) ? undefined : true
         });
       const lookupEntries = isUnsoldRemoveLookup
-        ? unsoldMemoEntries.filter((entry) => (
-          isRemovableUnsoldEntry(entry)
-          && entry.memoNumber !== null
-          && entry.memoNumber !== undefined
-          && String(entry.memoNumber).trim() !== ''
-          && Number(entry.memoNumber) === Number(unsoldRemoveMemoNumber || selectedUnsoldRemoveMemoOption?.memoNumber || 0)
-          && String(entry.sessionMode || '') === String(filter.sessionMode || '')
-          && String(entry.purchaseCategory || '') === String(filter.purchaseCategory || '')
-          && (!filter.boxValue || String(entry.boxValue || entry.sem || '') === String(filter.boxValue))
-          && getDateOnlyValue(entry.bookingDate || '') === getDateOnlyValue(bookingDate)
-          && String(entry.userId || entry.user_id || selectedUnsoldParty?.id || user?.id || '') === String(targetSellerId || user?.id || '')
-        ))
+        ? (response.data || []).map(mapApiEntry).filter((entry) => {
+          const hasMemo = entry.memoNumber !== null && entry.memoNumber !== undefined && String(entry.memoNumber).trim() !== '';
+          if (!isRemovableUnsoldEntry(entry) || !hasMemo) {
+            return false;
+          }
+
+          if (String(targetSellerId || user?.id || '') === String(user?.id || '')) {
+            return String(entry.forwardedBy || '') === String(user?.id || '');
+          }
+
+          return true;
+        })
         : isUnsoldLookup
         ? (response.data || []).filter((entry) => {
           const hasMemo = entry.memoNumber !== null && entry.memoNumber !== undefined && String(entry.memoNumber).trim() !== '';
@@ -3511,30 +3507,35 @@ const SellerDashboard = ({
       return { error: requestedNumbers.error };
     }
 
-    const effectiveMemoNumber = unsoldRemoveMemoNumber || selectedUnsoldRemoveMemoOption?.memoNumber;
-    if (!effectiveMemoNumber) {
-      return { error: 'Unsold remove memo select karo' };
-    }
-
     const partyId = String(row.partyId || selectedUnsoldParty?.id || user?.id || '');
     const partyOption = unsoldPartyOptions.find((party) => String(party.id) === partyId) || selectedUnsoldParty || {};
-    const removableNumbers = new Set(unsoldMemoEntries
+    const response = await lotteryService.getPurchases({
+      bookingDate: row.drawDate || bookingDate,
+      sessionMode: row.resolvedSessionMode || sessionMode,
+      sellerId: partyId === String(user?.id || '') ? undefined : partyId,
+      status: 'unsold',
+      purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+      amount: row.bookingAmount || amount,
+      boxValue: row.semValue
+    });
+    const removableNumbers = new Set((response.data || [])
+      .map(mapApiEntry)
       .filter((entry) => (
         isRemovableUnsoldEntry(entry)
-        && Number(entry.memoNumber ?? entry.memo_number ?? 0) === Number(effectiveMemoNumber)
         && String(entry.sem || entry.boxValue || '') === String(row.semValue || '')
-        && String(entry.amount || '') === String(row.bookingAmount || amount || '')
+        && Number(entry.amount || 0) === Number(row.bookingAmount || amount || 0)
         && String(entry.sessionMode || entry.session_mode || '') === String(row.resolvedSessionMode || sessionMode || '')
         && String(entry.purchaseCategory || '') === String(row.resolvedPurchaseCategory || activePurchaseCategory || '')
         && getDateOnlyValue(entry.bookingDate || '') === getDateOnlyValue(row.drawDate || bookingDate)
         && String(entry.userId || entry.user_id || partyId) === String(partyId)
+        && (partyId !== String(user?.id || '') || String(entry.forwardedBy || '') === String(user?.id || ''))
       ))
       .map((entry) => String(entry.number || '').padStart(5, '0')));
     const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !removableNumbers.has(currentNumber));
 
     if (missingNumbers.length > 0) {
       return {
-        error: `${formatDisplayDate(row.drawDate || bookingDate)} date me ${partyOption.username || 'selected party'} ke unsold memo ${effectiveMemoNumber} me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
+        error: `${formatDisplayDate(row.drawDate || bookingDate)} date me ${partyOption.username || 'selected party'} ke current unsold me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
       };
     }
 
@@ -3591,8 +3592,9 @@ const SellerDashboard = ({
           ...result.row,
           id: currentRows[unsoldActiveRowIndex].id,
           isExistingUnsoldMemoRow: currentRows[unsoldActiveRowIndex].isExistingUnsoldMemoRow,
+          isExistingUnsoldRemoveMemoRow: currentRows[unsoldActiveRowIndex].isExistingUnsoldRemoveMemoRow,
           isEditedUnsoldRemoveRow: activeTab === 'unsold-remove'
-            ? true
+            ? !currentRows[unsoldActiveRowIndex].isExistingUnsoldRemoveMemoRow
             : currentRows[unsoldActiveRowIndex].isEditedUnsoldRemoveRow,
           entryIds: currentRows[unsoldActiveRowIndex].entryIds || []
         };
@@ -3661,10 +3663,11 @@ const SellerDashboard = ({
     setSuccess('');
 
     let rowsToSave = unsoldDraftRows.filter((row) => (
-      !row.isExistingUnsoldMemoRow || row.isEditedUnsoldRemoveRow
+      !row.isExistingUnsoldMemoRow && !row.isExistingUnsoldRemoveMemoRow
     ));
 
-    if (hasPendingUnsoldEditorValues()) {
+    const activeUnsoldRemoveMemoRow = unsoldDraftRows[unsoldActiveRowIndex];
+    if (hasPendingUnsoldEditorValues() && !activeUnsoldRemoveMemoRow?.isExistingUnsoldRemoveMemoRow) {
       const result = buildUnsoldDraftRow();
       if (result.error) {
         openBlockingWarning(result.error);
@@ -3674,20 +3677,11 @@ const SellerDashboard = ({
     }
 
     if (rowsToSave.length === 0) {
-      openBlockingWarning('Remove karne ke liye kam se kam ek row add karo');
-      return;
-    }
-
-    try {
-      for (const row of rowsToSave) {
-        const unsoldValidation = await validateUnsoldRowInRemovableStock(row);
-        if (unsoldValidation.error) {
-          openBlockingWarning(unsoldValidation.error, [], 'Unsold Missing', focusUnsoldFromInput);
-          return;
-        }
+      if (unsoldDraftRows.some((row) => row.isExistingUnsoldRemoveMemoRow)) {
+        setSuccess(`Unsold remove memo ${unsoldRemoveMemoNumber || selectedUnsoldRemoveMemoOption?.memoNumber || ''} already saved`);
+        return;
       }
-    } catch (err) {
-      openBlockingWarning(err.response?.data?.message || 'Unsold check nahi ho paya', [], 'Unsold Missing', focusUnsoldFromInput);
+      openBlockingWarning('Remove karne ke liye kam se kam ek row add karo');
       return;
     }
 
@@ -3707,6 +3701,8 @@ const SellerDashboard = ({
           purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
           sellerId: effectivePartyId === String(user?.id) ? undefined : effectivePartyId,
           memoNumber: effectiveMemoNumber,
+          amount: row.bookingAmount || amount,
+          boxValue: row.semValue,
           rangeStart: row.numberStart || row.from,
           rangeEnd: row.numberEnd || row.to
         });
@@ -4449,6 +4445,7 @@ const SellerDashboard = ({
       onClick: requestExitConfirmation
     }
   ];
+  const currentUnsoldFormId = activeTab === 'unsold-remove' ? 'seller-unsold-remove-form' : 'seller-unsold-form';
   const sellerUnsoldFormRows = [
     {
       label: 'Party Name',
@@ -4458,7 +4455,7 @@ const SellerDashboard = ({
           inputRef={unsoldPartySelectRef}
           value={unsoldPartyId}
           options={unsoldPartyOptions}
-          form="seller-unsold-form"
+          form={currentUnsoldFormId}
           getOptionLabel={(party) => `${party.username}${String(party.id) === String(user?.id) ? ' (Self)' : ''} [${getPartyKeyword(party)}] (${getAllowedAmountsLabel(party)})`}
           getOptionSearchLabel={(party) => `${getPartyKeyword(party)} ${party.username} ${getAllowedAmountsLabel(party)}`}
           onChange={(party) => {
@@ -4473,7 +4470,7 @@ const SellerDashboard = ({
           }}
           onEnter={(party) => {
             if (party) {
-              window.requestAnimationFrame(() => unsoldMemoRef.current?.focus());
+              window.requestAnimationFrame(() => unsoldDateInputRef.current?.focus());
             }
           }}
           placeholder="Keyword ya seller name type karo"
@@ -4485,11 +4482,10 @@ const SellerDashboard = ({
       className: 'medium',
       content: (
         <input
+          ref={unsoldDateInputRef}
           type="date"
           value={bookingDate}
-          readOnly
-          tabIndex={-1}
-          onMouseDown={(e) => e.preventDefault()}
+          onChange={(e) => setBookingDate(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
@@ -4497,7 +4493,7 @@ const SellerDashboard = ({
               window.requestAnimationFrame(() => unsoldMemoRef.current?.focus());
             }
           }}
-          form="seller-unsold-form"
+          form={currentUnsoldFormId}
         />
       )
     }
@@ -5262,6 +5258,7 @@ const SellerDashboard = ({
     { tab: 'purchase-send', label: 'Purchase Send' },
     { tab: 'see-purchase', label: 'See Purchase' },
     { tab: 'unsold', label: 'Unsold' },
+    { tab: 'unsold-remove', label: 'Unsold Remove' },
     { tab: 'check-price', label: 'Check Price' },
     { tab: 'tree', label: 'Tree' },
     { tab: 'add-seller', label: 'Add New Seller' },
@@ -6280,6 +6277,117 @@ const SellerDashboard = ({
                 statusLabel={sessionMode}
                 windowClassName="full-page"
                 blockingWarning={activeTab === 'unsold' ? blockingWarning : null}
+                onBlockingWarningClose={clearBlockingWarning}
+              />
+            </div>
+          </div>
+        )}
+
+        {!activeTab && (
+          <div className="accordion-item" style={{ order: 1 }}>
+            <button
+              className={`accordion-header ${activeTab === 'unsold-remove' ? 'active' : ''}`}
+              onClick={() => handleTabToggle('unsold-remove')}
+            >
+              Unsold Remove
+            </button>
+          </div>
+        )}
+
+        {activeTab === 'unsold-remove' && (
+          <div className="accordion-item" style={{ order: 1 }}>
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
+              Unsold Remove
+            </button>
+            <div className="accordion-content">
+              <RetroPurchasePanel
+                formId="seller-unsold-remove-form"
+                onSubmit={handleRemoveUnsold}
+                screenCode="RAHUL"
+                panelTitle="Unsold Remove"
+                screenTitle={entryCompanyLabel || 'SELLER UNSOLD REMOVE'}
+                headerTimestamp={sellerUnsoldTimestamp}
+                memoNumber={defaultUnsoldRemoveMemoOption ? String(defaultUnsoldRemoveMemoOption.memoNumber) : '1'}
+                formRows={sellerUnsoldFormRows}
+                gridRows={sellerUnsoldGridRows}
+                editableRow={unsoldEditorVisible ? sellerUnsoldEditableRow : null}
+                editableRowIndex={unsoldActiveRowIndex}
+                activeGridRowIndex={unsoldEditorVisible && unsoldActiveRowIndex < unsoldDraftRows.length ? unsoldActiveRowIndex : null}
+                onGridRowClick={(_, index) => {
+                  const row = unsoldDraftRows[index];
+                  if (!row) {
+                    return;
+                  }
+                  setUnsoldEditorVisible(true);
+                  setUnsoldActiveRowIndex(index);
+                  setUnsoldCodeInput(row.code || '');
+                  setUnsoldTableFromInput(row.from || '');
+                  setUnsoldTableToInput(row.to || '');
+                  setUnsoldNumber(row.from || '');
+                  setUnsoldRangeEndNumber(row.to || '');
+                  window.requestAnimationFrame(() => unsoldCodeInputRef.current?.focus());
+                }}
+                memoProps={{
+                  ref: unsoldMemoRef,
+                  tabIndex: 0,
+                  onKeyDown: (e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      if (!unsoldMemoPopupOpen) {
+                        openUnsoldMemoPopup();
+                        return;
+                      }
+                      commitUnsoldMemoSelection();
+                    }
+
+                    if (e.key === 'ArrowDown') {
+                      e.preventDefault();
+                      if (!unsoldMemoPopupOpen) {
+                        openUnsoldMemoPopup();
+                        return;
+                      }
+                      setUnsoldMemoSelectionIndex((currentIndex) => {
+                        const nextIndex = currentIndex + 1;
+                        if (nextIndex >= currentUnsoldMemoOptions.length) {
+                          return Math.max(currentUnsoldMemoOptions.length - 1, 0);
+                        }
+                        return nextIndex;
+                      });
+                    }
+
+                    if (e.key === 'ArrowUp') {
+                      e.preventDefault();
+                      if (!unsoldMemoPopupOpen) {
+                        openUnsoldMemoPopup();
+                        return;
+                      }
+                      setUnsoldMemoSelectionIndex((currentIndex) => Math.max(currentIndex - 1, 0));
+                    }
+
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      if (unsoldMemoPopupOpen) {
+                        setUnsoldMemoPopupOpen(false);
+                      }
+                    }
+                  }
+                }}
+                memoSelector={{
+                  isOpen: unsoldMemoPopupOpen,
+                  options: currentUnsoldMemoOptions,
+                  activeIndex: unsoldMemoSelectionIndex,
+                  onHighlight: setUnsoldMemoSelectionIndex,
+                  onSelect: commitUnsoldMemoSelection,
+                  variant: 'table',
+                  className: 'table-popup'
+                }}
+                topShortcuts={SELLER_UNSOLD_SHORTCUTS}
+                footerActions={sellerUnsoldRemoveActions}
+                summaryQuantity={sellerUnsoldSummaryQuantity}
+                summaryAmount={sellerUnsoldSummaryAmount}
+                statusLabel={sessionMode}
+                windowClassName="full-page"
+                blockingWarning={activeTab === 'unsold-remove' ? blockingWarning : null}
                 onBlockingWarningClose={clearBlockingWarning}
               />
             </div>
