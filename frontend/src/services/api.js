@@ -37,6 +37,8 @@ export const authService = {
 
 export const userService = {
   createSeller: (username, keyword, password, rateAmount6, rateAmount12, sellerType = 'seller') => api.post('/users/create-seller', { username, keyword, password, rateAmount6, rateAmount12, sellerType }),
+  createAdmin: (username, password) => api.post('/users/create-admin', { username, password }),
+  getAdmins: () => api.get('/users/admins'),
   getChildSellers: () => api.get('/users/child-sellers'),
   getAllSellers: () => api.get('/users/all-sellers'),
   getUserTree: () => api.get('/users/tree'),

@@ -22,6 +22,12 @@ const normalizePurchaseCategory = (value) => {
   return VALID_PURCHASE_CATEGORIES.includes(normalized) ? normalized : '';
 };
 
+const getPrizeOwnerId = (user) => (
+  user?.role === 'admin'
+    ? user.id
+    : user?.ownerAdminId || user?.parentId || user?.id
+);
+
 const getNormalizedPrizeConfig = (prizeKey, fallbackLabel = '', fallbackDigitLength = 0) => {
   const normalizedKey = String(prizeKey || '').trim().toLowerCase();
   const config = PRIZE_CONFIG[normalizedKey];
@@ -352,6 +358,7 @@ const uploadPrice = async (req, res) => {
     shift: req.body?.shift
   });
   const resultForDate = String(req.body?.resultForDate || '').trim();
+  const prizeOwnerId = getPrizeOwnerId(req.user);
 
   if (!resultShift) {
     return res.status(400).json({ message: 'Valid result session required' });
@@ -395,8 +402,8 @@ const uploadPrice = async (req, res) => {
     const existingWinningNumbers = await client.query(
       `SELECT winning_number
        FROM prize_results
-       WHERE session_mode = $1 AND purchase_category = $2 AND result_for_date = $3`,
-      [resultShift.sessionMode, resultShift.purchaseCategory, resultForDate]
+       WHERE session_mode = $1 AND purchase_category = $2 AND result_for_date = $3 AND uploaded_by = $4`,
+      [resultShift.sessionMode, resultShift.purchaseCategory, resultForDate, prizeOwnerId]
     );
     const existingNumberSet = new Set(existingWinningNumbers.rows.map((row) => normalizeWinningNumber(row.winning_number)));
 
@@ -435,7 +442,7 @@ const uploadPrice = async (req, res) => {
           resultShift.sessionMode,
           resultShift.purchaseCategory,
           resultForDate,
-          req.user?.id || null
+          prizeOwnerId || null
         ]
       );
 
@@ -466,12 +473,13 @@ const updatePrizeResult = async (req, res) => {
   try {
     const resultId = Number(req.params.id);
     const winningNumber = normalizeWinningNumber(req.body?.winningNumber);
+    const prizeOwnerId = getPrizeOwnerId(req.user);
 
     if (!Number.isInteger(resultId) || resultId <= 0) {
       return res.status(400).json({ message: 'Valid result id required' });
     }
 
-    const existingResult = await query('SELECT * FROM prize_results WHERE id = $1 LIMIT 1', [resultId]);
+    const existingResult = await query('SELECT * FROM prize_results WHERE id = $1 AND uploaded_by = $2 LIMIT 1', [resultId, prizeOwnerId]);
 
     if (existingResult.rows.length === 0) {
       return res.status(404).json({ message: 'Uploaded result not found' });
@@ -498,9 +506,9 @@ const updatePrizeResult = async (req, res) => {
 
     const duplicateResult = await query(
       `SELECT id FROM prize_results
-       WHERE session_mode = $1 AND purchase_category = $2 AND result_for_date = $3 AND winning_number = $4 AND id <> $5
+       WHERE session_mode = $1 AND purchase_category = $2 AND result_for_date = $3 AND winning_number = $4 AND id <> $5 AND uploaded_by = $6
        LIMIT 1`,
-      [currentRow.session_mode, currentRow.purchase_category || (currentRow.session_mode === 'NIGHT' ? 'E' : 'M'), currentRow.result_for_date, winningNumber, resultId]
+      [currentRow.session_mode, currentRow.purchase_category || (currentRow.session_mode === 'NIGHT' ? 'E' : 'M'), currentRow.result_for_date, winningNumber, resultId, prizeOwnerId]
     );
 
     if (duplicateResult.rows.length > 0) {
@@ -510,9 +518,9 @@ const updatePrizeResult = async (req, res) => {
     const updatedResult = await query(
       `UPDATE prize_results
       SET winning_number = $1, uploaded_by = $2, result_date = CURRENT_TIMESTAMP
-      WHERE id = $3
+      WHERE id = $3 AND uploaded_by = $2
       RETURNING *`,
-      [winningNumber, req.user?.id || null, resultId]
+      [winningNumber, prizeOwnerId || null, resultId]
     );
 
     return res.json({
@@ -531,14 +539,15 @@ const updatePrizeResult = async (req, res) => {
 const deletePrizeResult = async (req, res) => {
   try {
     const resultId = Number(req.params.id);
+    const prizeOwnerId = getPrizeOwnerId(req.user);
 
     if (!Number.isInteger(resultId) || resultId <= 0) {
       return res.status(400).json({ message: 'Valid result id required' });
     }
 
     const deletedResult = await query(
-      'DELETE FROM prize_results WHERE id = $1 RETURNING *',
-      [resultId]
+      'DELETE FROM prize_results WHERE id = $1 AND uploaded_by = $2 RETURNING *',
+      [resultId, prizeOwnerId]
     );
 
     if (deletedResult.rows.length === 0) {
@@ -562,6 +571,7 @@ const deletePrizeResults = async (req, res) => {
       shift: req.body?.shift || req.query?.shift
     });
     const resultForDate = String(req.body?.resultForDate || req.query?.resultForDate || '').trim();
+    const prizeOwnerId = getPrizeOwnerId(req.user);
 
     if (!resultShift) {
       return res.status(400).json({ message: 'Valid result session required' });
@@ -576,8 +586,9 @@ const deletePrizeResults = async (req, res) => {
        WHERE result_for_date = $1::date
          AND session_mode = $2
          AND purchase_category = $3
+         AND uploaded_by = $4
        RETURNING *`,
-      [resultForDate, resultShift.sessionMode, resultShift.purchaseCategory]
+      [resultForDate, resultShift.sessionMode, resultShift.purchaseCategory, prizeOwnerId]
     );
 
     return res.json({
@@ -593,9 +604,10 @@ const deletePrizeResults = async (req, res) => {
 const getPriceByCode = async (req, res) => {
   try {
     const winningNumber = normalizeWinningNumber(req.params.uniqueCode);
+    const prizeOwnerId = getPrizeOwnerId(req.user);
     const result = await query(
-      'SELECT * FROM prize_results WHERE winning_number = $1 ORDER BY result_for_date DESC, session_mode ASC, prize_amount DESC, created_at DESC',
-      [winningNumber]
+      'SELECT * FROM prize_results WHERE winning_number = $1 AND uploaded_by = $2 ORDER BY result_for_date DESC, session_mode ASC, prize_amount DESC, created_at DESC',
+      [winningNumber, prizeOwnerId]
     );
 
     if (result.rows.length === 0) {
@@ -616,8 +628,8 @@ const getAllPrices = async (req, res) => {
     const sessionMode = String(req.query?.sessionMode || '').trim().toUpperCase();
     const purchaseCategory = normalizePurchaseCategory(req.query?.purchaseCategory);
     const resultForDate = String(req.query?.resultForDate || '').trim();
-    const conditions = [];
-    const params = [];
+    const params = [getPrizeOwnerId(req.user)];
+    const conditions = ['uploaded_by = $1'];
 
     if (sessionMode) {
       params.push(sessionMode);
@@ -650,6 +662,7 @@ const getPrizeTracker = async (req, res) => {
     const rawSessionMode = String(req.query?.sessionMode || '').trim().toUpperCase();
     const sessionMode = rawSessionMode === 'ALL' ? '' : rawSessionMode;
     const resultForDate = String(req.query?.resultForDate || '').trim();
+    const prizeOwnerId = getPrizeOwnerId(req.user);
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(resultForDate)) {
       return res.status(400).json({ message: 'Valid result date required' });
@@ -710,6 +723,7 @@ const getPrizeTracker = async (req, res) => {
          LEFT JOIN branch_users bu ON bu.id = le.user_id
          WHERE pr.result_for_date = $2::date
            AND ($3::text = '' OR pr.session_mode = $3)
+           AND pr.uploaded_by = $4
            AND (le.id IS NULL OR bu.id IS NOT NULL)
        )
        SELECT
@@ -752,7 +766,7 @@ const getPrizeTracker = async (req, res) => {
          result_for_date,
          seller_username
        ORDER BY prize_amount DESC, prize_id ASC, seller_username ASC NULLS LAST`,
-      [req.user.id, resultForDate, sessionMode]
+      [req.user.id, resultForDate, sessionMode, prizeOwnerId]
     );
 
     return res.json(result.rows.map(mapPrizeTrackerRow));
@@ -768,6 +782,7 @@ const getFilteredPrizeResults = async (req, res) => {
     const shift = normalizeShiftFilter(req.query?.shift);
     const soldStatus = normalizeSoldStatusFilter(req.query?.soldStatus);
     const sellerId = Number(req.query?.sellerId || 0);
+    const prizeOwnerId = getPrizeOwnerId(req.user);
 
     if (!DATE_VALUE_REGEX.test(date)) {
       return res.status(400).json({ message: 'Valid date required' });
@@ -777,7 +792,7 @@ const getFilteredPrizeResults = async (req, res) => {
       return res.status(403).json({ message: 'Selected seller is not available in your view' });
     }
 
-    const params = [visibleUserIds, date];
+    const params = [visibleUserIds, date, prizeOwnerId];
     const conditions = [
       'le.user_id = ANY($1::int[])',
       'le.booking_date = $2::date'
@@ -820,9 +835,10 @@ const getFilteredPrizeResults = async (req, res) => {
        FROM lottery_entries le
        INNER JOIN users u ON u.id = le.user_id
        INNER JOIN prize_results pr
-         ON pr.result_for_date = le.booking_date
-        AND pr.session_mode = le.session_mode
-        AND COALESCE(pr.purchase_category, CASE WHEN pr.session_mode = 'NIGHT' THEN 'E' ELSE 'M' END) = COALESCE(le.purchase_category, CASE WHEN le.session_mode = 'NIGHT' THEN 'E' ELSE 'M' END)
+        ON pr.result_for_date = le.booking_date
+       AND pr.session_mode = le.session_mode
+       AND pr.uploaded_by = $3
+       AND COALESCE(pr.purchase_category, CASE WHEN pr.session_mode = 'NIGHT' THEN 'E' ELSE 'M' END) = COALESCE(le.purchase_category, CASE WHEN le.session_mode = 'NIGHT' THEN 'E' ELSE 'M' END)
         AND RIGHT(le.number, pr.digit_length) = pr.winning_number
        WHERE ${conditions.join(' AND ')}
        ORDER BY le.booking_date DESC, le.session_mode ASC, u.username ASC, le.amount ASC, le.box_value ASC, le.number ASC, pr.prize_amount DESC`,
@@ -846,8 +862,9 @@ const getBillPrizes = async (req, res) => {
     const amount = String(rawAmount || '').trim();
     const normalizedPurchaseCategory = normalizePurchaseCategory(purchaseCategory);
     const visibleUserIds = await getVisibleBranchIds(req.user.id, true);
+    const prizeOwnerId = getPrizeOwnerId(req.user);
 
-    const prizeParams = [];
+    const prizeParams = [prizeOwnerId];
     const prizeDateFilter = buildDateRangeFilter({ date, fromDate, toDate }, prizeParams, 'pr.result_for_date');
     if (prizeDateFilter.error) {
       return res.status(400).json({ message: prizeDateFilter.error });
@@ -871,7 +888,7 @@ const getBillPrizes = async (req, res) => {
 
     const prizeResultsResponse = await query(
       `SELECT * FROM prize_results pr
-       WHERE 1 = 1
+       WHERE pr.uploaded_by = $1
        ${prizeDateFilter.clause}
        ${prizeShiftFilter}
        ${prizePurchaseCategoryFilter}
@@ -979,6 +996,7 @@ const getMyPrizes = async (req, res) => {
     const amount = rawAmount.toUpperCase() === 'ALL' ? '' : rawAmount;
     const same = rawSame.toUpperCase() === 'ALL' ? '' : rawSame;
     const resultForDate = getIndiaDateParts().date;
+    const prizeOwnerId = getPrizeOwnerId(req.user);
 
     if (!['MORNING', 'NIGHT'].includes(sessionMode)) {
       return res.status(400).json({ message: 'Session mode required' });
@@ -986,9 +1004,9 @@ const getMyPrizes = async (req, res) => {
 
     const prizeResultsResponse = await query(
       `SELECT * FROM prize_results
-       WHERE result_for_date = $1 AND session_mode = $2 AND purchase_category = $3
+       WHERE result_for_date = $1 AND session_mode = $2 AND purchase_category = $3 AND uploaded_by = $4
        ORDER BY prize_amount DESC, created_at DESC`,
-      [resultForDate, sessionMode, purchaseCategory]
+      [resultForDate, sessionMode, purchaseCategory, prizeOwnerId]
     );
 
     const prizeResults = prizeResultsResponse.rows.map(mapPrizeResult);
@@ -1085,6 +1103,7 @@ const checkPrize = async (req, res) => {
     const rawSame = String(req.query?.sem || '').trim();
     const amount = rawAmount.toUpperCase() === 'ALL' ? '' : rawAmount;
     const same = rawSame.toUpperCase() === 'ALL' ? '' : rawSame;
+    const prizeOwnerId = getPrizeOwnerId(req.user);
 
     if (!/^\d{4,5}$/.test(number)) {
       return res.status(400).json({ message: 'Booked number must be 4 or 5 digits' });
@@ -1147,9 +1166,9 @@ const checkPrize = async (req, res) => {
 
     const result = await query(
       `SELECT * FROM prize_results
-      WHERE result_for_date = $1 AND session_mode = $2 AND purchase_category = $3
+      WHERE result_for_date = $1 AND session_mode = $2 AND purchase_category = $3 AND uploaded_by = $4
       ORDER BY prize_amount DESC, created_at DESC`,
-      [resultForDate, sessionMode, purchaseCategory]
+      [resultForDate, sessionMode, purchaseCategory, prizeOwnerId]
     );
 
     const prizeResults = result.rows.map(mapPrizeResult);

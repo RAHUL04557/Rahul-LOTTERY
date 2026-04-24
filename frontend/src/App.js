@@ -3,6 +3,7 @@ import Login from './components/Login';
 import Home from './components/Home';
 import SellerDashboard from './components/SellerDashboard';
 import AdminDashboard from './components/AdminDashboard';
+import SuperAdminDashboard from './components/SuperAdminDashboard';
 import EntrySelectionScreen from './components/EntrySelectionScreen';
 import { authService } from './services/api';
 import './styles/index.css';
@@ -106,6 +107,10 @@ function App() {
 
   if (!user) {
     return <Login onLoginSuccess={handleLoginSuccess} />;
+  }
+
+  if (user.role === 'superadmin') {
+    return <SuperAdminDashboard user={user} onLogout={handleLogout} />;
   }
 
   if (user.role === 'guest') {

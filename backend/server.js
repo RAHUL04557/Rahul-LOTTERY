@@ -4,6 +4,7 @@ const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
 const { initDB, query } = require('./config/database');
+const { ensureDefaultSuperAdminUser } = require('./controllers/authController');
 
 const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
@@ -23,10 +24,11 @@ const initializeAdmin = async () => {
 
     if (adminResult.rows.length === 0) {
       const hashedPassword = await bcrypt.hash(process.env.ADMIN_PASSWORD, 10);
-      await query(
-        'INSERT INTO users (username, password, role, parent_id, rate) VALUES ($1, $2, $3, $4, $5)',
-        [process.env.ADMIN_USERNAME, hashedPassword, 'admin', null, 0]
+      const insertedAdmin = await query(
+        'INSERT INTO users (username, password, role, seller_type, parent_id, rate) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
+        [process.env.ADMIN_USERNAME, hashedPassword, 'admin', 'admin', null, 0]
       );
+      await query('UPDATE users SET owner_admin_id = id WHERE id = $1', [insertedAdmin.rows[0].id]);
       console.log('Admin user created');
       return;
     }
@@ -41,17 +43,20 @@ const initializeAdmin = async () => {
       updates.push(`role = $${values.length}`);
     }
 
+    values.push('admin');
+    updates.push(`seller_type = $${values.length}`);
+
+    updates.push('owner_admin_id = id');
+
     if (!isPasswordValid) {
       const hashedPassword = await bcrypt.hash(process.env.ADMIN_PASSWORD, 10);
       values.push(hashedPassword);
       updates.push(`password = $${values.length}`);
     }
 
-    if (updates.length > 0) {
-      values.push(adminUser.id);
-      await query(`UPDATE users SET ${updates.join(', ')} WHERE id = $${values.length}`, values);
-      console.log('Admin user synchronized with environment credentials');
-    }
+    values.push(adminUser.id);
+    await query(`UPDATE users SET ${updates.join(', ')} WHERE id = $${values.length}`, values);
+    console.log('Admin user synchronized with environment credentials');
   } catch (error) {
     console.error('Error initializing admin:', error.message);
   }
@@ -72,6 +77,7 @@ const PORT = process.env.PORT || 5000;
 const startServer = async () => {
   try {
     await initDB();
+    await ensureDefaultSuperAdminUser();
     await initializeAdmin();
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);

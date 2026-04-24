@@ -54,6 +54,7 @@ const initDB = async () => {
       role VARCHAR(20) NOT NULL DEFAULT 'seller',
       seller_type VARCHAR(30) NOT NULL DEFAULT 'seller',
       parent_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      owner_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
       rate NUMERIC(12, 2) NOT NULL DEFAULT 0,
       rate_amount_6 NUMERIC(12, 2) NOT NULL DEFAULT 0,
       rate_amount_12 NUMERIC(12, 2) NOT NULL DEFAULT 0,
@@ -64,6 +65,11 @@ const initDB = async () => {
   await query(`
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS keyword VARCHAR(30)
+  `);
+
+  await query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS owner_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL
   `);
 
   await query(`
@@ -108,9 +114,39 @@ const initDB = async () => {
   `);
 
   await query(`
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_keyword_unique
-    ON users (UPPER(keyword))
-    WHERE keyword IS NOT NULL AND TRIM(keyword) <> ''
+    UPDATE users
+    SET owner_admin_id = id
+    WHERE role = 'admin'
+      AND owner_admin_id IS DISTINCT FROM id
+  `);
+
+  await query(`
+    WITH RECURSIVE user_roots AS (
+      SELECT id, parent_id, CASE WHEN role = 'admin' THEN id ELSE NULL END AS root_admin_id
+      FROM users
+      WHERE role IN ('admin', 'superadmin') OR parent_id IS NULL
+      UNION ALL
+      SELECT child.id, child.parent_id, COALESCE(user_roots.root_admin_id, CASE WHEN child.role = 'admin' THEN child.id ELSE NULL END)
+      FROM users child
+      INNER JOIN user_roots ON child.parent_id = user_roots.id
+    )
+    UPDATE users target
+    SET owner_admin_id = user_roots.root_admin_id
+    FROM user_roots
+    WHERE target.id = user_roots.id
+      AND target.role = 'seller'
+      AND user_roots.root_admin_id IS NOT NULL
+      AND target.owner_admin_id IS DISTINCT FROM user_roots.root_admin_id
+  `);
+
+  await query(`
+    DROP INDEX IF EXISTS idx_users_keyword_unique
+  `);
+
+  await query(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_owner_keyword_unique
+    ON users (owner_admin_id, UPPER(keyword))
+    WHERE owner_admin_id IS NOT NULL AND keyword IS NOT NULL AND TRIM(keyword) <> ''
   `);
 
   await query(`
@@ -228,7 +264,7 @@ const initDB = async () => {
 
   await query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_prize_results_unique_upload
-    ON prize_results (result_for_date, session_mode, purchase_category, prize_key, winning_number)
+    ON prize_results (uploaded_by, result_for_date, session_mode, purchase_category, prize_key, winning_number)
   `);
 
   await query(`

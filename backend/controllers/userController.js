@@ -8,6 +8,7 @@ const mapSeller = (row) => ({
   role: row.role,
   sellerType: row.seller_type || (row.role === 'seller' ? 'seller' : 'admin'),
   parentId: row.parent_id,
+  ownerAdminId: row.owner_admin_id,
   canLogin: row.can_login !== undefined ? Boolean(row.can_login) : true,
   rateAmount6: row.rate_amount_6 !== undefined ? Number(row.rate_amount_6) : 0,
   rateAmount12: row.rate_amount_12 !== undefined ? Number(row.rate_amount_12) : 0,
@@ -25,6 +26,7 @@ const buildTree = (rows, rootId, currentUser) => {
         role: row.role,
         sellerType: row.seller_type || (row.role === 'seller' ? 'seller' : 'admin'),
         parentId: row.parent_id,
+        ownerAdminId: row.owner_admin_id,
         canLogin: row.can_login !== undefined ? Boolean(row.can_login) : true,
         rateAmount6: row.rate_amount_6 !== undefined ? Number(row.rate_amount_6) : 0,
         rateAmount12: row.rate_amount_12 !== undefined ? Number(row.rate_amount_12) : 0,
@@ -76,11 +78,11 @@ const getVisibleUserTree = async (req, res) => {
   try {
     const treeResult = await query(
       `WITH RECURSIVE user_tree AS (
-        SELECT id, username, keyword, role, seller_type, parent_id, can_login, rate_amount_6, rate_amount_12, created_at, 0 AS level
+        SELECT id, username, keyword, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12, created_at, 0 AS level
         FROM users
         WHERE id = $1
         UNION ALL
-        SELECT u.id, u.username, u.keyword, u.role, u.seller_type, u.parent_id, u.can_login, u.rate_amount_6, u.rate_amount_12, u.created_at, ut.level + 1
+        SELECT u.id, u.username, u.keyword, u.role, u.seller_type, u.parent_id, u.owner_admin_id, u.can_login, u.rate_amount_6, u.rate_amount_12, u.created_at, ut.level + 1
         FROM users u
         INNER JOIN user_tree ut ON u.parent_id = ut.id
       )
@@ -189,6 +191,7 @@ const createSeller = async (req, res) => {
     const canLogin = requestedSellerType !== 'normal_seller';
     const allowedSellerTypes = getAllowedChildSellerTypes(req.user);
     const parentId = req.user.id;
+    const ownerAdminId = req.user.role === 'admin' ? req.user.id : req.user.ownerAdminId;
     const parentCanAssignAmount6 = req.user.role === 'admin' || Number(req.user.rateAmount6 || 0) > 0;
     const parentCanAssignAmount12 = req.user.role === 'admin' || Number(req.user.rateAmount12 || 0) > 0;
     const rawRateAmount6 = rateAmount6 === undefined || rateAmount6 === null ? '' : String(rateAmount6).trim();
@@ -232,8 +235,8 @@ const createSeller = async (req, res) => {
     }
 
     const existingKeywordResult = await query(
-      'SELECT id FROM users WHERE UPPER(COALESCE(keyword, \'\')) = $1 LIMIT 1',
-      [normalizedKeyword]
+      'SELECT id FROM users WHERE owner_admin_id = $1 AND UPPER(COALESCE(keyword, \'\')) = $2 LIMIT 1',
+      [ownerAdminId, normalizedKeyword]
     );
     if (existingKeywordResult.rows.length > 0) {
       return res.status(400).json({ message: 'Keyword already exists' });
@@ -273,9 +276,9 @@ const createSeller = async (req, res) => {
       ? await bcrypt.hash(resolvedPassword, 10)
       : resolvedPassword;
     const sellerResult = await query(
-      `INSERT INTO users (username, keyword, password, role, seller_type, parent_id, can_login, rate_amount_6, rate_amount_12)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING id, username, keyword, role, seller_type, parent_id, can_login, rate_amount_6, rate_amount_12, created_at`,
+      `INSERT INTO users (username, keyword, password, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id, username, keyword, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12, created_at`,
       [
         username,
         normalizedKeyword,
@@ -283,6 +286,7 @@ const createSeller = async (req, res) => {
         'seller',
         requestedSellerType,
         parentId,
+        ownerAdminId,
         canLogin,
         parentCanAssignAmount6 ? normalizedRateAmount6 : 0,
         parentCanAssignAmount12 ? normalizedRateAmount12 : 0
@@ -301,7 +305,7 @@ const createSeller = async (req, res) => {
 const getChildSellers = async (req, res) => {
   try {
     const sellersResult = await query(
-      'SELECT id, username, keyword, role, seller_type, parent_id, can_login, rate_amount_6, rate_amount_12, created_at FROM users WHERE parent_id = $1 ORDER BY created_at DESC',
+      'SELECT id, username, keyword, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12, created_at FROM users WHERE parent_id = $1 ORDER BY created_at DESC',
       [req.user.id]
     );
     res.json(sellersResult.rows.map(mapSeller));
@@ -313,9 +317,81 @@ const getChildSellers = async (req, res) => {
 const getAllSellers = async (req, res) => {
   try {
     const sellersResult = await query(
-      "SELECT id, username, keyword, role, seller_type, parent_id, can_login, rate_amount_6, rate_amount_12, created_at FROM users WHERE role = 'seller' ORDER BY created_at DESC"
+      `WITH RECURSIVE branch_users AS (
+        SELECT id, username, keyword, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12, created_at
+        FROM users
+        WHERE id = $1
+        UNION ALL
+        SELECT u.id, u.username, u.keyword, u.role, u.seller_type, u.parent_id, u.owner_admin_id, u.can_login, u.rate_amount_6, u.rate_amount_12, u.created_at
+        FROM users u
+        INNER JOIN branch_users bu ON u.parent_id = bu.id
+      )
+      SELECT * FROM branch_users WHERE role = 'seller' ORDER BY created_at DESC`,
+      [req.user.id]
     );
     res.json(sellersResult.rows.map(mapSeller));
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+const createAdmin = async (req, res) => {
+  try {
+    if (req.user.role !== 'superadmin') {
+      return res.status(403).json({ message: 'Only super admin can create admin IDs' });
+    }
+
+    const username = String(req.body.username || '').trim();
+    const password = String(req.body.password || '');
+
+    if (!username) {
+      return res.status(400).json({ message: 'Admin username required' });
+    }
+
+    if (password.length < 8) {
+      return res.status(400).json({ message: 'Password must be at least 8 characters' });
+    }
+
+    const existingUserResult = await query('SELECT id FROM users WHERE username = $1 LIMIT 1', [username]);
+    if (existingUserResult.rows.length > 0) {
+      return res.status(400).json({ message: 'Username already exists' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+    const adminResult = await query(
+      `INSERT INTO users (username, password, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12)
+       VALUES ($1, $2, 'admin', 'admin', $3, NULL, TRUE, 0, 0)
+       RETURNING id, username, keyword, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12, created_at`,
+      [username, hashedPassword, req.user.id]
+    );
+    await query('UPDATE users SET owner_admin_id = id WHERE id = $1', [adminResult.rows[0].id]);
+
+    res.status(201).json({
+      message: 'Admin ID created successfully',
+      admin: mapSeller({
+        ...adminResult.rows[0],
+        owner_admin_id: adminResult.rows[0].id
+      })
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+const getAdmins = async (req, res) => {
+  try {
+    if (req.user.role !== 'superadmin') {
+      return res.status(403).json({ message: 'Only super admin can view admin IDs' });
+    }
+
+    const adminsResult = await query(
+      `SELECT id, username, keyword, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12, created_at
+       FROM users
+       WHERE role = 'admin'
+       ORDER BY created_at DESC`
+    );
+
+    res.json(adminsResult.rows.map(mapSeller));
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -369,4 +445,4 @@ const changeChildPassword = async (req, res) => {
   }
 };
 
-module.exports = { createSeller, getChildSellers, getAllSellers, getVisibleUserTree, deleteSeller, changeChildPassword };
+module.exports = { createSeller, createAdmin, getAdmins, getChildSellers, getAllSellers, getVisibleUserTree, deleteSeller, changeChildPassword };
