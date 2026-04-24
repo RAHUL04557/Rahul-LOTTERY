@@ -2,6 +2,8 @@ const express = require('express');
 const {
   uploadPrice,
   updatePrizeResult,
+  deletePrizeResult,
+  deletePrizeResults,
   getPriceByCode,
   getAllPrices,
   getPrizeTracker,
@@ -17,8 +19,14 @@ const router = express.Router();
 // Upload price (admin only)
 router.post('/upload', authenticateToken, authorizeRole(['admin']), uploadPrice);
 
+// Delete uploaded results for a date/session/category (admin only)
+router.delete('/bulk-delete', authenticateToken, authorizeRole(['admin']), deletePrizeResults);
+
 // Edit uploaded price/result (admin only)
 router.patch('/:id', authenticateToken, authorizeRole(['admin']), updatePrizeResult);
+
+// Delete uploaded price/result (admin only)
+router.delete('/:id', authenticateToken, authorizeRole(['admin']), deletePrizeResult);
 
 // Check prize
 router.get('/check', authenticateToken, checkPrize);

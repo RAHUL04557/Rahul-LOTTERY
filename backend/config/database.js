@@ -186,6 +186,7 @@ const initDB = async () => {
       digit_length INTEGER NOT NULL,
       winning_number VARCHAR(20) NOT NULL,
       session_mode VARCHAR(20) NOT NULL DEFAULT 'MORNING',
+      purchase_category VARCHAR(1),
       result_for_date DATE NOT NULL DEFAULT CURRENT_DATE,
       uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
       result_date TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -204,12 +205,30 @@ const initDB = async () => {
   `);
 
   await query(`
+    ALTER TABLE prize_results
+    ADD COLUMN IF NOT EXISTS purchase_category VARCHAR(1)
+  `);
+
+  await query(`
+    UPDATE prize_results
+    SET purchase_category = CASE
+      WHEN session_mode = 'NIGHT' THEN 'E'
+      ELSE 'M'
+    END
+    WHERE purchase_category IS NULL OR TRIM(purchase_category) = ''
+  `);
+
+  await query(`
     DROP INDEX IF EXISTS idx_prize_results_prize_key_number
   `);
 
   await query(`
+    DROP INDEX IF EXISTS idx_prize_results_unique_upload
+  `);
+
+  await query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_prize_results_unique_upload
-    ON prize_results (result_for_date, session_mode, prize_key, winning_number)
+    ON prize_results (result_for_date, session_mode, purchase_category, prize_key, winning_number)
   `);
 
   await query(`

@@ -111,7 +111,6 @@ const PRIZE_OPTIONS = [
   { key: 'fourth', title: '4th Prize', amountLabel: '700', amountValue: 700, digitLength: 4 },
   { key: 'fifth', title: '5th Prize', amountLabel: '300', amountValue: 300, digitLength: 4 }
 ];
-const RESULT_SESSION_OPTIONS = ['MORNING', 'NIGHT'];
 const ADMIN_PURCHASE_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F8-Clear', 'Esc-Exit'];
 const ADMIN_UNSOLD_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F4-View', 'F8-Clear', 'Esc-Exit'];
 const REMOVABLE_UNSOLD_STATUSES = new Set(['unsold_saved', 'unsold']);
@@ -1160,17 +1159,25 @@ const getIndiaDateTimeParts = (date = new Date()) => {
   };
 };
 
-const getUploadTimingMessage = (selectedDate, selectedSessionMode, currentDate) => {
+const getUploadTimingMessage = (selectedDate, selectedShift, currentDate) => {
+  if (selectedDate > currentDate) {
+    return 'Future date ka result upload nahi hoga.';
+  }
+
   if (selectedDate !== currentDate) {
     return '';
   }
 
-  if (selectedSessionMode === 'MORNING') {
+  if (selectedShift === 'MORNING') {
     return 'Current date ke liye Morning result upload 1:00 PM ke baad hi open hoga.';
   }
 
-  if (selectedSessionMode === 'NIGHT') {
-    return 'Current date ke liye Night result upload 8:00 PM ke baad hi open hoga.';
+  if (selectedShift === 'DAY') {
+    return 'Current date ke liye Day result upload 6:00 PM ke baad hi open hoga.';
+  }
+
+  if (selectedShift === 'EVENING') {
+    return 'Current date ke liye Evening result upload 8:00 PM ke baad hi open hoga.';
   }
 
   return '';
@@ -1329,6 +1336,8 @@ const AdminDashboard = ({
       details
     });
   };
+  const uploadPurchaseCategory = String(initialPurchaseCategory || '').trim().toUpperCase() || (uploadSessionMode === 'NIGHT' ? 'E' : 'M');
+  const uploadResultShift = getInitialBillShift(uploadSessionMode, uploadPurchaseCategory);
   const formatAdminUnsoldErrorDate = (dateValue) => {
     if (!dateValue) {
       return '';
@@ -1350,6 +1359,18 @@ const AdminDashboard = ({
     window.requestAnimationFrame(() => {
       adminSendFromInputRef.current?.focus();
       adminSendFromInputRef.current?.select?.();
+    });
+  };
+  const focusAdminSendSellerSelect = () => {
+    const focusSeller = () => {
+      adminSendSellerSelectRef.current?.focus();
+      adminSendSellerSelectRef.current?.select?.();
+    };
+
+    window.requestAnimationFrame(() => {
+      focusSeller();
+      window.setTimeout(focusSeller, 0);
+      window.setTimeout(focusSeller, 80);
     });
   };
   const resetDateFieldsToToday = () => {
@@ -1398,8 +1419,8 @@ const AdminDashboard = ({
   }, []);
 
   useEffect(() => {
-    loadPrizeResults(uploadResultDate, uploadSessionMode);
-  }, [uploadResultDate, uploadSessionMode]);
+    loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
+  }, [uploadResultDate, uploadSessionMode, uploadPurchaseCategory]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1417,7 +1438,7 @@ const AdminDashboard = ({
     setEditingUploadedValue('');
     setError('');
     setSuccess('');
-  }, [uploadResultDate, uploadSessionMode]);
+  }, [uploadResultDate, uploadSessionMode, uploadPurchaseCategory]);
 
   useEffect(() => {
     const availableSemOptions = getAvailableSemOptions(adminStockAmount);
@@ -1680,11 +1701,16 @@ const AdminDashboard = ({
     }
   };
 
-  const loadPrizeResults = async (selectedDate = uploadResultDate, selectedSessionMode = uploadSessionMode) => {
+  const loadPrizeResults = async (
+    selectedDate = uploadResultDate,
+    selectedSessionMode = uploadSessionMode,
+    selectedPurchaseCategory = uploadPurchaseCategory
+  ) => {
     try {
       const response = await priceService.getAllPrices({
         resultForDate: selectedDate,
-        sessionMode: selectedSessionMode
+        sessionMode: selectedSessionMode,
+        purchaseCategory: selectedPurchaseCategory
       });
       setUploadedPrizeResults(response.data);
     } catch (err) {
@@ -3019,6 +3045,7 @@ const AdminDashboard = ({
       }
       setPurchaseMemoPopupOpen(false);
       await loadPurchaseEntries(purchaseBookingDate, purchaseSessionMode, purchaseSellerId);
+      focusAdminSendSellerSelect();
     } catch (err) {
       const rawErrorMessage = err.response?.data?.message || err.message || '';
       const normalizedErrorMessage = String(rawErrorMessage).toLowerCase();
@@ -3466,6 +3493,9 @@ const AdminDashboard = ({
       if (derivedRefreshTasks.length > 0) {
         await Promise.all(derivedRefreshTasks);
       }
+      if (activeTab === 'purchase-send' || activeTab === 'unsold' || activeTab === 'unsold-remove') {
+        focusAdminSendSellerSelect();
+      }
     } catch (err) {
       setError(err.response?.data?.message || (mode === 'remove' ? 'Error removing unsold' : 'Error saving unsold'));
     } finally {
@@ -3780,9 +3810,67 @@ const AdminDashboard = ({
       setSuccess(`${sanitizedValue} updated in ${prizeConfig.title}`);
       setEditingUploadedResultId(null);
       setEditingUploadedValue('');
-      await loadPrizeResults(uploadResultDate, uploadSessionMode);
+      await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
     } catch (err) {
       setError(err.response?.data?.message || 'Error updating uploaded result');
+    } finally {
+      setEditingUploadedLoading(false);
+    }
+  };
+
+  const deleteUploadedPrizeResult = async (entry) => {
+    const confirmed = window.confirm(`${entry.winningNumber} uploaded result delete karna hai?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setEditingUploadedLoading(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      await priceService.deletePrizeResult(entry.id);
+      setSuccess(`${entry.winningNumber} deleted from uploaded result`);
+      if (editingUploadedResultId === entry.id) {
+        setEditingUploadedResultId(null);
+        setEditingUploadedValue('');
+      }
+      await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error deleting uploaded result');
+    } finally {
+      setEditingUploadedLoading(false);
+    }
+  };
+
+  const deleteAllUploadedPrizeResults = async () => {
+    if (uploadedPrizeResults.length === 0) {
+      setError('Delete karne ke liye uploaded result nahi hai');
+      setSuccess('');
+      return;
+    }
+
+    const confirmed = window.confirm(`${formatDisplayDate(uploadResultDate)} ${uploadResultShift} ke sab uploaded results delete karne hai?`);
+    if (!confirmed) {
+      return;
+    }
+
+    setEditingUploadedLoading(true);
+    setError('');
+    setSuccess('');
+
+    try {
+      const response = await priceService.deletePrizeResults({
+        resultForDate: uploadResultDate,
+        sessionMode: uploadSessionMode,
+        purchaseCategory: uploadPurchaseCategory
+      });
+      setSuccess(response.data?.message || 'All uploaded results deleted successfully');
+      setEditingUploadedResultId(null);
+      setEditingUploadedValue('');
+      await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
+    } catch (err) {
+      setError(err.response?.data?.message || 'Error deleting uploaded results');
     } finally {
       setEditingUploadedLoading(false);
     }
@@ -3816,13 +3904,14 @@ const AdminDashboard = ({
       await priceService.uploadPrice({
         entries: entriesToUpload,
         sessionMode: uploadSessionMode,
+        purchaseCategory: uploadPurchaseCategory,
         resultForDate: uploadResultDate
       });
       setSuccess('Prize results uploaded successfully');
       setPendingPrizeEntries(createPendingPrizeEntries());
       setEditingPendingPrizeId(null);
       setEditingPendingPrizeValue('');
-      await loadPrizeResults(uploadResultDate, uploadSessionMode);
+      await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
     } catch (err) {
       const apiMessage = err.response?.data?.message || '';
       setError(
@@ -4516,10 +4605,18 @@ const AdminDashboard = ({
     }))
     .filter((prize) => prize.numbers.length > 0);
   const isCurrentUploadDate = uploadResultDate === currentIndiaDateTime.date;
+  const isFutureUploadDate = uploadResultDate > currentIndiaDateTime.date;
   const isMorningUploadAllowed = !isCurrentUploadDate || currentIndiaDateTime.hour >= 13;
-  const isNightUploadAllowed = !isCurrentUploadDate || currentIndiaDateTime.hour >= 20;
-  const isSelectedUploadSessionAllowed = uploadSessionMode === 'MORNING' ? isMorningUploadAllowed : isNightUploadAllowed;
-  const uploadTimingMessage = getUploadTimingMessage(uploadResultDate, uploadSessionMode, currentIndiaDateTime.date);
+  const isDayUploadAllowed = !isCurrentUploadDate || currentIndiaDateTime.hour >= 18;
+  const isEveningUploadAllowed = !isCurrentUploadDate || currentIndiaDateTime.hour >= 20;
+  const isSelectedUploadSessionAllowed = !isFutureUploadDate && (
+    uploadResultShift === 'MORNING'
+      ? isMorningUploadAllowed
+      : uploadResultShift === 'DAY'
+        ? isDayUploadAllowed
+        : isEveningUploadAllowed
+  );
+  const uploadTimingMessage = getUploadTimingMessage(uploadResultDate, uploadResultShift, currentIndiaDateTime.date);
   const historyPeriodLabel = historyFromDate === historyToDate
     ? formatDisplayDate(historyFromDate)
     : `${formatDisplayDate(historyFromDate)} to ${formatDisplayDate(historyToDate)}`;
@@ -5836,27 +5933,9 @@ const AdminDashboard = ({
                 </div>
 
                 <div className="form-group" style={{ marginBottom: '20px' }}>
-                  <label>Choose Session:</label>
-                  <div className="box-options" style={{ marginTop: '10px' }}>
-                    {RESULT_SESSION_OPTIONS.map((session) => {
-                      return (
-                        <label
-                          key={session}
-                          className="checkbox-label"
-                          style={{ opacity: (session === 'MORNING' ? !isMorningUploadAllowed : !isNightUploadAllowed) ? 0.6 : 1 }}
-                        >
-                          <input
-                            type="radio"
-                            name="upload-session"
-                            value={session}
-                            checked={uploadSessionMode === session}
-                            onChange={() => setUploadSessionMode(session)}
-                            disabled={session === 'MORNING' ? !isMorningUploadAllowed : !isNightUploadAllowed}
-                          />
-                          {session}
-                        </label>
-                      );
-                    })}
+                  <label>Result Session:</label>
+                  <div style={{ marginTop: '10px', padding: '14px 16px', border: '1px solid #e2e8f0', borderRadius: '8px', backgroundColor: '#f8fbff', fontWeight: 700 }}>
+                    {uploadResultShift}
                   </div>
                   {uploadTimingMessage && !isSelectedUploadSessionAllowed && (
                     <p style={{ marginTop: '8px', color: '#c53030', fontSize: '13px' }}>{uploadTimingMessage}</p>
@@ -6056,6 +6135,7 @@ const AdminDashboard = ({
                                 <button
                                   type="button"
                                   onClick={() => startEditingUploadedResult(entry)}
+                                  disabled={editingUploadedLoading}
                                   style={{
                                     border: 'none',
                                     background: 'transparent',
@@ -6066,6 +6146,21 @@ const AdminDashboard = ({
                                   }}
                                 >
                                   Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => deleteUploadedPrizeResult(entry)}
+                                  disabled={editingUploadedLoading}
+                                  style={{
+                                    border: 'none',
+                                    background: 'transparent',
+                                    color: '#c53030',
+                                    cursor: 'pointer',
+                                    fontWeight: '700',
+                                    padding: 0
+                                  }}
+                                >
+                                  Delete
                                 </button>
                               </span>
                             )
@@ -6083,9 +6178,21 @@ const AdminDashboard = ({
                   style={{ marginTop: '8px', padding: '18px', border: '1px solid #dbe4ff', borderRadius: '14px', backgroundColor: '#f8faff' }}
                 >
                   <h3 style={{ margin: '0 0 12px 0' }}>Uploaded Result Summary</h3>
-                  <p style={{ margin: '0 0 14px 0', color: '#4a5568' }}>
-                    Date: {formatDisplayDate(uploadResultDate)} | Session: {uploadSessionMode}
-                  </p>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap', marginBottom: '14px' }}>
+                    <p style={{ margin: 0, color: '#4a5568' }}>
+                      Date: {formatDisplayDate(uploadResultDate)} | Session: {uploadResultShift}
+                    </p>
+                    {uploadedPrizeResults.length > 0 ? (
+                      <button
+                        type="button"
+                        onClick={deleteAllUploadedPrizeResults}
+                        disabled={editingUploadedLoading}
+                        style={{ backgroundColor: '#c53030' }}
+                      >
+                        {editingUploadedLoading ? 'Deleting...' : 'Delete All'}
+                      </button>
+                    ) : null}
+                  </div>
                   {uploadedPrizeSummary.length > 0 ? (
                     <div style={{ display: 'grid', gap: '12px' }}>
                       {uploadedPrizeSummary.map((prize) => (

@@ -205,22 +205,33 @@ export const lotteryService = {
 };
 
 export const priceService = {
-  uploadPrice: ({ entries, sessionMode, resultForDate }) => api.post('/prices/upload', { entries, sessionMode, resultForDate }),
+  uploadPrice: ({ entries, sessionMode, purchaseCategory, resultForDate }) => api.post('/prices/upload', { entries, sessionMode, purchaseCategory, resultForDate }),
   updatePrizeResult: (id, winningNumber) => api.patch(`/prices/${id}`, { winningNumber }),
-  checkPrize: ({ number, date, sessionMode, amount, sem }) =>
+  deletePrizeResult: (id) => api.delete(`/prices/${id}`),
+  deletePrizeResults: ({ resultForDate, sessionMode, purchaseCategory }) =>
+    api.delete('/prices/bulk-delete', {
+      data: {
+        resultForDate,
+        sessionMode,
+        purchaseCategory
+      }
+    }),
+  checkPrize: ({ number, date, sessionMode, purchaseCategory, amount, sem }) =>
     api.get('/prices/check', {
       params: {
         ...(number && { number }),
         ...(date && { date }),
         ...(sessionMode && { sessionMode }),
+        ...(purchaseCategory && { purchaseCategory }),
         amount: amount || 'ALL',
         sem: sem || 'ALL'
       }
     }),
-  getMyPrizes: ({ sessionMode, amount, sem }) =>
+  getMyPrizes: ({ sessionMode, purchaseCategory, amount, sem }) =>
     api.get('/prices/my-prizes', {
       params: {
         ...(sessionMode && { sessionMode }),
+        ...(purchaseCategory && { purchaseCategory }),
         amount: amount || 'ALL',
         sem: sem || 'ALL'
       }
@@ -253,11 +264,12 @@ export const priceService = {
       }
     }),
   getPriceByCode: (uniqueCode) => api.get(`/prices/${uniqueCode}`),
-  getAllPrices: ({ resultForDate, sessionMode } = {}) =>
+  getAllPrices: ({ resultForDate, sessionMode, purchaseCategory } = {}) =>
     api.get('/prices', {
       params: {
         ...(resultForDate && { resultForDate }),
-        ...(sessionMode && { sessionMode })
+        ...(sessionMode && { sessionMode }),
+        ...(purchaseCategory && { purchaseCategory })
       }
     })
 };
