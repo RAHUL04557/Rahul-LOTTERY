@@ -27,6 +27,13 @@ const getDateLabel = (dateValue) => new Intl.DateTimeFormat('en-GB', {
   year: '2-digit'
 }).format(parseDateValue(dateValue));
 
+const getInputDateLabel = (dateValue) => new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'Asia/Kolkata',
+  day: '2-digit',
+  month: '2-digit',
+  year: 'numeric'
+}).format(parseDateValue(dateValue)).replace(/\//g, '-');
+
 const getLongDateLabel = (dateValue) => new Intl.DateTimeFormat('en-US', {
   timeZone: 'Asia/Kolkata',
   weekday: 'long',
@@ -93,6 +100,7 @@ const EntrySelectionScreen = ({ user, onConfirm, onLogout }) => {
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [exitConfirmSelected, setExitConfirmSelected] = useState('no');
   const dateInputRef = useRef(null);
+  const dateButtonRef = useRef(null);
   const groupButtonRef = useRef(null);
   const companyButtonRef = useRef(null);
 
@@ -115,7 +123,26 @@ const EntrySelectionScreen = ({ user, onConfirm, onLogout }) => {
     setActiveField('date');
     setGroupPickerOpen(false);
     setCompanyPickerOpen(false);
-    window.requestAnimationFrame(() => dateInputRef.current?.focus());
+    window.requestAnimationFrame(() => dateButtonRef.current?.focus());
+  }, []);
+
+  const openDatePicker = useCallback(() => {
+    const dateInput = dateInputRef.current;
+    if (!dateInput) {
+      return;
+    }
+
+    dateInput.focus();
+    if (typeof dateInput.showPicker === 'function') {
+      try {
+        dateInput.showPicker();
+        return;
+      } catch (error) {
+        // Fallback to click for browsers that block showPicker.
+      }
+    }
+
+    dateInput.click();
   }, []);
 
   const focusGroupField = useCallback((openPicker = false) => {
@@ -302,10 +329,10 @@ const EntrySelectionScreen = ({ user, onConfirm, onLogout }) => {
                 <input
                   ref={dateInputRef}
                   type="date"
-                  className={`entry-selection-input fixed ${activeField === 'date' ? 'active' : ''}`.trim()}
+                  className="entry-selection-native-date"
                   value={workingDate}
                   onChange={(event) => setWorkingDate(event.target.value || getTodayDateValue())}
-                  onFocus={focusDateField}
+                  onFocus={() => setActiveField('date')}
                   onKeyDown={(event) => {
                     if (event.key === 'Enter') {
                       event.preventDefault();
@@ -315,6 +342,23 @@ const EntrySelectionScreen = ({ user, onConfirm, onLogout }) => {
                   }}
                   aria-label="Set working date"
                 />
+                <button
+                  ref={dateButtonRef}
+                  type="button"
+                  className={`entry-selection-input entry-selection-date-trigger fixed ${activeField === 'date' ? 'active' : ''}`.trim()}
+                  onClick={() => {
+                    focusDateField();
+                    openDatePicker();
+                  }}
+                  onFocus={() => {
+                    setActiveField('date');
+                    setGroupPickerOpen(false);
+                    setCompanyPickerOpen(false);
+                  }}
+                >
+                  <span>{getInputDateLabel(workingDate)}</span>
+                  <span className="entry-selection-date-icon" aria-hidden="true">DATE</span>
+                </button>
                 <strong>{getLongDateLabel(workingDate)} ({getDateLabel(workingDate)})</strong>
               </div>
             </div>

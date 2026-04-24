@@ -110,6 +110,25 @@
   min-width: 158px;
 }
 
+.entry-selection-date-trigger {
+  justify-content: space-between;
+  gap: 18px;
+  min-width: 340px;
+}
+
+.entry-selection-date-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.entry-selection-native-date {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .entry-selection-input.wide {
   width: min(100%, 520px);
 }
