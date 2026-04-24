@@ -127,7 +127,6 @@ const DashboardLauncher = ({
 
         <div className="dashboard-launcher-stage">
           <div className="dashboard-launcher-canvas">
-            <p>{subtitle}</p>
             {actions.length > 0 && (
               <div className="dashboard-launcher-actions">
                 {actions.map((action) => (

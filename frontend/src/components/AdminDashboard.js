@@ -4342,7 +4342,12 @@ const AdminDashboard = ({
     totalSvc: 0,
     netBill: 0
   });
-
+  const adminVisibleSellerSummaryRows = Object.entries(adminVisibleGroupedSummaries)
+    .map(([billSellerName, summary]) => ({
+      sellerName: billSellerName,
+      ...summary
+    }))
+    .sort((left, right) => String(left.sellerName || '').localeCompare(String(right.sellerName || '')));
   useEffect(() => {
     if (adminStockMemoOptions.length === 0) {
       setAdminStockMemoSelectionIndex(0);
@@ -6991,91 +6996,58 @@ const AdminDashboard = ({
                 </div>
               </div>
 
-              {billTransferHistory.length > 0 && (
-                <div style={{ marginTop: '16px', padding: '14px', borderRadius: '12px', background: '#f6f8ff' }}>
-                  <strong>Selected Period:</strong> {historyPeriodLabel} | <strong>Shift:</strong> {historyShift === 'ALL' ? 'ALL' : (historyShift || 'All')} |{' '}
-                  <strong>Amount:</strong> {historyAmountFilter || '7'} |{' '}
-                  <strong>Seller:</strong> {historySellerFilter || 'All Direct Sellers'} |{' '}
-                  <strong>Records:</strong> {adminVisibleBillTotals.recordCount} | <strong>Purchase:</strong> {Number(adminVisibleBillTotals.totalSentPiece || 0).toFixed(2)} |{' '}
-                  <strong>Unsold:</strong> {Number(adminVisibleBillTotals.totalUnsoldPiece || 0).toFixed(2)} | <strong>Sold:</strong> {Number(adminVisibleBillTotals.totalSoldPiece || 0).toFixed(2)} |{' '}
-                  <strong>Total Sales:</strong> Rs. {adminVisibleBillTotals.totalSales.toFixed(2)} | <strong>Total Prize:</strong> Rs. {adminVisibleBillTotals.totalPrize.toFixed(2)} |{' '}
-                  <strong>Total VC:</strong> Rs. {adminVisibleBillTotals.totalVc.toFixed(2)} | <strong>Total SVC:</strong> Rs. {adminVisibleBillTotals.totalSvc.toFixed(2)} |{' '}
-                  <strong>Net Bill:</strong> {formatSignedRupees(adminVisibleBillTotals.netBill)}
-                </div>
-              )}
-
               {Object.keys(adminBillVisibleGroups).length > 0 ? (
-                Object.entries(adminBillVisibleGroups).map(([billSellerName, records]) => (
-                  <div key={billSellerName} className="entries-list-block" style={{ marginTop: '20px' }}>
-                    {(() => {
-                      const amountBreakdown = adminVisibleGroupedAmountSummaries[billSellerName] || {};
-                      const allowedAmountsLabel = billData.rootSellerMeta?.[billSellerName]?.allowedAmountsLabel;
-
-                      return (
-                        <>
-                    <h3>{billSellerName}{allowedAmountsLabel ? ` (${allowedAmountsLabel})` : ''}</h3>
-                    <table className="entries-table">
-                      <thead>
-                        <tr>
-                          <th>Session</th>
-                          <th>Amount</th>
-                          <th>SEM</th>
-                          <th>Purchase</th>
-                          <th>Unsold</th>
-                          <th>Sold</th>
-                          <th>Rate</th>
-                          <th>Bill</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(() => {
-                          return records.map((record) => {
-                            return (
-                              <tr key={record.id}>
-                                <td>{record.sessionMode}</td>
-                                <td>{record.amount}</td>
-                                <td>{record.boxValue}</td>
-                                <td>{Number(record.sentPiece || 0).toFixed(2)}</td>
-                                <td>{Number(record.unsoldPiece || 0).toFixed(2)}</td>
-                                <td>{Number(record.soldPiece || 0).toFixed(2)}</td>
-                                <td>{record.appliedRate}</td>
-                                <td>Rs. {Number(record.billValue || 0).toFixed(2)}</td>
-                              </tr>
-                            );
-                          })
-                        })()}
-                      </tbody>
+                <div className="entries-list-block" style={{ marginTop: '20px' }}>
+                  <h3>Seller Totals</h3>
+                  <table className="entries-table">
+                    <thead>
+                      <tr>
+                        <th>Seller</th>
+                        <th>Purchase</th>
+                        <th>Unsold</th>
+                        <th>Unsold %</th>
+                        <th>Sold</th>
+                        <th>Sold %</th>
+                        <th>Sales</th>
+                        <th>Prize</th>
+                        <th>VC</th>
+                        <th>SVC</th>
+                        <th>Net Bill</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {adminVisibleSellerSummaryRows.map((summary) => {
+                        const allowedAmountsLabel = billData.rootSellerMeta?.[summary.sellerName]?.allowedAmountsLabel;
+                        const sellerLabel = allowedAmountsLabel ? `${summary.sellerName} (${allowedAmountsLabel})` : summary.sellerName;
+                        return (
+                          <tr key={`seller-summary-${summary.sellerName}`}>
+                            <td>{sellerLabel}</td>
+                            <td>{Number(summary.totalSentPiece || 0).toFixed(2)}</td>
+                            <td>{Number(summary.totalUnsoldPiece || 0).toFixed(2)}</td>
+                            <td>{`${(Number(summary.totalSentPiece || 0) > 0 ? ((Number(summary.totalUnsoldPiece || 0) / Number(summary.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%`}</td>
+                            <td>{Number(summary.totalSoldPiece || 0).toFixed(2)}</td>
+                            <td>{`${(Number(summary.totalSentPiece || 0) > 0 ? ((Number(summary.totalSoldPiece || 0) / Number(summary.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%`}</td>
+                            <td>{Number(summary.totalSales || 0).toFixed(2)}</td>
+                            <td>{Number(summary.totalPrize || 0).toFixed(2)}</td>
+                            <td>{Number(summary.totalVc || 0).toFixed(2)}</td>
+                            <td>{Number(summary.totalSvc || 0).toFixed(2)}</td>
+                            <td>{`${Number(summary.netBill || 0) < 0 ? '-' : '+'}${Math.abs(Number(summary.netBill || 0)).toFixed(2)}`}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
                   </table>
-                    <div style={{ marginTop: '12px', padding: '12px 14px', borderRadius: '12px', background: '#f6f8ff' }}>
-                      <strong>{billSellerName} Total:</strong> Records {adminVisibleGroupedSummaries[billSellerName]?.recordCount || 0} | Purchase{' '}
-                      {Number(adminVisibleGroupedSummaries[billSellerName]?.totalSentPiece || 0).toFixed(2)} | Unsold{' '}
-                      {Number(adminVisibleGroupedSummaries[billSellerName]?.totalUnsoldPiece || 0).toFixed(2)} | Sold{' '}
-                      {Number(adminVisibleGroupedSummaries[billSellerName]?.totalSoldPiece || 0).toFixed(2)} | Sales Rs.{' '}
-                      {adminVisibleGroupedSummaries[billSellerName]?.totalSales?.toFixed(2) || '0.00'} | Prize Rs.{' '}
-                      {adminVisibleGroupedSummaries[billSellerName]?.totalPrize?.toFixed(2) || '0.00'} | Total VC Rs.{' '}
-                      {adminVisibleGroupedSummaries[billSellerName]?.totalVc?.toFixed(2) || '0.00'} | Total SVC Rs.{' '}
-                      {adminVisibleGroupedSummaries[billSellerName]?.totalSvc?.toFixed(2) || '0.00'} | Net{' '}
-                      {formatSignedRupees(adminVisibleGroupedSummaries[billSellerName]?.netBill || 0)}
-                    </div>
-                    {Object.keys(amountBreakdown).sort((left, right) => Number(left) - Number(right)).map((amountKey) => (
-                      <div key={`${billSellerName}-${amountKey}`} style={{ marginTop: '10px', padding: '10px 14px', borderRadius: '12px', background: '#ffffff', border: '1px solid #dbe4ff' }}>
-                        <strong>Amount {amountKey} Bill:</strong> Records {amountBreakdown[amountKey].recordCount} | Purchase {Number(amountBreakdown[amountKey].totalSentPiece || 0).toFixed(2)} | Unsold {Number(amountBreakdown[amountKey].totalUnsoldPiece || 0).toFixed(2)} | Sold {Number(amountBreakdown[amountKey].totalSoldPiece || 0).toFixed(2)} | Sales Rs. {amountBreakdown[amountKey].totalSales.toFixed(2)} | Prize Rs. {amountBreakdown[amountKey].totalPrize.toFixed(2)} | Total VC Rs. {amountBreakdown[amountKey].totalVc.toFixed(2)} | Total SVC Rs. {amountBreakdown[amountKey].totalSvc.toFixed(2)} | Net {formatSignedRupees(amountBreakdown[amountKey].netBill)}
-                      </div>
-                    ))}
-                        </>
-                      );
-                    })()}
-                  </div>
-                ))
+
+                </div>
               ) : (
                 <p>No bill data found</p>
               )}
 
               {Object.keys(adminBillVisibleGroups).length > 0 && (
-                <div style={{ marginTop: '20px', padding: '14px 16px', borderRadius: '14px', background: '#eef2ff' }}>
-                  <strong>Grand Total:</strong> Total Records {adminVisibleBillTotals.recordCount} | Total Piece{' '}
-                  {adminVisibleBillTotals.totalPiece.toFixed(2)} | Total Sales Rs. {adminVisibleBillTotals.totalSales.toFixed(2)} | Total Prize Rs.{' '}
-                  {adminVisibleBillTotals.totalPrize.toFixed(2)} | Total VC Rs. {adminVisibleBillTotals.totalVc.toFixed(2)} | Total SVC Rs. {adminVisibleBillTotals.totalSvc.toFixed(2)} | Net {formatSignedRupees(adminVisibleBillTotals.netBill)}
+                <div style={{ marginTop: '20px', padding: '18px 22px', borderRadius: '16px', background: '#eef2ff', fontSize: '28px', lineHeight: 1.45 }}>
+                  <strong>Grand Total:</strong> Unsold %{' '}
+                  {(Number(adminVisibleBillTotals.totalSentPiece || 0) > 0 ? ((Number(adminVisibleBillTotals.totalUnsoldPiece || 0) / Number(adminVisibleBillTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% | Sold %{' '}
+                  {(Number(adminVisibleBillTotals.totalSentPiece || 0) > 0 ? ((Number(adminVisibleBillTotals.totalSoldPiece || 0) / Number(adminVisibleBillTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% | Net {formatSignedRupees(adminVisibleBillTotals.netBill)}
                 </div>
               )}
             </div>

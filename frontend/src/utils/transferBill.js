@@ -67,6 +67,12 @@ export const formatSignedRupees = (value) => {
   return `Rs. ${prefix}${Math.abs(numericValue).toFixed(2)}`;
 };
 
+const formatSignedNumber = (value) => {
+  const numericValue = Number(value || 0);
+  const prefix = numericValue < 0 ? '-' : '+';
+  return `${prefix}${Math.abs(numericValue).toFixed(2)}`;
+};
+
 const isFifthPrizeRecord = (record) => {
   const prizeKey = String(record?.prizeKey || '').trim().toLowerCase();
   const prizeLabel = String(record?.prizeLabel || '').trim().toLowerCase();
@@ -509,117 +515,52 @@ export const openTransferBill = ({
     return false;
   }
 
-  const summaryHtml = `
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:20px 0;">
-      <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Total Records</strong><br/><span style="display:block;word-break:break-word;">${totals.recordCount}</span></div>
-      <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Purchase</strong><br/><span style="display:block;word-break:break-word;">${Number(totals.totalSentPiece || 0).toFixed(2)}</span></div>
-      <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Unsold</strong><br/><span style="display:block;word-break:break-word;">${Number(totals.totalUnsoldPiece || 0).toFixed(2)}</span></div>
-      <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Sold Piece</strong><br/><span style="display:block;word-break:break-word;">${Number(totals.totalSoldPiece || 0).toFixed(2)}</span></div>
-      <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Total Sales</strong><br/><span style="display:block;word-break:break-word;">Rs. ${totals.totalSales.toFixed(2)}</span></div>
-      <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Total Prize</strong><br/><span style="display:block;word-break:break-word;">Rs. ${totals.totalPrize.toFixed(2)}</span></div>
-      <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Total VC</strong><br/><span style="display:block;word-break:break-word;">Rs. ${Number(totals.totalVc || 0).toFixed(2)}</span></div>
-      <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Total SVC</strong><br/><span style="display:block;word-break:break-word;">Rs. ${Number(totals.totalSvc || 0).toFixed(2)}</span></div>
-      <div style="border:1px solid #d7defa;border-radius:12px;padding:12px;background:#f8faff;min-width:0;"><strong>Net Bill</strong><br/><span style="display:block;word-break:break-word;">${formatSignedRupees(totals.netBill)}</span></div>
-    </div>
+  const sellerSummaryRows = Object.entries(groupedSummaries)
+    .sort((left, right) => String(left[0] || '').localeCompare(String(right[0] || '')))
+    .map(([billName, billTotals]) => {
+      const sellerMetaLabel = rootSellerMeta[billName]?.allowedAmountsLabel
+        ? ` (${rootSellerMeta[billName].allowedAmountsLabel})`
+        : '';
+
+      return `
+        <tr>
+          <td>${escapeHtml(`${billName}${sellerMetaLabel}`)}</td>
+          <td>${Number(billTotals.totalSentPiece || 0).toFixed(2)}</td>
+          <td>${Number(billTotals.totalUnsoldPiece || 0).toFixed(2)}</td>
+          <td>${(Number(billTotals.totalSentPiece || 0) > 0 ? ((Number(billTotals.totalUnsoldPiece || 0) / Number(billTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%</td>
+          <td>${Number(billTotals.totalSoldPiece || 0).toFixed(2)}</td>
+          <td>${(Number(billTotals.totalSentPiece || 0) > 0 ? ((Number(billTotals.totalSoldPiece || 0) / Number(billTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%</td>
+          <td>${Number(billTotals.totalSales || 0).toFixed(2)}</td>
+          <td>${Number(billTotals.totalPrize || 0).toFixed(2)}</td>
+          <td>${Number(billTotals.totalVc || 0).toFixed(2)}</td>
+          <td>${Number(billTotals.totalSvc || 0).toFixed(2)}</td>
+          <td>${formatSignedNumber(billTotals.netBill)}</td>
+        </tr>
+      `;
+    }).join('');
+  const sellerTotalsTableHtml = `
+    <section style="margin-top:24px;">
+      <h3 style="margin:0 0 10px;">Seller Totals</h3>
+      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+        <thead>
+          <tr>
+            <th>Seller</th>
+            <th>Purchase</th>
+            <th>Unsold</th>
+            <th>Unsold %</th>
+            <th>Sold</th>
+            <th>Sold %</th>
+            <th>Sales</th>
+            <th>Prize</th>
+            <th>VC</th>
+            <th>SVC</th>
+            <th>Net Bill</th>
+          </tr>
+        </thead>
+        <tbody>${sellerSummaryRows}</tbody>
+      </table>
+    </section>
   `;
-
-  const actorSectionsHtml = Object.entries(groupedRecords).map(([billName, billRecords]) => {
-    const billTotals = groupedSummaries[billName] || summarizeBillRecords(billRecords);
-    const amountBreakdown = groupedAmountSummaries[billName] || {};
-    const amountBreakdownHtml = Object.keys(amountBreakdown)
-      .sort((left, right) => Number(left) - Number(right))
-      .map((amountKey) => {
-        const amountTotals = amountBreakdown[amountKey];
-
-        return `
-          <div style="margin-top:8px;padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;background:#ffffff;font-size:13px;">
-            <strong>Amount ${escapeHtml(amountKey)} Bill:</strong>
-            Records ${amountTotals.recordCount} |
-            Purchase ${Number(amountTotals.totalSentPiece || 0).toFixed(2)} |
-            Unsold ${Number(amountTotals.totalUnsoldPiece || 0).toFixed(2)} |
-            Sold ${Number(amountTotals.totalSoldPiece || 0).toFixed(2)} |
-            Sales Rs. ${amountTotals.totalSales.toFixed(2)} |
-            Prize Rs. ${amountTotals.totalPrize.toFixed(2)} |
-            VC Rs. ${Number(amountTotals.totalVc || 0).toFixed(2)} |
-            SVC Rs. ${Number(amountTotals.totalSvc || 0).toFixed(2)} |
-            Net ${formatSignedRupees(amountTotals.netBill)}
-          </div>
-        `;
-      }).join('');
-    const sellerMetaLabel = rootSellerMeta[billName]?.allowedAmountsLabel
-      ? ` (${rootSellerMeta[billName].allowedAmountsLabel})`
-      : '';
-
-    const aggregatedRows = [...billRecords].sort((left, right) => {
-      const sessionComparison = String(left.sessionMode || '').localeCompare(String(right.sessionMode || ''));
-      if (sessionComparison !== 0) {
-        return sessionComparison;
-      }
-
-      const amountDiff = Number(left.amount || 0) - Number(right.amount || 0);
-      if (amountDiff !== 0) {
-        return amountDiff;
-      }
-
-      const semDiff = Number(left.boxValue || 0) - Number(right.boxValue || 0);
-      if (semDiff !== 0) {
-        return semDiff;
-      }
-
-      return Number(left.appliedRate || 0) - Number(right.appliedRate || 0);
-    });
-    const rowsHtml = aggregatedRows.map((row) => `
-      <tr>
-        <td>${escapeHtml(row.sessionMode || '-')}</td>
-        <td>${escapeHtml(row.amount)}</td>
-        <td>${escapeHtml(row.boxValue)}</td>
-        <td>${Number(row.sentPiece || 0).toFixed(2)}</td>
-        <td>${Number(row.unsoldPiece || 0).toFixed(2)}</td>
-        <td>${Number(row.soldPiece || 0).toFixed(2)}</td>
-        <td>${escapeHtml(row.appliedRate)}</td>
-        <td>Rs. ${Number(row.billValue || 0).toFixed(2)}</td>
-      </tr>
-    `).join('');
-
-    return `
-      <section style="margin-top:24px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:10px;">
-          <h3 style="margin:0;">${escapeHtml(billName)}${escapeHtml(sellerMetaLabel)}</h3>
-          <div style="font-size:14px;color:#4a5568;">
-            Records: ${billRecords.length} | Purchase: ${Number(billTotals.totalSentPiece || 0).toFixed(2)} | Unsold: ${Number(billTotals.totalUnsoldPiece || 0).toFixed(2)} | Sold: ${Number(billTotals.totalSoldPiece || 0).toFixed(2)} | Sales: Rs. ${billTotals.totalSales.toFixed(2)} | Prize: Rs. ${billTotals.totalPrize.toFixed(2)} | Total VC: Rs. ${Number(billTotals.totalVc || 0).toFixed(2)} | Total SVC: Rs. ${Number(billTotals.totalSvc || 0).toFixed(2)} | Net: ${formatSignedRupees(billTotals.netBill)}
-          </div>
-        </div>
-        <table style="width:100%;border-collapse:collapse;font-size:13px;">
-          <thead>
-            <tr>
-              <th>Session</th>
-              <th>Amount</th>
-              <th>SEM</th>
-              <th>Purchase</th>
-              <th>Unsold</th>
-              <th>Sold</th>
-              <th>Rate</th>
-              <th>Bill</th>
-            </tr>
-          </thead>
-          <tbody>${rowsHtml}</tbody>
-        </table>
-        <div style="margin-top:10px;padding:12px 14px;border:1px solid #d7defa;border-radius:12px;background:#f8faff;font-size:14px;">
-          <strong>${escapeHtml(billName)} Total:</strong>
-          Records ${billTotals.recordCount} |
-          Purchase ${Number(billTotals.totalSentPiece || 0).toFixed(2)} |
-          Unsold ${Number(billTotals.totalUnsoldPiece || 0).toFixed(2)} |
-          Sold ${Number(billTotals.totalSoldPiece || 0).toFixed(2)} |
-          Sales Rs. ${billTotals.totalSales.toFixed(2)} |
-          Prize Rs. ${billTotals.totalPrize.toFixed(2)} |
-          Total VC Rs. ${Number(billTotals.totalVc || 0).toFixed(2)} |
-          Total SVC Rs. ${Number(billTotals.totalSvc || 0).toFixed(2)} |
-          Net ${formatSignedRupees(billTotals.netBill)}
-        </div>
-        ${amountBreakdownHtml}
-      </section>
-    `;
-  }).join('');
 
   billWindow.document.write(`
     <!DOCTYPE html>
@@ -640,30 +581,11 @@ export const openTransferBill = ({
         </style>
       </head>
       <body>
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;">
-          <div>
-            <h1>${escapeHtml(title)}</h1>
-            <p style="margin:8px 0 0;">User: ${escapeHtml(username)}</p>
-            ${sessionMode ? `<p style="margin:4px 0 0;">Session: ${escapeHtml(sessionMode)}</p>` : ''}
-            <p style="margin:4px 0 0;">Period: ${escapeHtml(periodLabel)}</p>
-            <p style="margin:4px 0 0;">Shift: ${escapeHtml(shiftLabel)}</p>
-          </div>
-          <div style="text-align:right;">
-            <p style="margin:0;">Generated: ${escapeHtml(new Date().toLocaleString('en-IN'))}</p>
-          </div>
-        </div>
-        ${summaryHtml}
-        ${actorSectionsHtml}
-        <div style="margin-top:24px;padding:14px 16px;border:1px solid #cbd5e1;border-radius:14px;background:#eef2ff;font-size:15px;">
+        ${sellerTotalsTableHtml}
+        <div style="margin-top:24px;padding:18px 22px;border:1px solid #cbd5e1;border-radius:16px;background:#eef2ff;font-size:20px;line-height:1.45;">
           <strong>Grand Total:</strong>
-          Total Records ${totals.recordCount} |
-          Purchase ${Number(totals.totalSentPiece || 0).toFixed(2)} |
-          Unsold ${Number(totals.totalUnsoldPiece || 0).toFixed(2)} |
-          Sold ${Number(totals.totalSoldPiece || 0).toFixed(2)} |
-          Total Sales Rs. ${totals.totalSales.toFixed(2)} |
-          Total Prize Rs. ${totals.totalPrize.toFixed(2)} |
-          Total VC Rs. ${Number(totals.totalVc || 0).toFixed(2)} |
-          Total SVC Rs. ${Number(totals.totalSvc || 0).toFixed(2)} |
+          Unsold % ${(Number(totals.totalSentPiece || 0) > 0 ? ((Number(totals.totalUnsoldPiece || 0) / Number(totals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% |
+          Sold % ${(Number(totals.totalSentPiece || 0) > 0 ? ((Number(totals.totalSoldPiece || 0) / Number(totals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% |
           Net ${formatSignedRupees(totals.netBill)}
         </div>
         <script>
