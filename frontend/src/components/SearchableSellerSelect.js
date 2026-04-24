@@ -148,9 +148,28 @@ const SearchableSellerSelect = ({
     }
   };
 
+  const getBestQueryMatch = () => {
+    const normalizedQuery = String(query || '').trim().toUpperCase();
+    if (!normalizedQuery || filteredOptions.length === 0) {
+      return null;
+    }
+
+    return filteredOptions.find((option) => (
+      getNormalizedKeyword(option?.keyword, option?.username) === normalizedQuery
+      || String(option?.username || '').trim().toUpperCase() === normalizedQuery
+      || String(getOptionLabel(option) || '').trim().toUpperCase() === normalizedQuery
+    )) || filteredOptions[0] || null;
+  };
+
   const handleInputBlur = () => {
     window.setTimeout(() => {
       if (wrapperRef.current?.contains(document.activeElement)) {
+        return;
+      }
+
+      const matchedOption = getBestQueryMatch();
+      if (matchedOption) {
+        commitSelection(matchedOption);
         return;
       }
 
@@ -181,13 +200,14 @@ const SearchableSellerSelect = ({
         required={required}
         form={form}
         autoComplete="off"
-        onFocus={() => {
+        onFocus={(event) => {
           setIsFocused(true);
-          setQuery('');
+          setQuery(selectedOptionLabel);
           setHighlightedIndex(-1);
           setShowAllOptions(false);
           setIsOpen(false);
           setAdvanceOnEnter(false);
+          window.requestAnimationFrame(() => event.target.select?.());
         }}
         onBlur={handleInputBlur}
         onChange={(event) => {

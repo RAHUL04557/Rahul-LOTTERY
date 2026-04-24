@@ -902,6 +902,20 @@ const SellerDashboard = ({
       unsoldFromInputRef.current?.select?.();
     });
   };
+  const focusActiveSellerSelect = () => {
+    focusElementReliably(() => (
+      activeTab === 'purchase-send'
+        ? purchaseSellerSelectRef.current
+        : unsoldPartySelectRef.current
+    ));
+  };
+  const focusPurchaseSellerSelectAfterSave = () => {
+    focusElementReliably(() => purchaseSellerSelectRef.current);
+    window.setTimeout(() => {
+      purchaseSellerSelectRef.current?.focus();
+      purchaseSellerSelectRef.current?.select?.();
+    }, 160);
+  };
   const resetDateFieldsToToday = () => {
     const today = getTodayDateValue();
     setBookingDate(today);
@@ -1146,7 +1160,9 @@ const SellerDashboard = ({
     try {
       const response = await lotteryService.getPurchaseUnsoldSendSummary({
         bookingDate,
-        sessionMode
+        sessionMode,
+        purchaseCategory: activePurchaseCategory,
+        amount
       });
       setUnsoldSendSummary(response.data || null);
     } catch (err) {
@@ -1165,7 +1181,9 @@ const SellerDashboard = ({
     try {
       const response = await lotteryService.sendPurchaseUnsold({
         bookingDate,
-        sessionMode
+        sessionMode,
+        purchaseCategory: activePurchaseCategory,
+        amount
       });
       setSuccess(response.data?.message || 'Unsold sent successfully');
       await Promise.all([
@@ -2976,6 +2994,7 @@ const SellerDashboard = ({
       setRetroToInput('');
       setRetroCodeInput('');
       setSuccess(isEditingExistingPurchaseSendMemo ? `Memo ${effectiveMemoNumber} updated successfully` : 'Purchase sent successfully');
+      focusPurchaseSellerSelectAfterSave();
     } catch (err) {
       const errorMessage = err.response?.data?.message || 'Error sending purchase';
       if (String(errorMessage).includes('pehle se use ho chuka hai')) {
@@ -3679,6 +3698,7 @@ const SellerDashboard = ({
     if (rowsToSave.length === 0) {
       if (unsoldDraftRows.some((row) => row.isExistingUnsoldRemoveMemoRow)) {
         setSuccess(`Unsold remove memo ${unsoldRemoveMemoNumber || selectedUnsoldRemoveMemoOption?.memoNumber || ''} already saved`);
+        focusActiveSellerSelect();
         return;
       }
       openBlockingWarning('Remove karne ke liye kam se kam ek row add karo');
@@ -3721,6 +3741,7 @@ const SellerDashboard = ({
       setUnsoldTableToInput('');
       setUnsoldNumber('');
       setUnsoldRangeEndNumber('');
+      focusActiveSellerSelect();
       await Promise.all([
         loadPurchaseEntries(),
         loadUnsoldMemoEntries(unsoldPartyId, bookingDate),
@@ -3728,6 +3749,7 @@ const SellerDashboard = ({
         loadTransferHistory(getHistoryFilters())
       ]);
       await refreshUnsoldDerivedViews();
+      focusActiveSellerSelect();
     } catch (err) {
       setError(err.response?.data?.message || 'Error removing unsold');
     } finally {
@@ -3803,6 +3825,8 @@ const SellerDashboard = ({
             purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
             sellerId: String(row.partyId || '') === String(user?.id) ? undefined : row.partyId,
             memoNumber: effectiveMemoNumber,
+            amount: row.bookingAmount || amount,
+            boxValue: row.semValue,
             rangeStart: row.numberStart || row.from,
             rangeEnd: row.numberEnd || row.to
           });
@@ -3820,6 +3844,7 @@ const SellerDashboard = ({
       if (editingExistingUnsoldMemo && rowsToSave.length > 0) {
         setUnsoldMemoNumber(effectiveMemoNumber);
         hydrateUnsoldDraftRowsForMemo(effectiveMemoNumber, refreshedUnsoldEntries);
+        focusActiveSellerSelect();
       } else {
         setUnsoldMemoNumber(effectiveMemoNumber + 1);
         setUnsoldDraftRows([]);
@@ -3830,6 +3855,7 @@ const SellerDashboard = ({
         setUnsoldTableToInput('');
         setUnsoldNumber('');
         setUnsoldRangeEndNumber('');
+        focusActiveSellerSelect();
       }
     } catch (err) {
       setError(err.response?.data?.message || 'Error marking unsold');
@@ -6677,15 +6703,17 @@ const SellerDashboard = ({
 
                 <label style={{ marginTop: '12px', display: 'block' }}>Select Seller:</label>
                 <div style={{ marginTop: '8px' }}>
-                  <SearchableSellerSelect
+                  <select
                     value={historySellerFilter}
-                    options={[{ id: '', username: '', label: 'All Direct Sellers', keyword: 'ALL', rateAmount6: 0, rateAmount12: 0 }, ...directChildSellers.map((seller) => ({ ...seller, id: seller.username }))]}
-                    onChange={(seller) => setHistorySellerFilter(String(seller?.id || ''))}
-                    getOptionValue={(seller) => seller.id}
-                    getOptionLabel={(seller) => seller.id === '' ? seller.label : `${seller.username} [${getPartyKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}
-                    getOptionSearchLabel={(seller) => seller.id === '' ? seller.label : `${getPartyKeyword(seller)} ${seller.username} ${getAllowedAmountsLabel(seller)}`}
-                    placeholder="All Direct Sellers ya keyword type karo"
-                  />
+                    onChange={(event) => setHistorySellerFilter(event.target.value)}
+                  >
+                    <option value="">ALL All Direct Sellers</option>
+                    {directChildSellers.map((seller) => (
+                      <option key={seller.id || seller.username} value={seller.username}>
+                        {`${getPartyKeyword(seller)} ${seller.username} [${getPartyKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' }}>

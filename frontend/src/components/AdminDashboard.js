@@ -911,6 +911,9 @@ const getOcrSection = (text, startPatterns = [], endPatterns = []) => {
   const startIndexes = startPatterns
     .map((pattern) => upperText.search(pattern))
     .filter((index) => index >= 0);
+  if (startPatterns.length > 0 && startIndexes.length === 0) {
+    return '';
+  }
   const startIndex = startIndexes.length > 0 ? Math.min(...startIndexes) : 0;
   const remainingUpperText = upperText.slice(startIndex);
   const endIndexes = endPatterns
@@ -931,6 +934,15 @@ const buildCurrentMemoSummaries = (entries = []) => {
 
 const PRIZE_RESULT_COLUMNS_PER_LINE = 5;
 const PRIZE_RESULT_MAX_STANDARD_FOUR_DIGIT_NUMBERS = 10;
+const PRIZE_RESULT_MAX_SECOND_PRIZE_NUMBERS = 10;
+const PRIZE_RESULT_MAX_FIFTH_PRIZE_NUMBERS = 100;
+const IGNORED_FIVE_DIGIT_PRIZE_SCAN_NUMBERS = new Set([
+  '10000',
+  '20000',
+  '25000',
+  '50000',
+  ...PRIZE_OPTIONS.map((prize) => String(prize.amountValue || '').padStart(5, '0'))
+]);
 
 const getOcrDigitTokens = (text) => (
   String(text || '')
@@ -938,6 +950,50 @@ const getOcrDigitTokens = (text) => (
 )
   .map((token) => normalizeOcrDigitToken(token))
   .filter(Boolean);
+
+const getOcrFirstPrizeCandidates = (text) => (
+  String(text || '')
+    .match(/[A-Z0-9|IlOoSsBZ]{5,10}/g) || []
+)
+  .map((token) => {
+    const digits = normalizeOcrDigitToken(token);
+    if (digits.length === 5) {
+      return digits;
+    }
+
+    return /[A-Z|IlOoSsBZ]/.test(token) && digits.length > 5
+      ? digits.slice(-5)
+      : '';
+  })
+  .filter(Boolean);
+
+const extractFourDigitPrizeLineBlocks = (text) => {
+  const blocks = [];
+  let currentBlock = [];
+
+  String(text || '')
+    .split(/\n+/)
+    .forEach((line) => {
+      const digitsOnLine = getOcrDigitTokens(line)
+        .filter((digits) => digits.length === 4);
+
+      if (digitsOnLine.length < 3) {
+        if (currentBlock.length > 0) {
+          blocks.push(currentBlock);
+          currentBlock = [];
+        }
+        return;
+      }
+
+      currentBlock.push(...digitsOnLine.slice(-Math.floor(digitsOnLine.length / PRIZE_RESULT_COLUMNS_PER_LINE) * PRIZE_RESULT_COLUMNS_PER_LINE || undefined));
+    });
+
+  if (currentBlock.length > 0) {
+    blocks.push(currentBlock);
+  }
+
+  return blocks;
+};
 
 const extractPrizeNumbersFromSection = (sectionText, digitLength, options = {}) => {
   const {
@@ -988,7 +1044,7 @@ const extractPrizeNumbersFromSection = (sectionText, digitLength, options = {}) 
 };
 
 const chooseFirstPrizeNumber = (ocrText, allFiveDigitNumbers = []) => {
-  const ignoredFiveDigitNumbers = new Set(PRIZE_OPTIONS.map((prize) => String(prize.amountValue || '').padStart(5, '0')));
+  const ignoredFiveDigitNumbers = IGNORED_FIVE_DIGIT_PRIZE_SCAN_NUMBERS;
   const frequencyMap = allFiveDigitNumbers.reduce((map, number) => {
     if (ignoredFiveDigitNumbers.has(number)) {
       return map;
@@ -1009,7 +1065,7 @@ const chooseFirstPrizeNumber = (ocrText, allFiveDigitNumbers = []) => {
     [/1\s*ST/i, /FIRST/i, /CRORE/i],
     [/2\s*ND/i, /SECOND/i]
   );
-  return extractPrizeNumbersFromSection(firstSection, 5)
+  return getOcrFirstPrizeCandidates(firstSection)
     .find((number) => !ignoredFiveDigitNumbers.has(number) && !['00000'].includes(number))
     || allFiveDigitNumbers.find((number) => !ignoredFiveDigitNumbers.has(number))
     || '';
@@ -1019,30 +1075,48 @@ const parsePrizeScanText = (ocrText) => {
   const normalizedText = String(ocrText || '').replace(/\r/g, '\n');
   const allFiveDigitNumbers = extractPrizeNumbersFromSection(normalizedText, 5);
   const firstPrizeNumber = chooseFirstPrizeNumber(normalizedText, allFiveDigitNumbers);
-  const secondSection = getOcrSection(normalizedText, [/2\s*ND/i, /SECOND/i], [/3\s*RD/i, /THIRD/i]);
-  const thirdSection = getOcrSection(normalizedText, [/3\s*RD/i, /THIRD/i], [/4\s*TH/i, /FOURTH/i]);
-  const fourthSection = getOcrSection(normalizedText, [/4\s*TH/i, /FOURTH/i], [/5\s*TH/i, /FIFTH/i]);
-  const fifthSection = getOcrSection(normalizedText, [/5\s*TH/i, /FIFTH/i], []);
+  const thirdPrizeStartPatterns = [/3\s*(?:RD|R0|RO)\b/i, /THIRD/i];
+  const fourthPrizeStartPatterns = [/(?:^|\n|[^A-Z0-9])(?:4|A)\s*(?:TH|IH|H)\b/i, /FOURTH/i];
+  const fifthPrizeStartPatterns = [/5\s*(?:TH|IH|H)\b/i, /FIFTH/i];
+  const secondSection = getOcrSection(normalizedText, [/2\s*(?:ND|N0|NO)\b/i, /SECOND/i], thirdPrizeStartPatterns);
+  const thirdSection = getOcrSection(normalizedText, thirdPrizeStartPatterns, fourthPrizeStartPatterns);
+  const fourthSection = getOcrSection(normalizedText, fourthPrizeStartPatterns, fifthPrizeStartPatterns);
+  const fifthSection = getOcrSection(normalizedText, fifthPrizeStartPatterns, []);
   const firstPrizeSet = new Set(firstPrizeNumber ? [firstPrizeNumber] : []);
-  const ignoredFiveDigitNumbers = new Set(PRIZE_OPTIONS.map((prize) => String(prize.amountValue || '').padStart(5, '0')));
+  const ignoredFiveDigitNumbers = IGNORED_FIVE_DIGIT_PRIZE_SCAN_NUMBERS;
+  const fourDigitLineBlocks = extractFourDigitPrizeLineBlocks(normalizedText);
+  const thirdNumbers = extractPrizeNumbersFromSection(thirdSection, 4, {
+    numbersPerLine: PRIZE_RESULT_COLUMNS_PER_LINE,
+    minimumLineNumbers: 3,
+    maxNumbers: PRIZE_RESULT_MAX_STANDARD_FOUR_DIGIT_NUMBERS
+  });
+  const fourthNumbers = extractPrizeNumbersFromSection(fourthSection, 4, {
+    numbersPerLine: PRIZE_RESULT_COLUMNS_PER_LINE,
+    minimumLineNumbers: 3,
+    maxNumbers: PRIZE_RESULT_MAX_STANDARD_FOUR_DIGIT_NUMBERS
+  });
+  const fifthNumbers = extractPrizeNumbersFromSection(fifthSection, 4, {
+    numbersPerLine: PRIZE_RESULT_COLUMNS_PER_LINE,
+    minimumLineNumbers: 3,
+    maxNumbers: PRIZE_RESULT_MAX_FIFTH_PRIZE_NUMBERS
+  });
 
   return {
     first: firstPrizeNumber ? [firstPrizeNumber] : [],
-    second: extractPrizeNumbersFromSection(secondSection, 5).filter((number) => !firstPrizeSet.has(number) && !ignoredFiveDigitNumbers.has(number)),
-    third: extractPrizeNumbersFromSection(thirdSection, 4, {
+    second: extractPrizeNumbersFromSection(secondSection, 5, {
       numbersPerLine: PRIZE_RESULT_COLUMNS_PER_LINE,
       minimumLineNumbers: 3,
-      maxNumbers: PRIZE_RESULT_MAX_STANDARD_FOUR_DIGIT_NUMBERS
-    }),
-    fourth: extractPrizeNumbersFromSection(fourthSection, 4, {
-      numbersPerLine: PRIZE_RESULT_COLUMNS_PER_LINE,
-      minimumLineNumbers: 3,
-      maxNumbers: PRIZE_RESULT_MAX_STANDARD_FOUR_DIGIT_NUMBERS
-    }),
-    fifth: extractPrizeNumbersFromSection(fifthSection, 4, {
-      numbersPerLine: PRIZE_RESULT_COLUMNS_PER_LINE,
-      minimumLineNumbers: 3
-    })
+      maxNumbers: PRIZE_RESULT_MAX_SECOND_PRIZE_NUMBERS
+    }).filter((number) => !firstPrizeSet.has(number) && !ignoredFiveDigitNumbers.has(number)),
+    third: thirdNumbers.length > 0
+      ? thirdNumbers
+      : (fourDigitLineBlocks[0] || []).slice(0, PRIZE_RESULT_MAX_STANDARD_FOUR_DIGIT_NUMBERS),
+    fourth: fourthNumbers.length > 0
+      ? fourthNumbers
+      : (fourDigitLineBlocks[1] || fourDigitLineBlocks[0] || []).slice(0, PRIZE_RESULT_MAX_STANDARD_FOUR_DIGIT_NUMBERS),
+    fifth: fifthNumbers.length > 0
+      ? fifthNumbers
+      : fourDigitLineBlocks.slice(2).flat().slice(0, PRIZE_RESULT_MAX_FIFTH_PRIZE_NUMBERS)
   };
 };
 
@@ -6975,15 +7049,17 @@ const AdminDashboard = ({
 
                 <label style={{ marginTop: '12px', display: 'block' }}>Select Seller:</label>
                 <div style={{ marginTop: '8px' }}>
-                  <SearchableSellerSelect
+                  <select
                     value={historySellerFilter}
-                    options={[{ id: '', username: '', label: 'All Direct Sellers', keyword: 'ALL', rateAmount6: 0, rateAmount12: 0 }, ...directAdminSellers.map((seller) => ({ ...seller, id: seller.username }))]}
-                    onChange={(seller) => setHistorySellerFilter(String(seller?.id || ''))}
-                    getOptionValue={(seller) => seller.id}
-                    getOptionLabel={(seller) => seller.id === '' ? seller.label : `${seller.username} [${getSellerKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}
-                    getOptionSearchLabel={(seller) => seller.id === '' ? seller.label : `${getSellerKeyword(seller)} ${seller.username} ${getAllowedAmountsLabel(seller)}`}
-                    placeholder="All Direct Sellers ya keyword type karo"
-                  />
+                    onChange={(event) => setHistorySellerFilter(event.target.value)}
+                  >
+                    <option value="">ALL All Direct Sellers</option>
+                    {directAdminSellers.map((seller) => (
+                      <option key={seller.id || seller.username} value={seller.username}>
+                        {`${getSellerKeyword(seller)} ${seller.username} [${getSellerKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' }}>

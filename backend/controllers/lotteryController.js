@@ -605,11 +605,13 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
          h.memo_number,
          h.booking_date,
          h.session_mode,
+         h.purchase_category,
+         h.amount,
          MAX(h.created_at) AS latest_created_at
        FROM lottery_entry_history h
        INNER JOIN lottery_entries le ON le.id = h.entry_id
        WHERE ${historyConditions.join(' AND ')}
-       GROUP BY le.user_id, h.memo_number, h.booking_date, h.session_mode
+       GROUP BY le.user_id, h.memo_number, h.booking_date, h.session_mode, h.purchase_category, h.amount
      ),
      snapshot AS (
        SELECT
@@ -637,11 +639,13 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
        FROM lottery_entry_history h
        INNER JOIN lottery_entries le ON le.id = h.entry_id
        INNER JOIN latest_memo_batches batch
-         ON batch.user_id = le.user_id
-        AND batch.memo_number = h.memo_number
-        AND batch.booking_date = h.booking_date
-        AND batch.session_mode = h.session_mode
-        AND batch.latest_created_at = h.created_at
+        ON batch.user_id = le.user_id
+       AND batch.memo_number = h.memo_number
+       AND batch.booking_date = h.booking_date
+       AND batch.session_mode = h.session_mode
+       AND batch.purchase_category = h.purchase_category
+       AND batch.amount = h.amount
+       AND batch.latest_created_at = h.created_at
        LEFT JOIN users seller_user ON seller_user.id = le.user_id
        LEFT JOIN users parent_user ON parent_user.id = $${viewerParamIndex}
        LEFT JOIN users actor_user ON actor_user.id = h.actor_user_id
@@ -2496,9 +2500,17 @@ const getPurchaseEntries = async (req, res) => {
       conditions.push(`le.user_id = $${params.length}`);
       params.push(req.user.id);
       childSellerVisibilityParamIndex = params.length;
+      params.push(sellerId);
+      const childSelfSentParamIndex = params.length;
+      params.push(sellerId);
+      const childSelfForwardedParamIndex = params.length;
       conditions.push(`(
         le.sent_to_parent = $${childSellerVisibilityParamIndex}
         OR le.forwarded_by = $${childSellerVisibilityParamIndex}
+        OR (
+          le.sent_to_parent = $${childSelfSentParamIndex}
+          AND le.forwarded_by = $${childSelfForwardedParamIndex}
+        )
       )`);
     } else {
       params.push(req.user.id);
@@ -2818,13 +2830,28 @@ const markPurchaseEntriesUnsold = async (req, res) => {
       bookingDate,
       numbersToMark.numbers
     ];
+    const stockFilters = [];
+    const normalizedAmount = String(amount || '').trim();
+    const normalizedBoxValue = String(boxValue || '').trim();
+    if (normalizedAmount) {
+      stockFilters.push(`AND le.amount = $${selectedEntriesParams.push(normalizedAmount)}::numeric`);
+    }
+    if (normalizedBoxValue) {
+      stockFilters.push(`AND le.box_value = $${selectedEntriesParams.push(normalizedBoxValue)}`);
+    }
     let ownerStockFilter = '';
     if (targetSellerId === Number(req.user.id)) {
       if (!isAdminRole(req.user.role)) {
         ownerStockFilter = `AND le.forwarded_by = $${selectedEntriesParams.push(req.user.id)}`;
       }
     } else {
-      ownerStockFilter = `AND le.sent_to_parent = $${selectedEntriesParams.push(req.user.id)}`;
+      ownerStockFilter = `AND (
+           le.sent_to_parent = $${selectedEntriesParams.push(req.user.id)}
+           OR (
+             le.sent_to_parent = $${selectedEntriesParams.push(targetSellerId)}
+             AND le.forwarded_by = $${selectedEntriesParams.push(targetSellerId)}
+           )
+         )`;
     }
 
     const selectedEntriesResult = await query(
@@ -2838,6 +2865,7 @@ const markPurchaseEntriesUnsold = async (req, res) => {
          AND le.booking_date = $5::date
          AND le.number = ANY($6::varchar[])
          AND le.memo_number IS NOT NULL
+         ${stockFilters.join('\n         ')}
          ${ownerStockFilter}
        ORDER BY le.number ASC`,
       selectedEntriesParams
@@ -2993,6 +3021,10 @@ const removePurchaseUnsoldEntries = async (req, res) => {
       : `AND (
            le.forwarded_by = $${params.push(req.user.id)}
            OR le.sent_to_parent = $${params.push(req.user.id)}
+           OR (
+             le.sent_to_parent = $${params.push(targetSellerId)}
+             AND le.forwarded_by = $${params.push(targetSellerId)}
+           )
          )`;
 
     const selectedEntriesResult = await query(
@@ -3291,7 +3323,13 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
           ownerStockFilter = `AND le.forwarded_by = $${stockParams.push(req.user.id)}`;
         }
       } else {
-        ownerStockFilter = `AND le.sent_to_parent = $${stockParams.push(req.user.id)}`;
+        ownerStockFilter = `AND (
+             le.sent_to_parent = $${stockParams.push(req.user.id)}
+             OR (
+               le.sent_to_parent = $${stockParams.push(targetSellerId)}
+               AND le.forwarded_by = $${stockParams.push(targetSellerId)}
+             )
+           )`;
       }
 
       const stockEntriesResult = await client.query(
