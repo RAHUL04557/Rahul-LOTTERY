@@ -1891,6 +1891,18 @@ const SellerDashboard = ({
     }
   }
 
+  const handleSellerUnsoldDateChange = (nextDate) => {
+    setBookingDate(nextDate);
+    setUnsoldMemoNumber(null);
+    setUnsoldRemoveMemoNumber(null);
+    setUnsoldMemoSelectionIndex(0);
+    setUnsoldMemoPopupOpen(false);
+    setUnsoldDraftRows([]);
+    setUnsoldActiveRowIndex(0);
+    setUnsoldEditorVisible(true);
+    resetUnsoldEditor({ keepCode: false });
+  };
+
   const handleTabToggle = (tabName) => {
     if (activeTab === tabName) {
       resetSellerMemoOptionState(tabName);
@@ -2608,9 +2620,9 @@ const SellerDashboard = ({
       return;
     }
 
-    const latestExistingMemoOption = [...unsoldMemoOptions].reverse().find((option) => !option.isNew);
-    if (latestExistingMemoOption) {
-      setUnsoldMemoNumber(latestExistingMemoOption.memoNumber);
+    const nextNewMemoOption = unsoldMemoOptions[0];
+    if (nextNewMemoOption) {
+      setUnsoldMemoNumber(nextNewMemoOption.memoNumber);
     }
   }, [activeTab, unsoldMemoNumber, unsoldMemoOptions, unsoldMemoPopupOpen]);
 
@@ -4564,7 +4576,7 @@ const SellerDashboard = ({
           ref={unsoldDateInputRef}
           type="date"
           value={bookingDate}
-          onChange={(e) => setBookingDate(e.target.value)}
+          onChange={(e) => handleSellerUnsoldDateChange(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
@@ -6785,7 +6797,7 @@ const SellerDashboard = ({
                         <th>Unsold %</th>
                         <th>Sold</th>
                         <th>Sold %</th>
-                        <th>Sales</th>
+                        <th>Net Value</th>
                         <th>Prize</th>
                         <th>VC</th>
                         <th>SVC</th>

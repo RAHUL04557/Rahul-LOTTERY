@@ -7305,7 +7305,7 @@ const AdminDashboard = ({
                         <th>Unsold %</th>
                         <th>Sold</th>
                         <th>Sold %</th>
-                        <th>Sales</th>
+                        <th>Net Value</th>
                         <th>Prize</th>
                         <th>VC</th>
                         <th>SVC</th>
