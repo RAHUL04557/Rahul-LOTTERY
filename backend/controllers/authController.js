@@ -123,7 +123,7 @@ const login = async (req, res) => {
     }
 
     if (user.can_login === false) {
-      return res.status(403).json({ message: 'Ye normal seller login ID nahi hai. Iska hisaab parent account se chalega.' });
+      return res.status(403).json({ message: 'Ye seller login ID nahi hai. Iska hisaab parent account se chalega.' });
     }
 
     let isPasswordValid = false;

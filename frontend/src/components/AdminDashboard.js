@@ -115,17 +115,17 @@ const ADMIN_PURCHASE_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F8-Clear', '
 const ADMIN_UNSOLD_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F4-View', 'F8-Clear', 'Esc-Exit'];
 const REMOVABLE_UNSOLD_STATUSES = new Set(['unsold_saved', 'unsold']);
 const SELLER_TYPE_LABELS = {
-  seller: 'Seller',
-  sub_seller: 'Sub Seller',
-  normal_seller: 'Normal Seller'
+  seller: 'Stokist',
+  sub_seller: 'Sub Stokist',
+  normal_seller: 'Seller'
 };
 
 const getAvailableSemOptions = (selectedAmount) => {
   if (selectedAmount === '7') {
-    return ['5', '10', '25'];
+    return ['5', '10', '25', '50', '100', '200'];
   }
   if (selectedAmount === '12') {
-    return ['5', '10', '15', '20'];
+    return ['5', '10', '15', '20', '30', '50', '100', '200'];
   }
   return [];
 };
@@ -145,7 +145,7 @@ const parseRetroCodeValue = (value, fallbackSessionMode, fallbackPurchaseCategor
 
   const compactValue = normalized.replace(/[^A-Z0-9/]/g, '');
   const primaryToken = compactValue.split('/').find(Boolean) || compactValue;
-  const plainSemMatch = primaryToken.match(/^(\d{1,2})$/);
+  const plainSemMatch = primaryToken.match(/^(\d{1,3})$/);
   if (plainSemMatch) {
     return {
       semValue: plainSemMatch[1],
@@ -154,9 +154,9 @@ const parseRetroCodeValue = (value, fallbackSessionMode, fallbackPurchaseCategor
     };
   }
 
-  const matched = primaryToken.match(/^([MDE])(\d{1,2})$/) || compactValue.match(/^([MDE])(\d{1,2})(?:\/\d{1,2})?$/);
+  const matched = primaryToken.match(/^([MDE])(\d{1,3})$/) || compactValue.match(/^([MDE])(\d{1,3})(?:\/\d{1,3})?$/);
   if (!matched) {
-    return { error: 'Code mein sirf 5 / 10 / M5 / D10 / E10 jaise value do' };
+    return { error: 'Code mein sirf 5 / 10 / 100 / M5 / D10 / E100 jaise value do' };
   }
 
   const resolvedPurchaseCategory = matched[1] || fallbackCategory;
@@ -181,7 +181,16 @@ const buildRetroTicketCode = (sessionMode, semValue, purchaseCategory = '') => {
   return `${String(purchaseCategory || '').trim().toUpperCase() || (sessionMode === 'NIGHT' ? 'E' : 'M')}${normalizedSem}`;
 };
 
-const getRetroItemName = (sessionMode, semValue) => `${sessionMode === 'NIGHT' ? 'RAM' : 'RAHUL'}-(${semValue})`.trim();
+const RIVER_ITEM_NAMES_BY_DAY = ['BRAHMAPUTRA', 'GANGA', 'YAMUNA', 'GODAVARI', 'NARMADA', 'KRISHNA', 'KAVERI'];
+
+const getRetroItemName = (dateValue) => {
+  const parsedDate = parseLocalDateValue(formatDateOnly(dateValue));
+  if (!parsedDate) {
+    return RIVER_ITEM_NAMES_BY_DAY[1];
+  }
+
+  return RIVER_ITEM_NAMES_BY_DAY[parsedDate.getDay()] || RIVER_ITEM_NAMES_BY_DAY[1];
+};
 const getPurchaseCategoryLabel = (purchaseCategory) => {
   if (purchaseCategory === 'D') {
     return 'DAY';
@@ -637,7 +646,7 @@ const buildAdminStockDraftRowsFromEntries = (entries = [], amountValue) => (
     return {
       id: `${entry.id || `memo-entry-${index}`}-${group.lastRow?.id || count}`,
       code: buildRetroTicketCode(entry.sessionMode || 'MORNING', entry.sem, entry.purchaseCategory),
-      itemName: getRetroItemName(entry.sessionMode || 'MORNING', entry.sem),
+      itemName: getRetroItemName(entry.bookingDate),
       drawDate: formatDateOnly(entry.bookingDate || ''),
       day: getDisplayDay(entry.bookingDate || ''),
       prefix: '',
@@ -662,7 +671,7 @@ const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, option
     return {
       ...row,
       id: `purchase-send-memo-${row.id || index}`,
-      itemName: String(firstEntry.displaySeller || firstEntry.username || row.itemName || '').toUpperCase(),
+      itemName: row.itemName || getRetroItemName(firstEntry.bookingDate),
       isExistingUnsoldMemoRow: Boolean(options.existingUnsoldMemo),
       isExistingUnsoldRemoveMemoRow: Boolean(options.existingUnsoldRemoveMemo),
       isEditedUnsoldRemoveRow: false,
@@ -888,6 +897,11 @@ const createPendingPrizeEntries = () => PRIZE_OPTIONS.reduce((accumulator, prize
   return accumulator;
 }, {});
 
+const createManualPrizeInputs = () => PRIZE_OPTIONS.reduce((accumulator, prize) => {
+  accumulator[prize.key] = '';
+  return accumulator;
+}, {});
+
 const OCR_DIGIT_REPLACEMENTS = {
   O: '0',
   o: '0',
@@ -1070,6 +1084,22 @@ const chooseFirstPrizeNumber = (ocrText, allFiveDigitNumbers = []) => {
     || '';
 };
 
+const sellerSupportsAmount = (seller, amountValue) => {
+  if (!seller || !amountValue) {
+    return true;
+  }
+
+  if (String(amountValue) === '7') {
+    return Number(seller.rateAmount6 || 0) > 0;
+  }
+
+  if (String(amountValue) === '12') {
+    return Number(seller.rateAmount12 || 0) > 0;
+  }
+
+  return true;
+};
+
 const parsePrizeScanText = (ocrText) => {
   const normalizedText = String(ocrText || '').replace(/\r/g, '\n');
   const allFiveDigitNumbers = extractPrizeNumbersFromSection(normalizedText, 5);
@@ -1196,6 +1226,7 @@ const AdminDashboard = ({
 }) => {
   const [activeTab, setActiveTab] = useState(initialActiveTab);
   const [pendingPrizeEntries, setPendingPrizeEntries] = useState(createPendingPrizeEntries);
+  const [manualPrizeInputs, setManualPrizeInputs] = useState(createManualPrizeInputs);
   const [editingPendingPrizeId, setEditingPendingPrizeId] = useState(null);
   const [editingPendingPrizeValue, setEditingPendingPrizeValue] = useState('');
   const [uploadedPrizeResults, setUploadedPrizeResults] = useState([]);
@@ -1351,7 +1382,7 @@ const AdminDashboard = ({
     return `${parsedDate.getDate()}/${parsedDate.getMonth() + 1}/${parsedDate.getFullYear()}`;
   };
   const getSelectedAdminUnsoldSellerName = () => (
-    directAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId))?.username
+    activeAmountAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId))?.username
     || selectedAdminSendSeller?.username
     || 'selected seller'
   );
@@ -1432,6 +1463,7 @@ const AdminDashboard = ({
 
   useEffect(() => {
     setPendingPrizeEntries(createPendingPrizeEntries());
+    setManualPrizeInputs(createManualPrizeInputs());
     setEditingPendingPrizeId(null);
     setEditingPendingPrizeValue('');
     setEditingUploadedResultId(null);
@@ -1645,7 +1677,7 @@ const AdminDashboard = ({
 
   const loadAcceptEntries = async () => {
     try {
-      const response = await lotteryService.getReceivedEntries();
+      const response = await lotteryService.getReceivedEntries({ amount: initialAmount });
       setAcceptEntries(response.data.map(mapApiEntry));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading accept entries');
@@ -1661,7 +1693,7 @@ const AdminDashboard = ({
 
     try {
       await Promise.all(groupedEntries.map((currentEntry) => (
-        lotteryService.updateReceivedEntryStatus(currentEntry.id, action)
+        lotteryService.updateReceivedEntryStatus(currentEntry.id, action, { amount: initialAmount })
       )));
       setSuccess(`${groupedEntries.length > 1 ? `${groupedEntries.length} entries` : 'Entry'} ${action === 'accept' ? 'accepted' : 'rejected'} successfully`);
       await Promise.all([loadAcceptEntries(), loadTransferHistory(getHistoryFilters())]);
@@ -1672,11 +1704,17 @@ const AdminDashboard = ({
     }
   };
 
-  const loadSummaryEntries = async (selectedDate = summaryDate, selectedSessionMode = summarySessionMode) => {
+  const loadSummaryEntries = async (selectedDate = summaryDate, selectedShift = summarySessionMode) => {
     try {
       setSummaryLoading(true);
+      const selectedSessionMode = getBillApiShift(selectedShift);
+      const selectedPurchaseCategory = getBillPurchaseCategory(selectedShift);
       const response = await lotteryService.getSentEntries(
-        { date: selectedDate, sessionMode: selectedSessionMode },
+        {
+          date: selectedDate,
+          sessionMode: selectedSessionMode,
+          purchaseCategory: selectedPurchaseCategory
+        },
         {
           withSessionMode: false,
           headers: {
@@ -1810,7 +1848,7 @@ const AdminDashboard = ({
       row: {
       id: `admin-stock-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       code: buildRetroTicketCode(parsed.resolvedSessionMode, parsed.semValue, parsed.resolvedPurchaseCategory),
-      itemName: getRetroItemName(parsed.resolvedSessionMode, parsed.semValue),
+      itemName: getRetroItemName(adminStockBookingDate),
       drawDate: adminStockBookingDate,
       day: getDisplayDay(adminStockBookingDate),
       prefix: '',
@@ -2260,7 +2298,7 @@ const AdminDashboard = ({
         ? firstRow.number
         : `${firstRow.number} - ${group.lastRow?.number}`;
 
-      return `${categoryLabel}${firstRow.boxValue} | ${rangeLabel} | Nos ${group.rows.length} | Piece ${pieces} | ${firstRow.sellerName || 'Self'}`;
+      return `${categoryLabel} | SEM ${firstRow.boxValue} | ${rangeLabel} | Nos ${group.rows.length} | Piece ${pieces} | ${firstRow.sellerName || 'Self'}`;
     });
 
     return [
@@ -2643,7 +2681,7 @@ const AdminDashboard = ({
       row: {
       id: `admin-send-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       code: buildRetroTicketCode(parsed.resolvedSessionMode, parsed.semValue, parsed.resolvedPurchaseCategory),
-      itemName: getRetroItemName(parsed.resolvedSessionMode, parsed.semValue),
+      itemName: getRetroItemName(purchaseBookingDate),
       drawDate: purchaseBookingDate,
       day: getDisplayDay(purchaseBookingDate),
       prefix: '',
@@ -3722,6 +3760,48 @@ const AdminDashboard = ({
     setEditingPendingPrizeValue('');
   };
 
+  const addManualPrizeEntry = (prizeKey) => {
+    const prizeConfig = PRIZE_OPTIONS.find((prize) => prize.key === prizeKey);
+    const sanitizedValue = String(manualPrizeInputs[prizeKey] || '').replace(/[^0-9]/g, '').slice(0, prizeConfig?.digitLength || 5);
+
+    if (!prizeConfig) {
+      return;
+    }
+
+    if (sanitizedValue.length !== prizeConfig.digitLength) {
+      setError(`${prizeConfig.title} requires exactly ${prizeConfig.digitLength} digits`);
+      setSuccess('');
+      return;
+    }
+
+    const duplicatePendingEntry = Object.values(pendingPrizeEntries).some((entries) => (
+      entries.some((pendingEntry) => pendingEntry.winningNumber === sanitizedValue)
+    ));
+    const duplicateUploadedEntry = uploadedPrizeResults.some((uploadedEntry) => uploadedEntry.winningNumber === sanitizedValue);
+
+    if (duplicatePendingEntry || duplicateUploadedEntry) {
+      setError(`${sanitizedValue} is already used in another prize. One number can have only one prize.`);
+      setSuccess('');
+      return;
+    }
+
+    setPendingPrizeEntries((current) => ({
+      ...current,
+      [prizeKey]: [
+        ...(current[prizeKey] || []),
+        {
+          id: `manual-${prizeKey}-${sanitizedValue}-${Date.now()}`,
+          winningNumber: sanitizedValue
+        }
+      ]
+    }));
+    setManualPrizeInputs((current) => ({ ...current, [prizeKey]: '' }));
+    setEditingPendingPrizeId(null);
+    setEditingPendingPrizeValue('');
+    setError('');
+    setSuccess(`${sanitizedValue} added in ${prizeConfig.title}`);
+  };
+
   const savePendingPrizeEntryEdit = (prizeKey, entry) => {
     const prizeConfig = PRIZE_OPTIONS.find((prize) => prize.key === prizeKey);
     const sanitizedValue = String(editingPendingPrizeValue || '').replace(/[^0-9]/g, '').slice(0, prizeConfig?.digitLength || 5);
@@ -3909,6 +3989,7 @@ const AdminDashboard = ({
       });
       setSuccess('Prize results uploaded successfully');
       setPendingPrizeEntries(createPendingPrizeEntries());
+      setManualPrizeInputs(createManualPrizeInputs());
       setEditingPendingPrizeId(null);
       setEditingPendingPrizeValue('');
       await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
@@ -4241,9 +4322,10 @@ const AdminDashboard = ({
   });
 
   const directAdminSellers = (treeData?.children || []).filter((node) => node.role === 'seller');
+  const activeAmountAdminSellers = directAdminSellers.filter((seller) => sellerSupportsAmount(seller, purchaseAmount || initialAmount));
   const adminPrizeTrackerSellerOptions = [
     { id: '', username: 'All Sellers', keyword: 'ALL' },
-    ...directAdminSellers
+    ...activeAmountAdminSellers
       .filter((seller) => seller.id)
       .map((seller) => ({
         id: seller.id,
@@ -4307,8 +4389,8 @@ const AdminDashboard = ({
     }
   });
 
-  const stockTransferTargetOptions = directAdminSellers.filter((option) => option.id);
-  const selectedPurchaseSeller = directAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId)) || null;
+  const stockTransferTargetOptions = activeAmountAdminSellers.filter((option) => option.id);
+  const selectedPurchaseSeller = activeAmountAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId)) || null;
   const adminStockMemoSummaries = buildPurchaseMemoSummaries(adminStockEntries);
   const nextAdminStockMemoNumber = adminStockMemoSummaries.length > 0
     ? Math.max(...adminStockMemoSummaries.map((memo) => memo.memoNumber)) + 1
@@ -4897,7 +4979,7 @@ const AdminDashboard = ({
   const adminSendVisibleQuantity = activePurchaseSendRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
   const adminSendVisibleAmount = activePurchaseSendRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
   const adminPurchaseGridRows = createRetroGridRows(activePurchaseSendRows);
-  const selectedAdminSendSeller = directAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId));
+  const selectedAdminSendSeller = activeAmountAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId));
   const purchaseMetrics = getRetroRangeMetrics(
     purchaseCodeInput,
     purchaseSessionMode,
@@ -5209,7 +5291,7 @@ const AdminDashboard = ({
         <SearchableSellerSelect
           inputRef={adminSendSellerSelectRef}
           value={purchaseSellerId}
-          options={directAdminSellers}
+          options={activeAmountAdminSellers}
           required
           form="admin-purchase-form"
           getOptionLabel={(seller) => `${seller.username} [${getSellerKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}
@@ -5223,7 +5305,7 @@ const AdminDashboard = ({
           }}
           onEnter={(seller) => {
             if (seller) {
-              window.requestAnimationFrame(() => adminSendMemoRef.current?.focus());
+              window.requestAnimationFrame(() => adminSendDateInputRef.current?.focus());
             }
           }}
           placeholder="Keyword ya seller name type karo"
@@ -5235,11 +5317,19 @@ const AdminDashboard = ({
       className: 'medium',
       content: (
         <input
+          ref={adminSendDateInputRef}
           type="date"
           value={purchaseBookingDate}
-          readOnly
-          tabIndex={-1}
-          onMouseDown={(e) => e.preventDefault()}
+          onChange={(event) => {
+            const nextDate = event.target.value || getTodayDateValue();
+            setPurchaseBookingDate(nextDate);
+            setPurchaseMemoNumber(null);
+            setPurchaseRemoveMemoNumber(null);
+            setPurchaseMemoSelectionIndex(0);
+            setPurchaseMemoPopupOpen(false);
+            setPurchaseDraftRows([]);
+            setPurchaseActiveRowIndex(0);
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
@@ -5260,7 +5350,7 @@ const AdminDashboard = ({
         <SearchableSellerSelect
           inputRef={adminSendSellerSelectRef}
           value={purchaseSellerId}
-          options={directAdminSellers}
+          options={activeAmountAdminSellers}
           required
           getOptionLabel={(seller) => `${seller.username} [${getSellerKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}
           getOptionSearchLabel={(seller) => `${getSellerKeyword(seller)} ${seller.username} ${getAllowedAmountsLabel(seller)}`}
@@ -5735,7 +5825,7 @@ const AdminDashboard = ({
   );
   const seePurchaseSellerOptions = [
     { id: '', username: '', label: 'All Direct Sellers', keyword: 'ALL', rateAmount6: 0, rateAmount12: 0 },
-    ...directAdminSellers.map((seller) => ({
+    ...directAdminSellers.filter((seller) => sellerSupportsAmount(seller, seePurchaseSelectedAmount)).map((seller) => ({
       id: seller.id,
       username: seller.username,
       keyword: seller.keyword || '',
@@ -5996,11 +6086,34 @@ const AdminDashboard = ({
                       {prize.title} {prize.amountLabel}
                     </label>
                     <p style={{ margin: '0 0 12px 0', fontSize: '13px', color: '#4a5568' }}>
-                      {prize.digitLength} digit scanned numbers
+                      {prize.digitLength} digit result numbers
                     </p>
 
+                    <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginTop: '10px' }}>
+                      <input
+                        type="text"
+                        value={manualPrizeInputs[prize.key] || ''}
+                        onChange={(e) => setManualPrizeInputs((current) => ({
+                          ...current,
+                          [prize.key]: e.target.value.replace(/[^0-9]/g, '').slice(0, prize.digitLength)
+                        }))}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            addManualPrizeEntry(prize.key);
+                          }
+                        }}
+                        maxLength={prize.digitLength}
+                        placeholder={`${prize.digitLength} digit number`}
+                        style={{ width: '170px' }}
+                      />
+                      <button type="button" onClick={() => addManualPrizeEntry(prize.key)}>
+                        Add Manual
+                      </button>
+                    </div>
+
                     <div style={{ marginTop: '14px' }}>
-                      <strong>Pending Scan:</strong>
+                      <strong>Pending Upload:</strong>
                       {pendingPrizeEntries[prize.key].length > 0 ? (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginTop: '10px' }}>
                           {pendingPrizeEntries[prize.key].map((entry) => (
@@ -6080,7 +6193,7 @@ const AdminDashboard = ({
                           ))}
                         </div>
                       ) : (
-                        <p style={{ marginTop: '8px' }}>Abhi scan se koi pending number nahi aaya</p>
+                        <p style={{ marginTop: '8px' }}>Abhi koi pending number nahi aaya</p>
                       )}
                     </div>
 
@@ -7036,7 +7149,8 @@ const AdminDashboard = ({
                 <select value={summarySessionMode} onChange={(e) => setSummarySessionMode(e.target.value)} style={{ marginTop: '8px' }}>
                   <option value="">ALL</option>
                   <option value="MORNING">MORNING</option>
-                  <option value="NIGHT">NIGHT</option>
+                  <option value="DAY">DAY</option>
+                  <option value="EVENING">EVENING</option>
                 </select>
 
                 <button type="button" onClick={() => loadSummaryEntries(summaryDate, summarySessionMode)} style={{ marginTop: '12px' }}>
@@ -7161,7 +7275,7 @@ const AdminDashboard = ({
                     onChange={(event) => setHistorySellerFilter(event.target.value)}
                   >
                     <option value="">ALL All Direct Sellers</option>
-                    {directAdminSellers.map((seller) => (
+                    {directAdminSellers.filter((seller) => sellerSupportsAmount(seller, historyAmountFilter || initialAmount)).map((seller) => (
                       <option key={seller.id || seller.username} value={seller.username}>
                         {`${getSellerKeyword(seller)} ${seller.username} [${getSellerKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}
                       </option>
@@ -7526,7 +7640,7 @@ const AddSellerForm = ({ currentUser, selectedAmount = '', onSuccess, onError })
       <h2>Add New Seller</h2>
       <form onSubmit={handleCreateSeller} className="upload-form">
         <div className="form-group">
-          <label>Seller Type:</label>
+          <label>Type:</label>
           <select value={sellerType} onChange={(e) => setSellerType(e.target.value)} required>
             {allowedSellerTypes.map((type) => (
               <option key={type} value={type}>{SELLER_TYPE_LABELS[type]}</option>
@@ -7534,7 +7648,7 @@ const AddSellerForm = ({ currentUser, selectedAmount = '', onSuccess, onError })
           </select>
         </div>
         <div className="form-group">
-          <label>{sellerType === 'normal_seller' ? 'Normal Seller Name:' : 'Username:'}</label>
+          <label>{sellerType === 'normal_seller' ? 'Seller Name:' : 'Username:'}</label>
           <input
             type="text"
             value={newUsername}
@@ -7565,7 +7679,7 @@ const AddSellerForm = ({ currentUser, selectedAmount = '', onSuccess, onError })
           </div>
         ) : (
           <p style={{ marginTop: '0', color: '#666', fontSize: '14px' }}>
-            Normal seller ka koi login ID nahi banega. Yeh naam Purchase Send, Unsold aur F10 summary me direct use hoga.
+            Seller ka koi login ID nahi banega. Yeh naam Purchase Send, Unsold aur F10 summary me direct use hoga.
           </p>
         )}
         {showRateAmount6 && (

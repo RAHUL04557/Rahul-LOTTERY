@@ -310,8 +310,9 @@
 .retro-purchase-grid td {
   border: 1px solid #5f8e65;
   padding: 4px 6px;
-  font-size: 18px;
-  color: #143635;
+  font-size: 19px;
+  color: #09282b;
+  font-weight: 600;
 }
 
 .retro-purchase-grid th {
@@ -337,9 +338,10 @@
   min-height: 30px;
   border: none;
   background: #dff7ff;
-  color: #123c64;
+  color: #082f58;
   padding: 3px 7px;
-  font-size: 23px;
+  font-size: 25px;
+  font-weight: 650;
   outline: none;
   caret-color: #001f8f;
 }
@@ -423,11 +425,28 @@
   z-index: 35;
 }
 
+.retro-purchase-warning-overlay.stock-lookup {
+  position: fixed;
+  align-items: stretch;
+  padding: 18px;
+  background: rgba(4, 18, 38, 0.72);
+  z-index: 2000;
+}
+
 .retro-purchase-warning-bar {
   width: 100%;
   border-top: 1px solid #a8c7ff;
   background: linear-gradient(180deg, #f5f8ff 0 26px, #0f3fa0 26px 100%);
   box-shadow: 0 -8px 20px rgba(9, 35, 77, 0.28);
+}
+
+.retro-purchase-warning-bar.stock-lookup {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border: 3px solid #9fc2ff;
+  background: linear-gradient(180deg, #f5f8ff 0 34px, #0f3fa0 34px 100%);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.42);
 }
 
 .retro-purchase-warning-hint {
@@ -453,16 +472,93 @@
   color: #ffffff;
 }
 
+.retro-purchase-warning-bar.stock-lookup .retro-purchase-warning-content {
+  flex: 1;
+  min-height: 0;
+  padding: 20px 24px 24px;
+  overflow: hidden;
+}
+
 .retro-purchase-warning-content strong {
   display: block;
   margin-bottom: 4px;
   font-size: 18px;
 }
 
+.retro-purchase-warning-bar.stock-lookup .retro-purchase-warning-content > strong {
+  margin-bottom: 10px;
+  font-size: 34px;
+}
+
 .retro-purchase-warning-content p {
   margin: 2px 0;
   font-size: 14px;
   line-height: 1.35;
+}
+
+.retro-purchase-warning-bar.stock-lookup .retro-purchase-warning-content > p {
+  margin-bottom: 18px;
+  font-size: 24px;
+  font-weight: 700;
+}
+
+.retro-stock-summary {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 18px;
+  padding: 14px 18px;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  font-size: 26px;
+  font-weight: 800;
+}
+
+.retro-stock-table-wrap {
+  max-height: calc(100vh - 250px);
+  overflow: auto;
+  border: 2px solid #d7e6ff;
+  background: #ffffff;
+}
+
+.retro-stock-table {
+  width: 100%;
+  border-collapse: collapse;
+  color: #061c3a;
+}
+
+.retro-stock-table th,
+.retro-stock-table td {
+  border: 1px solid #7b93bd;
+  padding: 12px 14px;
+  font-size: 27px;
+  line-height: 1.2;
+  text-align: left;
+}
+
+.retro-stock-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #d6a11f;
+  color: #211600;
+  font-size: 24px;
+  font-weight: 900;
+}
+
+.retro-stock-table td {
+  background: #d9f6dd;
+  font-weight: 750;
+}
+
+.retro-stock-table tr:nth-child(even) td {
+  background: #c4edce;
+}
+
+.retro-stock-table .retro-stock-sem {
+  color: #003a8c;
+  font-size: 34px;
+  font-weight: 900;
 }
 
 @media (max-width: 900px) {

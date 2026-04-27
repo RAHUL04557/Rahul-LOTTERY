@@ -12,8 +12,8 @@ const UNSOLD_LOCAL_STATUS = 'unsold_saved';
 const UNSOLD_SENT_STATUS = 'unsold_sent';
 const UNSOLD_ACCEPTED_STATUS = 'unsold';
 const PURCHASE_SEM_OPTIONS_BY_AMOUNT = {
-  '7': ['5', '10', '25'],
-  '12': ['5', '10', '15', '20']
+  '7': ['5', '10', '25', '50', '100', '200'],
+  '12': ['5', '10', '15', '20', '30', '50', '100', '200']
 };
 const SELLER_TYPE_SELLER = 'seller';
 const SELLER_TYPE_SUB_SELLER = 'sub_seller';
@@ -54,13 +54,13 @@ const validatePurchaseTarget = ({ currentUser, targetUser, allowSelf = true, all
       return 'Self transfer allowed nahi hai';
     }
     if (normalizeSellerType(currentUser?.sellerType || currentUser?.seller_type) === SELLER_TYPE_NORMAL_SELLER) {
-      return 'Normal seller stock transfer nahi kar sakta';
+      return 'Seller stock transfer nahi kar sakta';
     }
     return '';
   }
 
   if (!currentUserIsAdmin && Number(targetUser.parent_id || 0) !== Number(currentUser.id)) {
-    return 'You can send purchase only to your direct seller';
+    return 'You can send purchase only to your direct stokist';
   }
 
   const targetSellerType = normalizeSellerType(targetUser.seller_type);
@@ -69,7 +69,7 @@ const validatePurchaseTarget = ({ currentUser, targetUser, allowSelf = true, all
   }
 
   if (!allowNormalSellerStockTransfer && targetSellerType === SELLER_TYPE_NORMAL_SELLER) {
-    return 'Normal seller ko stock transfer nahi hoga; Purchase Send se direct F10 me bhejo';
+    return 'Seller ko stock transfer nahi hoga; Purchase Send se direct F10 me bhejo';
   }
 
   return '';
@@ -98,6 +98,60 @@ const getDefaultPurchaseCategory = (sessionMode) => (sessionMode === 'NIGHT' ? '
 const normalizePurchaseAmount = (value) => String(value ?? '').trim();
 
 const normalizePurchaseBoxValue = (value) => String(value ?? '').trim();
+
+const getPurchaseShiftKey = ({ sessionMode, purchaseCategory }) => {
+  const normalizedCategory = normalizePurchaseCategory(purchaseCategory);
+  if (normalizedCategory === 'D') {
+    return 'DAY';
+  }
+  if (normalizedCategory === 'E' || normalizeSessionMode(sessionMode) === 'NIGHT') {
+    return 'EVENING';
+  }
+  return 'MORNING';
+};
+
+const getUnsoldAutoAcceptDeadline = ({ sellerType, sessionMode, purchaseCategory }) => {
+  const normalizedSellerType = normalizeSellerType(sellerType);
+  const shiftKey = getPurchaseShiftKey({ sessionMode, purchaseCategory });
+
+  if (normalizedSellerType === SELLER_TYPE_SUB_SELLER) {
+    if (shiftKey === 'DAY') {
+      return { hour: 17, minute: 50, second: 0 };
+    }
+    if (shiftKey === 'EVENING') {
+      return { hour: 19, minute: 50, second: 0 };
+    }
+    return { hour: 12, minute: 50, second: 0 };
+  }
+
+  if (normalizedSellerType === SELLER_TYPE_SELLER) {
+    if (shiftKey === 'DAY') {
+      return { hour: 17, minute: 55, second: 0 };
+    }
+    if (shiftKey === 'EVENING') {
+      return { hour: 19, minute: 50, second: 0 };
+    }
+    return { hour: 12, minute: 55, second: 0 };
+  }
+
+  return null;
+};
+
+const isWithinUnsoldAutoAcceptTime = ({ sellerType, bookingDate, sessionMode, purchaseCategory }) => {
+  const deadline = getUnsoldAutoAcceptDeadline({ sellerType, sessionMode, purchaseCategory });
+  if (!deadline) {
+    return false;
+  }
+
+  const indiaNow = getIndiaNowParts();
+  if (bookingDate && bookingDate !== indiaNow.date) {
+    return false;
+  }
+
+  const currentTotalSeconds = (indiaNow.hour * 60 * 60) + (indiaNow.minute * 60) + indiaNow.second;
+  const deadlineTotalSeconds = (deadline.hour * 60 * 60) + (deadline.minute * 60) + (deadline.second || 0);
+  return currentTotalSeconds <= deadlineTotalSeconds;
+};
 
 const getPurchaseSemValidationError = (amount, boxValue) => {
   const normalizedAmount = normalizePurchaseAmount(amount);
@@ -325,7 +379,6 @@ const findExistingPurchaseNumbers = async ({
   sessionMode,
   purchaseCategory,
   amount,
-  boxValue,
   excludeEntryIds = [],
   ignoreAmount = false
 }) => {
@@ -338,7 +391,6 @@ const findExistingPurchaseNumbers = async ({
     bookingDate,
     sessionMode,
     purchaseCategory,
-    boxValue,
     numbers
   ];
   let amountClause = '';
@@ -349,8 +401,7 @@ const findExistingPurchaseNumbers = async ({
     amountClause = `AND amount = $5::numeric`;
   }
 
-  const boxValueParamIndex = ignoreAmount ? 5 : 6;
-  const numbersParamIndex = ignoreAmount ? 6 : 7;
+  const numbersParamIndex = ignoreAmount ? 5 : 6;
 
   if (excludeEntryIds.length > 0) {
     params.push(excludeEntryIds);
@@ -365,7 +416,6 @@ const findExistingPurchaseNumbers = async ({
        AND session_mode = $3
        AND purchase_category = $4
        ${amountClause}
-       AND box_value = $${boxValueParamIndex}
        AND number = ANY($${numbersParamIndex}::varchar[])
        ${excludeClause}
      ORDER BY number ASC`,
@@ -381,7 +431,7 @@ const findExistingPurchaseAllocations = async ({
   bookingDate,
   sessionMode,
   purchaseCategory,
-  boxValue,
+  amount,
   excludeEntryIds = []
 }) => {
   if (!Array.isArray(numbers) || numbers.length === 0) {
@@ -393,7 +443,7 @@ const findExistingPurchaseAllocations = async ({
     bookingDate,
     sessionMode,
     purchaseCategory,
-    boxValue,
+    amount,
     numbers
   ];
   let excludeClause = '';
@@ -411,7 +461,7 @@ const findExistingPurchaseAllocations = async ({
        AND le.booking_date = $2::date
        AND le.session_mode = $3
        AND le.purchase_category = $4
-       AND le.box_value = $5
+       AND le.amount = $5::numeric
        AND le.number = ANY($6::varchar[])
        ${excludeClause}
      ORDER BY seller_name ASC, le.number ASC`,
@@ -427,7 +477,7 @@ const ensureAdminPurchaseNumbersAreAssignable = async ({
   bookingDate,
   sessionMode,
   purchaseCategory,
-  boxValue
+  amount
 }) => {
   const duplicateAllocations = await findExistingPurchaseAllocations({
     db,
@@ -435,7 +485,7 @@ const ensureAdminPurchaseNumbersAreAssignable = async ({
     bookingDate,
     sessionMode,
     purchaseCategory,
-    boxValue
+    amount
   });
 
   if (duplicateAllocations.length > 0) {
@@ -1194,14 +1244,14 @@ const addLotteryEntry = async (req, res) => {
       return res.status(400).json({ message: 'Time limit exceeded for posting entries' });
     }
 
-    // Global Uniqueness Check
     const duplicateCheck = await query(
       `SELECT number FROM lottery_entries
-       WHERE number = ANY($1::varchar[]) AND box_value = $2
-       AND session_mode = $3
-       AND booking_date = $4::date
+       WHERE number = ANY($1::varchar[])
+       AND session_mode = $2
+       AND booking_date = $3::date
+       AND amount = $4::numeric
        ORDER BY number ASC`,
-      [numbersToBook, boxValue, sessionMode, bookingDate]
+      [numbersToBook, sessionMode, bookingDate, normalizedAmount]
     );
     if (duplicateCheck.rows.length > 0) {
       const duplicateNumbers = duplicateCheck.rows.map((row) => row.number);
@@ -1336,7 +1386,7 @@ const assignPurchasedEntries = async (req, res) => {
 
     if (duplicateNumbers.length > 0) {
       return res.status(400).json({
-        message: `Ye number selected date, shift, rate aur SIM me pehle se use ho chuka hai: ${formatDuplicateNumberLabel(duplicateNumbers)}`
+        message: `Ye number selected date, shift, rate me pehle se use ho chuka hai: ${formatDuplicateNumberLabel(duplicateNumbers)}`
       });
     }
 
@@ -1460,7 +1510,7 @@ const addAdminPurchaseEntries = async (req, res) => {
 
     if (duplicateNumbers.length > 0) {
       return res.status(400).json({
-        message: `Ye number selected date, shift, rate aur SIM me pehle se use ho chuka hai: ${formatDuplicateNumberLabel(duplicateNumbers)}`
+        message: `Ye number selected date, shift, rate me pehle se use ho chuka hai: ${formatDuplicateNumberLabel(duplicateNumbers)}`
       });
     }
 
@@ -1649,7 +1699,7 @@ const replaceAdminPurchaseMemoEntries = async (req, res) => {
       });
 
       if (duplicateNumbers.length > 0) {
-        throw new Error(`Ye number selected date, shift, rate aur SIM me pehle se use ho chuka hai: ${formatDuplicateNumberLabel(duplicateNumbers)}`);
+        throw new Error(`Ye number selected date, shift, rate me pehle se use ho chuka hai: ${formatDuplicateNumberLabel(duplicateNumbers)}`);
       }
 
       const insertChunkSize = 1000;
@@ -2493,7 +2543,7 @@ const getPurchaseEntries = async (req, res) => {
       );
 
       if (childSellerResult.rows.length === 0) {
-        return res.status(403).json({ message: 'You can view purchase only for your direct sub-seller' });
+        return res.status(403).json({ message: 'You can view purchase only for your direct sub stokist' });
       }
 
       params.push(sellerId);
@@ -2664,7 +2714,7 @@ const getSellerPurchaseView = async (req, res) => {
       );
 
       if (childSellerResult.rows.length === 0) {
-        return res.status(403).json({ message: 'You can view purchase only for yourself or your direct sub-seller' });
+        return res.status(403).json({ message: 'You can view purchase only for yourself or your direct sub stokist' });
       }
 
       targetUserId = requestedSellerId;
@@ -2816,7 +2866,7 @@ const markPurchaseEntriesUnsold = async (req, res) => {
       );
 
       if (childSellerResult.rows.length === 0) {
-        return res.status(403).json({ message: 'You can mark unsold only for yourself or your direct sub-seller' });
+        return res.status(403).json({ message: 'You can mark unsold only for yourself or your direct sub stokist' });
       }
 
       targetSeller = childSellerResult.rows[0];
@@ -2993,7 +3043,7 @@ const removePurchaseUnsoldEntries = async (req, res) => {
       );
 
       if (childSellerResult.rows.length === 0) {
-        return res.status(403).json({ message: 'You can remove unsold only for yourself or your direct seller' });
+        return res.status(403).json({ message: 'You can remove unsold only for yourself or your direct sub stokist' });
       }
 
       targetSeller = childSellerResult.rows[0];
@@ -3114,7 +3164,7 @@ const getPurchaseUnsoldRemoveMemoEntries = async (req, res) => {
         );
 
         if (childSellerResult.rows.length === 0) {
-          return res.status(403).json({ message: 'You can view unsold remove memo only for yourself or your direct sub-seller' });
+          return res.status(403).json({ message: 'You can view unsold remove memo only for yourself or your direct sub stokist' });
         }
       }
     }
@@ -3234,7 +3284,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
         return res.status(403).json({
           message: isAdminRole(req.user.role)
             ? 'Selected seller not found'
-            : 'You can update unsold only for yourself or your direct sub-seller'
+            : 'You can update unsold only for yourself or your direct sub stokist'
         });
       }
 
@@ -3524,10 +3574,17 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
       }]
       : [];
 
+    const autoAccept = Boolean(parentUser && isAdminRole(parentUser.role) && isWithinUnsoldAutoAcceptTime({
+      sellerType: req.user.sellerType || req.user.seller_type,
+      bookingDate,
+      sessionMode,
+      purchaseCategory
+    }));
+
     res.json({
       fromSeller: req.user.username,
       toSeller: parentUser?.username || 'Parent',
-      autoAccept: Boolean(parentUser && isAdminRole(parentUser.role)),
+      autoAccept,
       totalPiece,
       unsoldPiece,
       alreadySentPiece,
@@ -3616,7 +3673,13 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       return res.status(400).json({ message: 'Send karne ke liye unsold entry nahi hai' });
     }
 
-    const targetStatus = parentUser && isAdminRole(parentUser.role) ? UNSOLD_ACCEPTED_STATUS : UNSOLD_SENT_STATUS;
+    const shouldAutoAcceptToAdmin = Boolean(parentUser && isAdminRole(parentUser.role) && isWithinUnsoldAutoAcceptTime({
+      sellerType: req.user.sellerType || req.user.seller_type,
+      bookingDate,
+      sessionMode,
+      purchaseCategory
+    }));
+    const targetStatus = shouldAutoAcceptToAdmin ? UNSOLD_ACCEPTED_STATUS : UNSOLD_SENT_STATUS;
     const selectedIds = selectedResult.rows.map((row) => row.id);
     const updatedResult = await query(
       `UPDATE lottery_entries
@@ -4030,6 +4093,7 @@ const getPendingEntries = async (req, res) => {
   try {
     const sessionMode = getRequiredSessionMode(req, res);
     const bookingDate = normalizeBookingDate(req.query.bookingDate);
+    const amount = String(req.query.amount || '').trim();
 
     if (!sessionMode || !bookingDate) {
       if (!bookingDate) {
@@ -4038,9 +4102,18 @@ const getPendingEntries = async (req, res) => {
       return;
     }
 
+    const params = [req.user.id, sessionMode, bookingDate];
+    const amountFilter = amount ? `AND amount = $${params.push(amount)}::numeric` : '';
+
     const entriesResult = await query(
-      "SELECT * FROM lottery_entries WHERE user_id = $1 AND status = 'pending' AND session_mode = $2 AND booking_date = $3::date ORDER BY created_at DESC",
-      [req.user.id, sessionMode, bookingDate]
+      `SELECT * FROM lottery_entries
+       WHERE user_id = $1
+         AND status = 'pending'
+         AND session_mode = $2
+         AND booking_date = $3::date
+         ${amountFilter}
+       ORDER BY created_at DESC`,
+      params
     );
     res.json(entriesResult.rows.map(mapLotteryEntry));
   } catch (error) {
@@ -4082,6 +4155,7 @@ const sendEntries = async (req, res) => {
     const userId = req.user.id;
     const sessionMode = getRequiredSessionMode(req, res);
     const bookingDate = normalizeBookingDate(req.body.bookingDate || req.query.bookingDate);
+    const amount = String(req.body.amount || req.query.amount || '').trim();
 
     if (!sessionMode || !bookingDate) {
       if (!bookingDate) {
@@ -4091,7 +4165,17 @@ const sendEntries = async (req, res) => {
     }
 
     if (bookingDate === getTodayDateValue() && !isWithinTimeLimit(sessionMode)) {
-      await query("DELETE FROM lottery_entries WHERE user_id = $1 AND status = 'pending' AND session_mode = $2 AND booking_date = $3::date", [userId, sessionMode, bookingDate]);
+      const cleanupParams = [userId, sessionMode, bookingDate];
+      const cleanupAmountFilter = amount ? `AND amount = $${cleanupParams.push(amount)}::numeric` : '';
+      await query(
+        `DELETE FROM lottery_entries
+         WHERE user_id = $1
+           AND status = 'pending'
+           AND session_mode = $2
+           AND booking_date = $3::date
+           ${cleanupAmountFilter}`,
+        cleanupParams
+      );
       return res.status(400).json({ message: 'Time limit exceeded. Pending entries have been deleted.' });
     }
 
@@ -4109,20 +4193,26 @@ const sendEntries = async (req, res) => {
       ? 'queued'
       : parentUser && isAdminRole(parentUser.role) ? 'accepted' : 'sent';
 
+    const ownEntriesParams = [nextStatus, user.parent_id, userId, sessionMode, bookingDate];
+    const ownAmountFilter = amount ? `AND amount = $${ownEntriesParams.push(amount)}::numeric` : '';
     const ownEntriesResult = await query(
       `UPDATE lottery_entries
        SET status = $1, sent_to_parent = $2, forwarded_by = $3, sent_at = CURRENT_TIMESTAMP
        WHERE user_id = $3 AND status = 'pending' AND session_mode = $4 AND booking_date = $5::date
+       ${ownAmountFilter}
        RETURNING id, user_id, unique_code, number, box_value, amount, session_mode, booking_date`,
-      [nextStatus, user.parent_id, userId, sessionMode, bookingDate]
+      ownEntriesParams
     );
 
+    const acceptedChildParams = [nextStatus, user.parent_id, userId, userId, sessionMode, bookingDate];
+    const acceptedChildAmountFilter = amount ? `AND amount = $${acceptedChildParams.push(amount)}::numeric` : '';
     const acceptedChildEntriesResult = await query(
       `UPDATE lottery_entries
        SET status = $1, sent_to_parent = $2, forwarded_by = $3, sent_at = CURRENT_TIMESTAMP
        WHERE sent_to_parent = $4 AND status = 'accepted' AND session_mode = $5 AND booking_date = $6::date
+       ${acceptedChildAmountFilter}
        RETURNING id, user_id, unique_code, number, box_value, amount, session_mode, booking_date`,
-      [nextStatus, user.parent_id, userId, userId, sessionMode, bookingDate]
+      acceptedChildParams
     );
 
     const totalEntriesSent = ownEntriesResult.rowCount + acceptedChildEntriesResult.rowCount;
@@ -4163,12 +4253,16 @@ const sendEntries = async (req, res) => {
 const getReceivedEntries = async (req, res) => {
   try {
     const sessionMode = getRequiredSessionMode(req, res);
+    const amount = String(req.query.amount || '').trim();
 
     if (!sessionMode) {
       return;
     }
 
     await normalizeQueuedEntries([req.user.id]);
+
+    const params = [req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE, UNSOLD_SENT_STATUS];
+    const amountFilter = amount ? `AND le.amount = $${params.push(amount)}::numeric` : '';
 
     const entriesResult = await query(
       `SELECT le.*, u.username, parent_user.username AS parent_username
@@ -4184,8 +4278,9 @@ const getReceivedEntries = async (req, res) => {
            le.status = 'sent'
            OR (le.entry_source = $3 AND le.status = $4)
          )
+         ${amountFilter}
        ORDER BY le.sent_at DESC NULLS LAST`,
-      [req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE, UNSOLD_SENT_STATUS]
+      params
     );
 
     res.json(entriesResult.rows.map(mapLotteryEntry));
@@ -4199,6 +4294,7 @@ const updateReceivedEntryStatus = async (req, res) => {
     const { entryId } = req.params;
     const { action } = req.body;
     const sessionMode = getRequiredSessionMode(req, res);
+    const amount = String(req.body.amount || req.query.amount || '').trim();
 
     if (!sessionMode) {
       return;
@@ -4207,6 +4303,9 @@ const updateReceivedEntryStatus = async (req, res) => {
     if (!['accept', 'reject'].includes(action)) {
       return res.status(400).json({ message: 'Invalid action' });
     }
+
+    const params = [entryId, req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE, UNSOLD_SENT_STATUS];
+    const amountFilter = amount ? `AND le.amount = $${params.push(amount)}::numeric` : '';
 
     const entryResult = await query(
       `SELECT le.*, parent_user.parent_id AS current_user_parent_id
@@ -4219,8 +4318,9 @@ const updateReceivedEntryStatus = async (req, res) => {
            le.status = 'sent'
            OR (le.entry_source = $4 AND le.status = $5)
          )
+         ${amountFilter}
        LIMIT 1`,
-      [entryId, req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE, UNSOLD_SENT_STATUS]
+      params
     );
 
     if (entryResult.rows.length === 0) {
@@ -4238,6 +4338,8 @@ const updateReceivedEntryStatus = async (req, res) => {
            AND memo_number = $2
            AND booking_date = $3::date
            AND session_mode = $4
+           AND purchase_category = $8
+           AND amount = $9::numeric
            AND sent_to_parent = $5
            AND entry_source = $6
            AND status = $7
@@ -4249,7 +4351,9 @@ const updateReceivedEntryStatus = async (req, res) => {
           entry.session_mode,
           req.user.id,
           PURCHASE_ENTRY_SOURCE,
-          UNSOLD_SENT_STATUS
+          UNSOLD_SENT_STATUS,
+          entry.purchase_category,
+          entry.amount
         ]
       );
 
@@ -4334,6 +4438,7 @@ const getAcceptedEntriesForBookLottery = async (req, res) => {
   try {
     const sessionMode = getRequiredSessionMode(req, res);
     const bookingDate = normalizeBookingDate(req.query.bookingDate);
+    const amount = String(req.query.amount || '').trim();
 
     if (!sessionMode || !bookingDate) {
       if (!bookingDate) {
@@ -4344,6 +4449,9 @@ const getAcceptedEntriesForBookLottery = async (req, res) => {
 
     await normalizeQueuedEntries([req.user.id]);
 
+    const params = [req.user.id, sessionMode, bookingDate];
+    const amountFilter = amount ? `AND le.amount = $${params.push(amount)}::numeric` : '';
+
     const entriesResult = await query(
       `SELECT le.*, u.username, parent_user.username AS parent_username
        , forwarded_user.username AS forwarded_by_username
@@ -4352,8 +4460,9 @@ const getAcceptedEntriesForBookLottery = async (req, res) => {
        LEFT JOIN users parent_user ON parent_user.id = le.sent_to_parent
        LEFT JOIN users forwarded_user ON forwarded_user.id = le.forwarded_by
        WHERE le.sent_to_parent = $1 AND le.status = 'accepted' AND le.session_mode = $2 AND le.booking_date = $3::date
+       ${amountFilter}
        ORDER BY u.username ASC, le.sent_at DESC NULLS LAST`,
-      [req.user.id, sessionMode, bookingDate]
+      params
     );
 
     res.json(entriesResult.rows.map(mapLotteryEntry));
@@ -4367,6 +4476,7 @@ const getSentEntries = async (req, res) => {
     const visibleUserIds = await getVisibleBranchIds(req.user.id, true);
     const sessionMode = getOptionalSessionMode(req);
     const { date, fromDate, toDate } = req.query;
+    const purchaseCategory = normalizePurchaseCategory(req.query.purchaseCategory);
 
     if (visibleUserIds.length === 0) {
       return res.json([]);
@@ -4385,6 +4495,12 @@ const getSentEntries = async (req, res) => {
       sessionFilter = `AND h.session_mode = $${params.length}`;
     }
 
+    let purchaseCategoryFilter = '';
+    if (purchaseCategory) {
+      params.push(purchaseCategory);
+      purchaseCategoryFilter = `AND h.purchase_category = $${params.length}`;
+    }
+
     const entriesResult = await query(
       `SELECT h.*
        FROM lottery_entry_history h
@@ -4392,6 +4508,7 @@ const getSentEntries = async (req, res) => {
          AND h.action_type IN ('sent', 'forwarded', 'queued', 'queue_forwarded')
        ${dateFilterResult.dateFilter}
        ${sessionFilter}
+       ${purchaseCategoryFilter}
        ORDER BY h.created_at DESC`,
       params
     );
@@ -4405,6 +4522,7 @@ const getMySentEntries = async (req, res) => {
   try {
     const sessionMode = getRequiredSessionMode(req, res);
     const bookingDate = normalizeBookingDate(req.query.bookingDate);
+    const amount = String(req.query.amount || '').trim();
 
     if (!sessionMode || !bookingDate) {
       if (!bookingDate) {
@@ -4415,6 +4533,9 @@ const getMySentEntries = async (req, res) => {
 
     await normalizeQueuedEntries([req.user.id]);
 
+    const params = [req.user.id, sessionMode, bookingDate];
+    const amountFilter = amount ? `AND le.amount = $${params.push(amount)}::numeric` : '';
+
     const entriesResult = await query(
       `SELECT le.*, u.username, parent_user.username AS parent_username
        , forwarded_user.username AS forwarded_by_username
@@ -4423,8 +4544,9 @@ const getMySentEntries = async (req, res) => {
        LEFT JOIN users parent_user ON parent_user.id = le.sent_to_parent
        LEFT JOIN users forwarded_user ON forwarded_user.id = le.forwarded_by
        WHERE (le.user_id = $1 OR le.forwarded_by = $1) AND le.status IN ('queued', 'sent', 'accepted', 'rejected') AND le.session_mode = $2 AND le.booking_date = $3::date
+       ${amountFilter}
        ORDER BY le.sent_at DESC NULLS LAST`,
-      [req.user.id, sessionMode, bookingDate]
+      params
     );
 
     res.json(entriesResult.rows.map(mapLotteryEntry));

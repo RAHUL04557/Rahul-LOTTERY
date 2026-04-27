@@ -99,6 +99,22 @@ const splitEntriesByAmount = (entries = []) => ({
   amount12: entries.filter((entry) => String(entry.amount) === '12')
 });
 
+const sellerSupportsAmount = (seller, amountValue) => {
+  if (!seller || !amountValue) {
+    return true;
+  }
+
+  if (String(amountValue) === '7') {
+    return Number(seller.rateAmount6 || 0) > 0;
+  }
+
+  if (String(amountValue) === '12') {
+    return Number(seller.rateAmount12 || 0) > 0;
+  }
+
+  return true;
+};
+
 const normalizeSeePurchaseEntry = (entry = {}) => ({
   id: entry.id || entry._id || `${entry.number || ''}-${entry.bookingDate || ''}-${entry.sem || entry.boxValue || ''}`,
   number: String(entry.number || '').trim(),
@@ -139,9 +155,9 @@ const SELLER_PURCHASE_SEND_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F4-Sto
 const SELLER_UNSOLD_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F4-View', 'F8-Clear', 'Esc-Exit'];
 const REMOVABLE_UNSOLD_STATUSES = new Set(['unsold_saved', 'unsold']);
 const SELLER_TYPE_LABELS = {
-  seller: 'Seller',
-  sub_seller: 'Sub Seller',
-  normal_seller: 'Normal Seller'
+  seller: 'Stokist',
+  sub_seller: 'Sub Stokist',
+  normal_seller: 'Seller'
 };
 
 const normalizeSellerType = (value) => {
@@ -228,7 +244,20 @@ const buildRetroTicketCode = (sessionMode, semValue, purchaseCategory = '') => {
   return `${prefix}${normalizedSem}`;
 };
 
-const getRetroItemName = (sessionMode, semValue) => `${sessionMode === 'NIGHT' ? 'RAM' : 'RAHUL'} ${semValue}`.trim();
+const RIVER_ITEM_NAMES_BY_DAY = ['BRAHMAPUTRA', 'GANGA', 'YAMUNA', 'GODAVARI', 'NARMADA', 'KRISHNA', 'KAVERI'];
+
+const getRetroItemName = (dateValue) => {
+  const normalizedDate = formatDateOnly(dateValue);
+  const isoDateMatch = normalizedDate.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const parsedDate = isoDateMatch
+    ? new Date(Number(isoDateMatch[1]), Number(isoDateMatch[2]) - 1, Number(isoDateMatch[3]))
+    : new Date(normalizedDate);
+  if (Number.isNaN(parsedDate.getTime())) {
+    return RIVER_ITEM_NAMES_BY_DAY[1];
+  }
+
+  return RIVER_ITEM_NAMES_BY_DAY[parsedDate.getDay()] || RIVER_ITEM_NAMES_BY_DAY[1];
+};
 
 const getPurchaseCategoryLabel = (purchaseCategory) => {
   if (purchaseCategory === 'D') {
@@ -435,7 +464,7 @@ const parseRetroCodeValue = (value, fallbackSessionMode, fallbackPurchaseCategor
 
   const compactValue = normalized.replace(/[^A-Z0-9/]/g, '');
   const primaryToken = compactValue.split('/').find(Boolean) || compactValue;
-  const plainSemMatch = primaryToken.match(/^(\d{1,2})$/);
+  const plainSemMatch = primaryToken.match(/^(\d{1,3})$/);
   if (plainSemMatch) {
     return {
       semValue: plainSemMatch[1],
@@ -444,9 +473,9 @@ const parseRetroCodeValue = (value, fallbackSessionMode, fallbackPurchaseCategor
     };
   }
 
-  const matched = primaryToken.match(/^([MDE])(\d{1,2})$/) || compactValue.match(/^([MDE])(\d{1,2})(?:\/\d{1,2})?$/);
+  const matched = primaryToken.match(/^([MDE])(\d{1,3})$/) || compactValue.match(/^([MDE])(\d{1,3})(?:\/\d{1,3})?$/);
   if (!matched) {
-    return { error: 'Code mein sirf 5 / 10 / M5 / D10 / E10 jaise value do' };
+    return { error: 'Code mein sirf 5 / 10 / 100 / M5 / D10 / E100 jaise value do' };
   }
 
   const resolvedPurchaseCategory = matched[1] || fallbackCategory;
@@ -560,7 +589,7 @@ const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, option
     return {
       id: `seller-purchase-send-memo-${entry.id || index}`,
       code: buildRetroTicketCode(entry.sessionMode || 'MORNING', entry.sem, entry.purchaseCategory),
-      itemName: String(entry.username || entry.displaySeller || '').toUpperCase(),
+      itemName: getRetroItemName(entry.bookingDate),
       drawDate: formatDateOnly(entry.bookingDate || ''),
       day: getDisplayDay(entry.bookingDate || ''),
       prefix: '',
@@ -968,10 +997,10 @@ const SellerDashboard = ({
 
   const getAvailableSemOptions = () => {
     if (amount === '7') {
-      return ['5', '10', '25'];
+      return ['5', '10', '25', '50', '100', '200'];
     }
     if (amount === '12') {
-      return ['5', '10', '15', '20'];
+      return ['5', '10', '15', '20', '30', '50', '100', '200'];
     }
     return [];
   };
@@ -980,18 +1009,18 @@ const SellerDashboard = ({
     if (traceAmount === '') {
       const semOptions = new Set();
       if (amountBookingAvailability['7']) {
-        ['5', '10', '25'].forEach((option) => semOptions.add(option));
+        ['5', '10', '25', '50', '100', '200'].forEach((option) => semOptions.add(option));
       }
       if (amountBookingAvailability['12']) {
-        ['5', '10', '15', '20'].forEach((option) => semOptions.add(option));
+        ['5', '10', '15', '20', '30', '50', '100', '200'].forEach((option) => semOptions.add(option));
       }
       return Array.from(semOptions);
     }
     if (traceAmount === '7') {
-      return ['5', '10', '25'];
+      return ['5', '10', '25', '50', '100', '200'];
     }
     if (traceAmount === '12') {
-      return ['5', '10', '15', '20'];
+      return ['5', '10', '15', '20', '30', '50', '100', '200'];
     }
     return [];
   };
@@ -1000,18 +1029,18 @@ const SellerDashboard = ({
     if (sellerPrizeAmount === '') {
       const semOptions = new Set();
       if (amountBookingAvailability['7']) {
-        ['5', '10', '25'].forEach((option) => semOptions.add(option));
+        ['5', '10', '25', '50', '100', '200'].forEach((option) => semOptions.add(option));
       }
       if (amountBookingAvailability['12']) {
-        ['5', '10', '15', '20'].forEach((option) => semOptions.add(option));
+        ['5', '10', '15', '20', '30', '50', '100', '200'].forEach((option) => semOptions.add(option));
       }
       return Array.from(semOptions);
     }
     if (sellerPrizeAmount === '7') {
-      return ['5', '10', '25'];
+      return ['5', '10', '25', '50', '100', '200'];
     }
     if (sellerPrizeAmount === '12') {
-      return ['5', '10', '15', '20'];
+      return ['5', '10', '15', '20', '30', '50', '100', '200'];
     }
     return [];
   };
@@ -1020,18 +1049,18 @@ const SellerDashboard = ({
     if (myPrizeAmount === '') {
       const semOptions = new Set();
       if (amountBookingAvailability['7']) {
-        ['5', '10', '25'].forEach((option) => semOptions.add(option));
+        ['5', '10', '25', '50', '100', '200'].forEach((option) => semOptions.add(option));
       }
       if (amountBookingAvailability['12']) {
-        ['5', '10', '15', '20'].forEach((option) => semOptions.add(option));
+        ['5', '10', '15', '20', '30', '50', '100', '200'].forEach((option) => semOptions.add(option));
       }
       return Array.from(semOptions);
     }
     if (myPrizeAmount === '7') {
-      return ['5', '10', '25'];
+      return ['5', '10', '25', '50', '100', '200'];
     }
     if (myPrizeAmount === '12') {
-      return ['5', '10', '15', '20'];
+      return ['5', '10', '15', '20', '30', '50', '100', '200'];
     }
     return [];
   };
@@ -1047,6 +1076,7 @@ const SellerDashboard = ({
   const directChildSellers = (treeData?.children || []).filter((node) => (
     node.role === 'seller' && allowedChildSellerTypes.includes(normalizeSellerType(node.sellerType))
   ));
+  const activeAmountChildSellers = directChildSellers.filter((seller) => sellerSupportsAmount(seller, amount));
   const canCreateChildSeller = allowedChildSellerTypes.length > 0;
   const canForwardPurchase = currentSellerType !== 'normal_seller';
   const canUseStockTransfer = currentSellerType === 'seller' || currentSellerType === 'sub_seller';
@@ -1059,7 +1089,7 @@ const SellerDashboard = ({
   } : null;
   const retroPartyOptions = [
     selfPartyOption,
-    ...directChildSellers.filter((seller) => seller.id).map((seller) => ({
+    ...activeAmountChildSellers.filter((seller) => seller.id).map((seller) => ({
       id: seller.id,
       username: seller.username,
       keyword: seller.keyword || '',
@@ -1069,7 +1099,7 @@ const SellerDashboard = ({
   ].filter((party) => party?.id);
   const myPrizeSellerOptions = [
     { id: '', username: 'All Sellers', keyword: 'ALL' },
-    ...directChildSellers
+    ...activeAmountChildSellers
       .filter((seller) => seller.id)
       .map((seller) => ({
         id: seller.id,
@@ -1079,7 +1109,7 @@ const SellerDashboard = ({
   ];
   const stockTransferTargetOptions = [
     selfPartyOption,
-    ...directChildSellers.filter((seller) => (
+    ...activeAmountChildSellers.filter((seller) => (
       currentSellerType === 'sub_seller'
         ? true
         : normalizeSellerType(seller.sellerType) !== 'normal_seller'
@@ -1103,14 +1133,14 @@ const SellerDashboard = ({
       rateAmount6: user?.rateAmount6 || 0,
       rateAmount12: user?.rateAmount12 || 0
     },
-    ...directChildSellers
+    ...activeAmountChildSellers
   ].filter((party) => party.id);
   const selectedUnsoldParty = unsoldPartyOptions.find((party) => String(party.id) === String(unsoldPartyId))
     || unsoldPartyOptions[0]
     || null;
   const seePurchaseSellerOptions = [
     selfPartyOption,
-    ...directChildSellers.filter((seller) => seller.id).map((seller) => ({
+    ...activeAmountChildSellers.filter((seller) => seller.id).map((seller) => ({
       id: seller.id,
       username: seller.username,
       keyword: seller.keyword || '',
@@ -1278,7 +1308,13 @@ const SellerDashboard = ({
     if (!billOnlyMode && activeTab === 'your-lot') {
       loadMySentEntries();
     }
-  }, [billOnlyMode, activeTab, yourLotDate, sessionMode]);
+  }, [billOnlyMode, activeTab, yourLotDate, sessionMode, amount]);
+
+  useEffect(() => {
+    if (!billOnlyMode && activeTab === 'accept-seller-lot') {
+      loadReceivedEntries();
+    }
+  }, [billOnlyMode, activeTab, sessionMode, amount]);
 
   useEffect(() => {
     if (amount && !amountBookingAvailability[amount]) {
@@ -1496,7 +1532,7 @@ const SellerDashboard = ({
 
   const loadMySentEntries = async () => {
     try {
-      const response = await lotteryService.getMySentEntries({ sessionMode, bookingDate: yourLotDate });
+      const response = await lotteryService.getMySentEntries({ sessionMode, bookingDate: yourLotDate, amount });
       setSentEntries(response.data.map(mapApiEntry));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading your lot');
@@ -1505,7 +1541,7 @@ const SellerDashboard = ({
 
   const loadReceivedEntries = async () => {
     try {
-      const response = await lotteryService.getReceivedEntries();
+      const response = await lotteryService.getReceivedEntries({ amount });
       setReceivedEntries(response.data.map(mapApiEntry));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading seller lot');
@@ -1707,7 +1743,7 @@ const SellerDashboard = ({
 
   const loadAcceptedBookEntries = async () => {
     try {
-      const response = await lotteryService.getAcceptedBookEntries({ bookingDate });
+      const response = await lotteryService.getAcceptedBookEntries({ bookingDate, amount });
       setAcceptedBookEntries(response.data.map(mapApiEntry));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading accepted entries');
@@ -1731,7 +1767,7 @@ const SellerDashboard = ({
 
   const loadPendingEntries = async () => {
     try {
-      const response = await lotteryService.getPendingEntries({ bookingDate });
+      const response = await lotteryService.getPendingEntries({ bookingDate, amount });
       setEntries(response.data.map(entry => ({
         _id: entry.id,
         number: entry.number,
@@ -1889,7 +1925,7 @@ const SellerDashboard = ({
 
     if (tabName === 'purchase-send') {
       if (!canForwardPurchase) {
-        setError('Normal seller purchase send nahi kar sakta');
+        setError('Seller purchase send nahi kar sakta');
         return;
       }
       resetSellerMemoOptionState('purchase-send');
@@ -1899,7 +1935,7 @@ const SellerDashboard = ({
 
     if (tabName === 'see-purchase') {
       if (currentSellerType === 'normal_seller') {
-        setError('Normal seller ka purchase direct F10 me dikhega');
+        setError('Seller ka purchase direct F10 me dikhega');
         return;
       }
       loadSeePurchaseEntries();
@@ -2058,7 +2094,7 @@ const SellerDashboard = ({
 
     return {
       code: buildRetroTicketCode(parsedCode.resolvedSessionMode, parsedCode.semValue, parsedCode.resolvedPurchaseCategory),
-      itemName: getRetroItemName(parsedCode.resolvedSessionMode, parsedCode.semValue),
+      itemName: getRetroItemName(bookingDate),
       drawDate: bookingDate,
       day: new Date(bookingDate).toLocaleDateString('en-IN', { weekday: 'short' }).toUpperCase(),
       from: fromNumber,
@@ -2095,6 +2131,11 @@ const SellerDashboard = ({
       return { error: 'Code/SEM enter karo' };
     }
 
+    const allowedSemOptions = getAvailableSemOptions();
+    if (allowedSemOptions.length > 0 && !allowedSemOptions.includes(String(semValue))) {
+      return { error: `Amount ${amount} me sirf SEM ${allowedSemOptions.join(', ')} allowed hai` };
+    }
+
     if (!fromNumber) {
       return { error: 'From number 5 digit hona chahiye' };
     }
@@ -2114,7 +2155,7 @@ const SellerDashboard = ({
       row: {
         id: `draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         code: buildRetroTicketCode(parsedCode.resolvedSessionMode, semValue, parsedCode.resolvedPurchaseCategory),
-        itemName: getRetroItemName(parsedCode.resolvedSessionMode, semValue),
+        itemName: getRetroItemName(bookingDate),
         drawDate: bookingDate,
         day: new Date(bookingDate).toLocaleDateString('en-IN', { weekday: 'short' }).toUpperCase(),
         prefix: '',
@@ -2704,7 +2745,7 @@ const SellerDashboard = ({
         ? firstRow.number
         : `${firstRow.number} - ${group.lastRow?.number}`;
 
-      return `${categoryLabel}${firstRow.boxValue} | ${rangeLabel} | Nos ${group.rows.length} | Piece ${pieces} | ${firstRow.sellerName || 'Self'}`;
+      return `${categoryLabel} | SEM ${firstRow.boxValue} | ${rangeLabel} | Nos ${group.rows.length} | Piece ${pieces} | ${firstRow.sellerName || 'Self'}`;
     });
 
     return [
@@ -2920,8 +2961,8 @@ const SellerDashboard = ({
     }
 
     const isSelfPurchaseSendTarget = String(purchaseSendSellerId) === String(user?.id);
-    if (!isSelfPurchaseSendTarget && directChildSellers.length === 0) {
-      openBlockingWarning('Purchase send karne ke liye pehle sub seller banao');
+    if (!isSelfPurchaseSendTarget && activeAmountChildSellers.length === 0) {
+      openBlockingWarning('Purchase send karne ke liye pehle sub stokist banao');
       return;
     }
 
@@ -3239,8 +3280,7 @@ const SellerDashboard = ({
     const locallySoldNumbers = entries
       .filter((entry) => (
         numbersToAdd.includes(entry.number) &&
-        entry.amount === amount &&
-        entry.sem === selectedBox
+        entry.amount === amount
       ))
       .map((entry) => entry.number);
 
@@ -3318,7 +3358,7 @@ const SellerDashboard = ({
       setNumber('');
       setRangeEndNumber('');
       setSelectedBox('');
-      setAmount('');
+      setAmount(initialAmount || amount);
       setBookingError('');
     } catch (err) {
       setBookingError(err.response?.data?.message || 'Error adding entry');
@@ -3361,7 +3401,7 @@ const SellerDashboard = ({
     setSuccess('');
 
     try {
-      await lotteryService.sendEntries({ bookingDate });
+      await lotteryService.sendEntries({ bookingDate, amount });
       await Promise.all([loadMySentEntries(), loadReceivedEntries(), loadAcceptedBookEntries(), loadTransferHistory(getHistoryFilters())]);
       setEntries([]);
       setSuccess(`Entries sent successfully`);
@@ -3412,7 +3452,7 @@ const SellerDashboard = ({
       row: {
         id: `unsold-draft-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         code: buildRetroTicketCode(parsedCode.resolvedSessionMode, parsedCode.semValue, parsedCode.resolvedPurchaseCategory),
-        itemName: `${String(selectedUnsoldParty.username || '').toUpperCase()} - ${parsedCode.semValue}`,
+        itemName: getRetroItemName(bookingDate),
         drawDate: bookingDate,
         day: getDisplayDay(bookingDate),
         prefix: '',
@@ -3905,7 +3945,7 @@ const SellerDashboard = ({
 
     try {
       await Promise.all(
-        groupedEntries.map((currentEntry) => lotteryService.updateReceivedEntryStatus(currentEntry.id, action))
+        groupedEntries.map((currentEntry) => lotteryService.updateReceivedEntryStatus(currentEntry.id, action, { amount }))
       );
 
       const successLabel = action === 'accept' ? 'accepted' : 'rejected';
@@ -4394,11 +4434,18 @@ const SellerDashboard = ({
       className: 'medium',
       content: (
         <input
+          ref={purchaseDateInputRef}
           type="date"
           value={bookingDate}
-          readOnly
-          tabIndex={-1}
-          onMouseDown={(e) => e.preventDefault()}
+          onChange={(event) => {
+            const nextDate = event.target.value || getTodayDateValue();
+            setBookingDate(nextDate);
+            setPurchaseSendMemoNumber(null);
+            setPurchaseSendMemoSelectionIndex(0);
+            setPurchaseSendMemoPopupOpen(false);
+            setRetroDraftRows([]);
+            setRetroActiveRowIndex(0);
+          }}
           onKeyDown={(e) => {
             if (e.key === 'Enter') {
               e.preventDefault();
@@ -4409,7 +4456,7 @@ const SellerDashboard = ({
       )
     },
     {
-      label: 'Sub Seller',
+      label: 'Sub Stokist',
       className: 'wide',
       content: (
         <SearchableSellerSelect
@@ -4431,7 +4478,7 @@ const SellerDashboard = ({
           }}
           onEnter={(matchedSeller) => {
             if (matchedSeller) {
-              window.requestAnimationFrame(() => purchaseMemoRef.current?.focus());
+              window.requestAnimationFrame(() => purchaseDateInputRef.current?.focus());
             }
           }}
           placeholder={retroPartyOptions.length === 0 ? 'No seller' : 'Keyword ya seller name type karo'}
@@ -6009,7 +6056,7 @@ const SellerDashboard = ({
 
               <div style={{ marginTop: '16px', padding: '12px 14px', borderRadius: '10px', background: '#eef4ff' }}>
                 <strong>Total Purchase:</strong> {seePurchaseGrandTotal.totalNumbers} numbers | Pieces {seePurchaseGrandTotal.totalPieces} | Rs. {seePurchaseGrandTotal.totalAmount.toFixed(2)} |{' '}
-                <strong>Sub Seller Ko Diya:</strong> {seePurchaseSentTotal.totalNumbers} numbers | Pieces {seePurchaseSentTotal.totalPieces} | Rs. {seePurchaseSentTotal.totalAmount.toFixed(2)} |{' '}
+                <strong>Sub Stokist Ko Diya:</strong> {seePurchaseSentTotal.totalNumbers} numbers | Pieces {seePurchaseSentTotal.totalPieces} | Rs. {seePurchaseSentTotal.totalAmount.toFixed(2)} |{' '}
                 <strong>Balance Stock:</strong> {seePurchaseAvailableTotal.totalNumbers} numbers | Pieces {seePurchaseAvailableTotal.totalPieces} | Rs. {seePurchaseAvailableTotal.totalAmount.toFixed(2)}
               </div>
 
@@ -6048,11 +6095,11 @@ const SellerDashboard = ({
 
               {seePurchaseSentGroups.length > 0 ? (
                 <>
-                  <h4 style={{ margin: '16px 0 8px' }}>Sent To Sub Seller</h4>
+                  <h4 style={{ margin: '16px 0 8px' }}>Sent To Sub Stokist</h4>
                   <table className="entries-table">
                     <thead>
                       <tr>
-                        <th>Sub Seller</th>
+                        <th>Sub Stokist</th>
                         <th>Memo</th>
                         <th>Date</th>
                         <th>Session</th>
@@ -6708,7 +6755,7 @@ const SellerDashboard = ({
                     onChange={(event) => setHistorySellerFilter(event.target.value)}
                   >
                     <option value="">ALL All Direct Sellers</option>
-                    {directChildSellers.map((seller) => (
+                    {directChildSellers.filter((seller) => sellerSupportsAmount(seller, historyAmountFilter || amount)).map((seller) => (
                       <option key={seller.id || seller.username} value={seller.username}>
                         {`${getPartyKeyword(seller)} ${seller.username} [${getPartyKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}
                       </option>
@@ -6907,7 +6954,7 @@ const AddSellerForm = ({ currentUser, selectedAmount = '', onSuccess, onError })
       <h2>Add New Seller</h2>
       <form onSubmit={handleCreateSeller} className="seller-form">
         <div className="form-group">
-          <label>Seller Type:</label>
+          <label>Type:</label>
           <select value={sellerType} onChange={(e) => setSellerType(e.target.value)} required>
             {allowedSellerTypes.map((type) => (
               <option key={type} value={type}>{SELLER_TYPE_LABELS[type]}</option>
@@ -6915,7 +6962,7 @@ const AddSellerForm = ({ currentUser, selectedAmount = '', onSuccess, onError })
           </select>
         </div>
         <div className="form-group">
-          <label>{sellerType === 'normal_seller' ? 'Normal Seller Name:' : 'Username:'}</label>
+          <label>{sellerType === 'normal_seller' ? 'Seller Name:' : 'Username:'}</label>
           <input
             type="text"
             value={newUsername}
@@ -6946,7 +6993,7 @@ const AddSellerForm = ({ currentUser, selectedAmount = '', onSuccess, onError })
           </div>
         ) : (
           <p style={{ marginTop: '0', color: '#666', fontSize: '14px' }}>
-            Normal seller ka login nahi banega. Bas naam save hoga aur usi naam par purchase/unsold/F10 summary chalegi.
+            Seller ka login nahi banega. Bas naam save hoga aur usi naam par purchase/unsold/F10 summary chalegi.
           </p>
         )}
         {canAssignAmount6 && (

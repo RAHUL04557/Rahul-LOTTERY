@@ -34,6 +34,7 @@ const EntriesTableView = ({
       entry.sem,
       entry.amount,
       entry.status || '',
+      entry.sentAt || '',
       actionMode
     ].join('|');
     const sortedTableEntries = sortRowsForConsecutiveNumbers(
@@ -43,6 +44,7 @@ const EntriesTableView = ({
         entry.sem,
         entry.amount,
         entry.status || '',
+        entry.sentAt || '',
         actionMode
       ]
     );

@@ -74,6 +74,63 @@ const formatGridRows = (entries = []) => entries.map((entry, index) => {
   };
 });
 
+const isStockLookupWarning = (warning) => {
+  const title = String(warning?.title || '').toUpperCase();
+  return title.startsWith('F4') && title.includes('STOCK');
+};
+
+const renderStockLookupDetails = (details = []) => {
+  const summaryRows = details.filter((detail) => (
+    String(detail || '').startsWith('Filter:')
+    || String(detail || '').startsWith('Total Numbers:')
+    || String(detail || '').startsWith('+')
+  ));
+  const stockRows = details.filter((detail) => !summaryRows.includes(detail));
+
+  return (
+    <>
+      {summaryRows.length > 0 ? (
+        <div className="retro-stock-summary">
+          {summaryRows.map((detail, index) => (
+            <div key={`${detail}-${index}`}>{detail}</div>
+          ))}
+        </div>
+      ) : null}
+      {stockRows.length > 0 ? (
+        <div className="retro-stock-table-wrap">
+          <table className="retro-stock-table">
+            <thead>
+              <tr>
+                <th>Shift</th>
+                <th>SEM</th>
+                <th>Range</th>
+                <th>Nos</th>
+                <th>Piece</th>
+                <th>Seller</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stockRows.map((detail, index) => {
+                const cells = String(detail || '').split('|').map((cell) => cell.trim());
+                return (
+                  <tr key={`${detail}-${index}`}>
+                    <td>{cells[0] || '-'}</td>
+                    <td className="retro-stock-sem">{cells[1] || '-'}</td>
+                    <td>{cells[2] || '-'}</td>
+                    <td>{String(cells[3] || '-').replace(/^Nos\s+/i, '')}</td>
+                    <td>{String(cells[4] || '-').replace(/^Piece\s+/i, '')}</td>
+                    <td>{cells[5] || '-'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+    </>
+  );
+};
+
 const RetroPurchasePanel = ({
   screenCode,
   screenTitle,
@@ -106,6 +163,7 @@ const RetroPurchasePanel = ({
   onBlockingWarningClose = null
 }) => {
   const formattedRows = Array.isArray(gridRows) ? gridRows : formatGridRows(entries);
+  const stockLookupWarning = isStockLookupWarning(blockingWarning);
   const placeholderRows = createPlaceholderRows(
     Math.max(PLACEHOLDER_ROW_COUNT - formattedRows.length - (editableRow ? 1 : 0), 0)
   );
@@ -319,8 +377,8 @@ const RetroPurchasePanel = ({
         </div>
 
         {blockingWarning ? (
-          <div className="retro-purchase-warning-overlay">
-            <div className="retro-purchase-warning-bar">
+          <div className={`retro-purchase-warning-overlay ${stockLookupWarning ? 'stock-lookup' : ''}`.trim()}>
+            <div className={`retro-purchase-warning-bar ${stockLookupWarning ? 'stock-lookup' : ''}`.trim()}>
               <button
                 type="button"
                 className="retro-purchase-warning-hint"
@@ -331,9 +389,11 @@ const RetroPurchasePanel = ({
               <div className="retro-purchase-warning-content">
                 {blockingWarning.title ? <strong>{blockingWarning.title}</strong> : null}
                 {blockingWarning.message ? <p>{blockingWarning.message}</p> : null}
-                {(blockingWarning.details || []).map((detail, index) => (
-                  <p key={`${detail}-${index}`}>{detail}</p>
-                ))}
+                {stockLookupWarning
+                  ? renderStockLookupDetails(blockingWarning.details || [])
+                  : (blockingWarning.details || []).map((detail, index) => (
+                    <p key={`${detail}-${index}`}>{detail}</p>
+                  ))}
               </div>
             </div>
           </div>

@@ -126,10 +126,11 @@ export const lotteryService = {
   removePurchaseUnsold: (payload) => api.post('/lottery/purchases/remove-unsold', payload),
   replacePurchaseUnsoldMemo: (payload) => api.put('/lottery/purchases/unsold-memo', payload),
   sendPurchaseUnsold: (payload) => api.post('/lottery/purchases/send-unsold', payload),
-  getPendingEntries: ({ bookingDate } = {}) =>
+  getPendingEntries: ({ bookingDate, amount } = {}) =>
     api.get('/lottery/pending-entries', {
       params: {
-        ...(bookingDate && { bookingDate })
+        ...(bookingDate && { bookingDate }),
+        ...(amount && { amount })
       }
     }),
   deletePendingEntry: (entryId, { bookingDate } = {}) =>
@@ -138,31 +139,44 @@ export const lotteryService = {
         ...(bookingDate && { bookingDate })
       }
     }),
-  sendEntries: ({ bookingDate } = {}) => api.post('/lottery/send-entries', { ...(bookingDate && { bookingDate }) }),
-  getSentEntries: ({ date, fromDate, toDate, sessionMode } = {}, requestOptions = {}) =>
+  sendEntries: ({ bookingDate, amount } = {}) => api.post('/lottery/send-entries', {
+    ...(bookingDate && { bookingDate }),
+    ...(amount && { amount })
+  }),
+  getSentEntries: ({ date, fromDate, toDate, sessionMode, purchaseCategory } = {}, requestOptions = {}) =>
     api.get('/lottery/sent-entries', {
       ...requestOptions,
       params: {
         ...(date && { date }),
         ...(fromDate && { fromDate }),
         ...(toDate && { toDate }),
-        ...(sessionMode && { sessionMode })
+        ...(sessionMode && { sessionMode }),
+        ...(purchaseCategory && { purchaseCategory })
       }
     }),
-  getMySentEntries: ({ sessionMode, bookingDate } = {}, requestOptions = {}) =>
+  getMySentEntries: ({ sessionMode, bookingDate, amount } = {}, requestOptions = {}) =>
     api.get('/lottery/my-sent-entries', {
       ...requestOptions,
       params: {
         ...(sessionMode && { sessionMode }),
-        ...(bookingDate && { bookingDate })
+        ...(bookingDate && { bookingDate }),
+        ...(amount && { amount })
       }
     }),
-  getReceivedEntries: () => api.get('/lottery/received-entries'),
-  updateReceivedEntryStatus: (entryId, action) => api.patch(`/lottery/received-entries/${entryId}`, { action }),
-  getAcceptedBookEntries: ({ bookingDate } = {}) =>
+  getReceivedEntries: ({ amount } = {}) => api.get('/lottery/received-entries', {
+    params: {
+      ...(amount && { amount })
+    }
+  }),
+  updateReceivedEntryStatus: (entryId, action, { amount } = {}) => api.patch(`/lottery/received-entries/${entryId}`, {
+    action,
+    ...(amount && { amount })
+  }),
+  getAcceptedBookEntries: ({ bookingDate, amount } = {}) =>
     api.get('/lottery/accepted-book-entries', {
       params: {
-        ...(bookingDate && { bookingDate })
+        ...(bookingDate && { bookingDate }),
+        ...(amount && { amount })
       }
     }),
   getTransferHistory: ({ date, fromDate, toDate, shift, amount, purchaseCategory, includeBookings } = {}, requestOptions = {}) =>

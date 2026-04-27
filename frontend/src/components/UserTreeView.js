@@ -1,9 +1,9 @@
 import React from 'react';
 
 const SELLER_TYPE_LABELS = {
-  seller: 'SELLER',
-  sub_seller: 'SUB SELLER',
-  normal_seller: 'NORMAL SELLER'
+  seller: 'STOKIST',
+  sub_seller: 'SUB STOKIST',
+  normal_seller: 'SELLER'
 };
 
 const TreeNode = ({ node, onDelete, deletingUserId }) => {

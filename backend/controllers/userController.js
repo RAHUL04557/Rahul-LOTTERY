@@ -293,8 +293,14 @@ const createSeller = async (req, res) => {
       ]
     );
 
+    const createdTypeLabel = requestedSellerType === 'sub_seller'
+      ? 'Sub Stokist'
+      : requestedSellerType === 'normal_seller'
+        ? 'Seller'
+        : 'Stokist';
+
     res.status(201).json({
-      message: canLogin ? 'Seller created successfully' : 'Normal seller naam se save ho gaya',
+      message: canLogin ? `${createdTypeLabel} created successfully` : 'Seller naam se save ho gaya',
       seller: mapSeller(sellerResult.rows[0])
     });
   } catch (error) {
@@ -426,11 +432,15 @@ const changeChildPassword = async (req, res) => {
     }
 
     if (targetUser.can_login === false || targetUser.seller_type === 'normal_seller') {
-      return res.status(400).json({ message: 'Normal seller ka login password nahi hota' });
+      return res.status(400).json({ message: 'Seller ka login password nahi hota' });
     }
 
     if (targetUser.parent_id !== req.user.id) {
-      return res.status(403).json({ message: 'You can only change password of your direct seller' });
+      return res.status(403).json({
+        message: req.user.role === 'admin'
+          ? 'You can only change password of your direct stokist'
+          : 'You can only change password of your direct sub stokist'
+      });
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);

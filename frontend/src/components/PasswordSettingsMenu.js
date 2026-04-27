@@ -12,8 +12,8 @@ const PasswordSettingsMenu = ({ currentUser, onSuccess, onError }) => {
   const [saving, setSaving] = useState(false);
   const wrapperRef = useRef(null);
 
-  const childRoleLabel = currentUser?.role === 'admin' ? 'seller' : 'sub seller';
-  const menuLabel = currentUser?.role === 'admin' ? 'Seller Password Change' : 'Sub Seller Password Change';
+  const childRoleLabel = currentUser?.role === 'admin' ? 'stokist' : 'sub stokist';
+  const menuLabel = currentUser?.role === 'admin' ? 'Stokist Password Change' : 'Sub Stokist Password Change';
 
   useEffect(() => {
     const handleOutsideClick = (event) => {
@@ -125,7 +125,7 @@ const PasswordSettingsMenu = ({ currentUser, onSuccess, onError }) => {
             <div className="settings-modal-header">
               <div>
                 <h3>Change {childRoleLabel} Password</h3>
-                <p>{currentUser?.role === 'admin' ? 'Admin apne direct seller ka password change kar sakta hai.' : 'Seller apne direct sub seller ka password change kar sakta hai.'}</p>
+                <p>{currentUser?.role === 'admin' ? 'Admin apne direct stokist ka password change kar sakta hai.' : 'Stokist apne direct sub stokist ka password change kar sakta hai.'}</p>
               </div>
               <button type="button" className="settings-close-btn" onClick={closePasswordModal} aria-label="Close settings">
                 x
