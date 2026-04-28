@@ -124,6 +124,7 @@ export const lotteryService = {
     }),
   markPurchaseUnsold: (payload) => api.post('/lottery/purchases/mark-unsold', payload),
   removePurchaseUnsold: (payload) => api.post('/lottery/purchases/remove-unsold', payload),
+  checkPurchaseUnsoldRemove: (payload) => api.post('/lottery/purchases/remove-unsold/check', payload),
   replacePurchaseUnsoldMemo: (payload) => api.put('/lottery/purchases/unsold-memo', payload),
   sendPurchaseUnsold: (payload) => api.post('/lottery/purchases/send-unsold', payload),
   getPendingEntries: ({ bookingDate, amount } = {}) =>

@@ -296,14 +296,20 @@ const buildConsecutiveNumbers = (startValue, endValue) => {
 
 const buildPurchaseNumbers = (startValue, endValue) => {
   const startNumber = normalizePurchaseTicketNumber(startValue);
-  const endNumber = normalizePurchaseTicketNumber(endValue);
+  const normalizedEnd = normalizeRangeEndNumber(startValue, endValue);
 
-  if (!startNumber || !endNumber) {
-    return { error: 'Start and end number must be exactly 5 digits (00000 to 99999)' };
+  if (normalizedEnd.error) {
+    return { error: normalizedEnd.error };
   }
 
-    const start = Number(startNumber);
-    const end = Number(endNumber);
+  const endNumber = normalizedEnd.value;
+
+  if (!startNumber || !endNumber) {
+    return { error: 'Start number must be exactly 5 digits (00000 to 99999)' };
+  }
+
+  const start = Number(startNumber);
+  const end = Number(endNumber);
 
   if (start > end) {
     return { error: 'End number must be greater than or equal to start number' };
@@ -2661,12 +2667,6 @@ const getPurchaseEntries = async (req, res) => {
             OR le.forwarded_by = $${adminUserParamIndex}
             OR le.sent_to_parent = $${adminUserParamIndex}
           )`);
-        } else if (req.user.role === 'seller' && (!sellerId || sellerId === Number(req.user.id))) {
-          params.push(req.user.id);
-          conditions.push(`(
-            le.forwarded_by = $${params.length}
-            OR le.sent_to_parent = $${params.length}
-          )`);
         }
       } else {
         params.push(status);
@@ -3139,6 +3139,126 @@ const removePurchaseUnsoldEntries = async (req, res) => {
       message: `${updatedEntriesResult.rows.length} unsold numbers removed`,
       memoNumber: normalizedMemoNumber,
       entries: updatedEntriesResult.rows.map(mapLotteryEntry)
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+const checkPurchaseUnsoldRemoveEntries = async (req, res) => {
+  try {
+    await ensureHistoryStorage();
+
+    const { number, rangeStart, rangeEnd, bookingDate: rawBookingDate, sellerId, sellerUserId, amount, boxValue } = req.body;
+    const sessionMode = getRequiredSessionMode(req, res);
+    const bookingDate = normalizeBookingDate(rawBookingDate);
+    const purchaseCategory = getPurchaseCategoryFromRequest(req, sessionMode);
+    const targetSellerId = Number(sellerId || sellerUserId || req.user.id);
+    const numbersToRemove = rangeStart || rangeEnd
+      ? buildPurchaseNumbers(rangeStart, rangeEnd)
+      : { numbers: [normalizePurchaseTicketNumber(number)].filter(Boolean) };
+
+    if (!sessionMode || !bookingDate) {
+      if (!bookingDate) {
+        return res.status(400).json({ message: 'Valid booking date is required' });
+      }
+      return;
+    }
+
+    if (numbersToRemove.error) {
+      return res.status(400).json({ message: numbersToRemove.error });
+    }
+
+    if (!numbersToRemove.numbers || numbersToRemove.numbers.length === 0) {
+      return res.status(400).json({ message: 'Number or range is required' });
+    }
+
+    if (!targetSellerId) {
+      return res.status(400).json({ message: 'Party name is required' });
+    }
+
+    let targetSeller = {
+      id: req.user.id,
+      username: req.user.username,
+      role: req.user.role,
+      seller_type: req.user.sellerType,
+      parent_id: req.user.parentId
+    };
+
+    if (targetSellerId !== Number(req.user.id)) {
+      const childSellerResult = await query(
+        "SELECT id, username, role, seller_type, parent_id FROM users WHERE id = $1 AND parent_id = $2 AND role = 'seller' LIMIT 1",
+        [targetSellerId, req.user.id]
+      );
+
+      if (childSellerResult.rows.length === 0) {
+        return res.status(403).json({ message: 'You can remove unsold only for yourself or your direct sub stokist' });
+      }
+
+      targetSeller = childSellerResult.rows[0];
+    }
+
+    const params = [
+      targetSellerId,
+      PURCHASE_ENTRY_SOURCE,
+      sessionMode,
+      purchaseCategory,
+      bookingDate,
+      numbersToRemove.numbers
+    ];
+    const stockFilters = [];
+    const normalizedAmount = String(amount || '').trim();
+    const normalizedBoxValue = String(boxValue || '').trim();
+    if (normalizedAmount) {
+      stockFilters.push(`AND le.amount = $${params.push(normalizedAmount)}::numeric`);
+    }
+    if (normalizedBoxValue) {
+      stockFilters.push(`AND le.box_value = $${params.push(normalizedBoxValue)}`);
+    }
+    const ownershipFilter = isAdminRole(req.user.role) || targetSellerId === Number(req.user.id)
+      ? ''
+      : `AND (
+           le.forwarded_by = $${params.push(req.user.id)}
+           OR le.sent_to_parent = $${params.push(req.user.id)}
+           OR (
+             le.sent_to_parent = $${params.push(targetSellerId)}
+             AND le.forwarded_by = $${params.push(targetSellerId)}
+           )
+         )`;
+
+    const selectedEntriesResult = await query(
+      `SELECT le.*
+       FROM lottery_entries le
+       WHERE le.user_id = $1
+         AND le.entry_source = $2
+         AND le.session_mode = $3
+         AND le.purchase_category = $4
+         AND le.booking_date = $5::date
+         AND le.number = ANY($6::varchar[])
+         AND LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
+         ${stockFilters.join('\n         ')}
+         ${ownershipFilter}
+       ORDER BY le.number ASC`,
+      params
+    );
+
+    if (selectedEntriesResult.rows.length === 0) {
+      return res.status(404).json({ message: 'Selected number current unsold me nahi mila' });
+    }
+
+    if (selectedEntriesResult.rows.length !== numbersToRemove.numbers.length) {
+      const availableNumbers = new Set(selectedEntriesResult.rows.map((row) => row.number));
+      const missingNumbers = numbersToRemove.numbers.filter((currentNumber) => !availableNumbers.has(currentNumber));
+      const missingLabel = missingNumbers.length > 5
+        ? `${missingNumbers.slice(0, 5).join(', ')} +${missingNumbers.length - 5} more`
+        : missingNumbers.join(', ');
+      return res.status(400).json({ message: `Ye number current unsold me nahi hai: ${missingLabel}` });
+    }
+
+    return res.json({
+      ok: true,
+      message: `${selectedEntriesResult.rows.length} unsold numbers available`,
+      entries: selectedEntriesResult.rows.map(mapLotteryEntry)
     });
   } catch (error) {
     return res.status(500).json({ message: 'Server error', error: error.message });
@@ -4735,6 +4855,7 @@ module.exports = {
   getPurchaseUnsoldSendSummary,
   markPurchaseEntriesUnsold,
   removePurchaseUnsoldEntries,
+  checkPurchaseUnsoldRemoveEntries,
   getPurchaseUnsoldRemoveMemoEntries,
   replacePurchaseUnsoldMemoEntries,
   sendPurchaseUnsoldToParent,

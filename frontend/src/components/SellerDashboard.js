@@ -153,7 +153,7 @@ const compareEntryNumbers = (leftValue, rightValue) => {
 const sanitizeFiveDigitInput = (value) => String(value ?? '').replace(/[^0-9]/g, '').slice(0, 5);
 const SELLER_PURCHASE_SEND_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F4-Stock', 'F8-Clear', 'Esc-Exit'];
 const SELLER_UNSOLD_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F4-View', 'F8-Clear', 'Esc-Exit'];
-const REMOVABLE_UNSOLD_STATUSES = new Set(['unsold_saved', 'unsold']);
+const REMOVABLE_UNSOLD_STATUSES = new Set(['unsold_saved', 'unsold_sent', 'unsold']);
 const SELLER_TYPE_LABELS = {
   seller: 'Stokist',
   sub_seller: 'Sub Stokist',
@@ -891,7 +891,6 @@ const SellerDashboard = ({
   const [unsoldTableFromInput, setUnsoldTableFromInput] = useState('');
   const [unsoldTableToInput, setUnsoldTableToInput] = useState('');
   const [stockLookupLoading, setStockLookupLoading] = useState(false);
-  const [unsoldRemoveLookupSnapshot, setUnsoldRemoveLookupSnapshot] = useState(null);
   const purchaseDateInputRef = useRef(null);
   const purchaseSellerSelectRef = useRef(null);
   const myPrizeResultTypeRef = useRef(null);
@@ -2621,6 +2620,12 @@ const SellerDashboard = ({
       return;
     }
 
+    const latestExistingMemoOption = [...unsoldMemoOptions].reverse().find((option) => !option.isNew);
+    if (latestExistingMemoOption) {
+      setUnsoldMemoNumber(latestExistingMemoOption.memoNumber);
+      return;
+    }
+
     const nextNewMemoOption = unsoldMemoOptions[0];
     if (nextNewMemoOption) {
       setUnsoldMemoNumber(nextNewMemoOption.memoNumber);
@@ -2738,24 +2743,6 @@ const SellerDashboard = ({
     };
   };
 
-  const buildUnsoldRemoveLookupSnapshotKey = ({
-    bookingDate: targetBookingDate = bookingDate,
-    sessionMode: targetSessionMode = sessionMode,
-    purchaseCategory: targetPurchaseCategory = activePurchaseCategory,
-    amount: targetAmount = amount,
-    sellerId: targetSellerId = unsoldPartyId,
-    boxValue = ''
-  } = {}) => (
-    [
-      getDateOnlyValue(targetBookingDate),
-      String(targetSessionMode || ''),
-      String(targetPurchaseCategory || ''),
-      String(targetAmount || ''),
-      String(targetSellerId || user?.id || ''),
-      String(boxValue || '')
-    ].join('|')
-  );
-
   const buildStockLookupDetails = (entries = [], filterLabel = 'All SEM') => {
     const normalizedEntries = entries.map((entry) => normalizeSeePurchaseEntry(entry));
     const groupedEntries = groupConsecutiveNumberRows(
@@ -2824,18 +2811,7 @@ const SellerDashboard = ({
           remaining: (isUnsoldLookup || isUnsoldRemoveLookup) ? undefined : true
         });
       const lookupEntries = isUnsoldRemoveLookup
-        ? (response.data || []).map(mapApiEntry).filter((entry) => {
-          const hasMemo = entry.memoNumber !== null && entry.memoNumber !== undefined && String(entry.memoNumber).trim() !== '';
-          if (!isRemovableUnsoldEntry(entry) || !hasMemo) {
-            return false;
-          }
-
-          if (String(targetSellerId || user?.id || '') === String(user?.id || '')) {
-            return String(entry.forwardedBy || '') === String(user?.id || '');
-          }
-
-          return true;
-        })
+        ? (response.data || []).map(mapApiEntry).filter(isRemovableUnsoldEntry)
         : isUnsoldLookup
         ? (response.data || []).filter((entry) => {
           const hasMemo = entry.memoNumber !== null && entry.memoNumber !== undefined && String(entry.memoNumber).trim() !== '';
@@ -2850,19 +2826,6 @@ const SellerDashboard = ({
           return true;
         })
         : (response.data || []);
-      if (isUnsoldRemoveLookup) {
-        setUnsoldRemoveLookupSnapshot({
-          key: buildUnsoldRemoveLookupSnapshotKey({
-            bookingDate,
-            sessionMode: filter.sessionMode,
-            purchaseCategory: filter.purchaseCategory,
-            amount,
-            sellerId: targetSellerId,
-            boxValue: filter.boxValue
-          }),
-          entries: lookupEntries
-        });
-      }
       const details = buildStockLookupDetails(lookupEntries, filter.label);
       const partyLabel = (isUnsoldLookup || isUnsoldRemoveLookup)
         ? selectedUnsoldParty?.username || user?.username || 'Self'
@@ -2871,10 +2834,10 @@ const SellerDashboard = ({
       openBlockingWarning(
         lookupEntries.length
           ? isUnsoldRemoveLookup
-            ? `${partyLabel} ke saved unsold me ye range available hai`
+            ? `${partyLabel} ke unsold remove stock me ye range available hai`
             : `${partyLabel} ke purchase stock me ye range available hai`
           : isUnsoldRemoveLookup
-            ? `${partyLabel} ke saved unsold me selected filter ka maal nahi hai`
+            ? `${partyLabel} ke unsold remove stock me selected filter ka maal nahi hai`
             : `${partyLabel} ke purchase stock me selected filter ka maal nahi hai`,
         details,
         isUnsoldRemoveLookup ? 'F4 Unsold Remove Stock' : isUnsoldLookup ? 'F4 Unsold Stock' : 'F4 Purchase Send Stock'
@@ -3605,49 +3568,51 @@ const SellerDashboard = ({
   };
 
   const validateUnsoldRowInRemovableStock = async (row) => {
-    const requestedNumbers = buildConsecutiveNumbers(row.numberStart || row.from, row.numberEnd || row.to);
-    if (requestedNumbers.error) {
-      return { error: requestedNumbers.error };
-    }
-
     const partyId = String(row.partyId || selectedUnsoldParty?.id || user?.id || '');
-    const partyOption = unsoldPartyOptions.find((party) => String(party.id) === partyId) || selectedUnsoldParty || {};
-    const snapshotKey = buildUnsoldRemoveLookupSnapshotKey({
+    const payload = {
       bookingDate: row.drawDate || bookingDate,
       sessionMode: row.resolvedSessionMode || sessionMode,
       purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+      sellerId: partyId === String(user?.id || '') ? undefined : partyId,
       amount: row.bookingAmount || amount,
-      sellerId: partyId,
-      boxValue: row.semValue
-    });
+      boxValue: row.semValue,
+      rangeStart: row.numberStart || row.from,
+      rangeEnd: row.numberEnd || row.to
+    };
 
-    if (!unsoldRemoveLookupSnapshot || unsoldRemoveLookupSnapshot.key !== snapshotKey) {
+    try {
+      await lotteryService.checkPurchaseUnsoldRemove(payload);
+      return { ok: true };
+    } catch (err) {
+      const requestedNumbers = buildConsecutiveNumbers(payload.rangeStart, payload.rangeEnd);
+      if (requestedNumbers.error) {
+        return { error: err.response?.data?.message || requestedNumbers.error };
+      }
+
+      const response = await lotteryService.getPurchases({
+        bookingDate: payload.bookingDate,
+        sessionMode: payload.sessionMode,
+        sellerId: payload.sellerId,
+        status: 'unsold',
+        purchaseCategory: payload.purchaseCategory,
+        amount: payload.amount,
+        boxValue: payload.boxValue
+      });
+      const lookupEntries = (response.data || []).map(mapApiEntry).filter(isRemovableUnsoldEntry);
+      const removableNumbers = new Set(lookupEntries
+        .map((entry) => String(entry.number || '').padStart(5, '0')));
+      const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !removableNumbers.has(currentNumber));
+
+      if (missingNumbers.length === 0) {
+        return { ok: true };
+      }
+
+      const partyOption = unsoldPartyOptions.find((party) => String(party.id) === partyId) || selectedUnsoldParty || {};
       return {
-        error: `${partyOption.username || 'Selected party'} ke liye pehle F4 View me same stock dekho, warna stock missing mana jayega`
+        error: err.response?.data?.message
+          || `${formatDisplayDate(payload.bookingDate)} date me ${partyOption.username || 'selected party'} ke unsold remove stock me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
       };
     }
-
-    const removableNumbers = new Set((unsoldRemoveLookupSnapshot.entries || [])
-      .filter((entry) => (
-        isRemovableUnsoldEntry(entry)
-        && String(entry.sem || entry.boxValue || '') === String(row.semValue || '')
-        && Number(entry.amount || 0) === Number(row.bookingAmount || amount || 0)
-        && String(entry.sessionMode || entry.session_mode || '') === String(row.resolvedSessionMode || sessionMode || '')
-        && String(entry.purchaseCategory || '') === String(row.resolvedPurchaseCategory || activePurchaseCategory || '')
-        && getDateOnlyValue(entry.bookingDate || '') === getDateOnlyValue(row.drawDate || bookingDate)
-        && String(entry.userId || entry.user_id || partyId) === String(partyId)
-        && (partyId !== String(user?.id || '') || String(entry.forwardedBy || '') === String(user?.id || ''))
-      ))
-      .map((entry) => String(entry.number || '').padStart(5, '0')));
-    const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !removableNumbers.has(currentNumber));
-
-    if (missingNumbers.length > 0) {
-      return {
-        error: `${formatDisplayDate(row.drawDate || bookingDate)} date me ${partyOption.username || 'selected party'} ke current unsold me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
-      };
-    }
-
-    return { ok: true };
   };
 
   const addUnsoldDraftRow = async () => {
@@ -4728,7 +4693,6 @@ const SellerDashboard = ({
                 });
                 return;
               }
-              setActivePurchaseCategory(parsedCode.resolvedPurchaseCategory || activePurchaseCategory);
               setUnsoldCodeInput(buildRetroTicketCode(parsedCode.resolvedSessionMode, parsedCode.semValue, parsedCode.resolvedPurchaseCategory));
               setError('');
               window.requestAnimationFrame(() => unsoldFromInputRef.current?.focus());
@@ -4751,7 +4715,6 @@ const SellerDashboard = ({
                 });
                 return;
               }
-              setActivePurchaseCategory(parsedCode.resolvedPurchaseCategory || activePurchaseCategory);
               setUnsoldCodeInput(buildRetroTicketCode(parsedCode.resolvedSessionMode, parsedCode.semValue, parsedCode.resolvedPurchaseCategory));
               setError('');
               window.requestAnimationFrame(() => unsoldFromInputRef.current?.focus());

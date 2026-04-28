@@ -12,6 +12,7 @@ const {
   getPurchaseUnsoldSendSummary,
   markPurchaseEntriesUnsold,
   removePurchaseUnsoldEntries,
+  checkPurchaseUnsoldRemoveEntries,
   getPurchaseUnsoldRemoveMemoEntries,
   replacePurchaseUnsoldMemoEntries,
   sendPurchaseUnsoldToParent,
@@ -77,6 +78,9 @@ router.post('/purchases/mark-unsold', authenticateToken, authorizeRole(['admin',
 
 // Admin/seller removes saved unsold numbers
 router.post('/purchases/remove-unsold', authenticateToken, authorizeRole(['admin', 'seller']), removePurchaseUnsoldEntries);
+
+// Admin/seller checks if saved unsold numbers can be removed
+router.post('/purchases/remove-unsold/check', authenticateToken, authorizeRole(['admin', 'seller']), checkPurchaseUnsoldRemoveEntries);
 
 // Admin/seller views unsold remove memo history
 router.get('/purchases/unsold-remove-memo', authenticateToken, authorizeRole(['admin', 'seller']), getPurchaseUnsoldRemoveMemoEntries);

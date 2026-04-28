@@ -113,7 +113,7 @@ const PRIZE_OPTIONS = [
 ];
 const ADMIN_PURCHASE_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F8-Clear', 'Esc-Exit'];
 const ADMIN_UNSOLD_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F4-View', 'F8-Clear', 'Esc-Exit'];
-const REMOVABLE_UNSOLD_STATUSES = new Set(['unsold_saved', 'unsold']);
+const REMOVABLE_UNSOLD_STATUSES = new Set(['unsold_saved', 'unsold_sent', 'unsold']);
 const SELLER_TYPE_LABELS = {
   seller: 'Stokist',
   sub_seller: 'Sub Stokist',
@@ -2174,6 +2174,41 @@ const AdminDashboard = ({
     }
   };
 
+  const normalizeAdminSelectedSellerEntries = (entries = [], selectedSellerId = purchaseSellerId) => {
+    const selectedSellerName = directAdminSellers.find((seller) => String(seller.id) === String(selectedSellerId))?.username || '';
+
+    return entries.map((entry) => {
+      const mappedEntry = mapApiEntry(entry);
+      const resolvedSellerName = selectedSellerName || mappedEntry.displaySeller || mappedEntry.username;
+
+      return {
+        ...mappedEntry,
+        username: resolvedSellerName,
+        displaySeller: resolvedSellerName
+      };
+    });
+  };
+
+  const getAdminUnsoldRemoveStockEntries = async (filter = {}) => {
+    const selectedSellerId = filter.sellerId || purchaseSellerId;
+    if (!selectedSellerId) {
+      return [];
+    }
+
+    const response = await lotteryService.getPurchases({
+      bookingDate: filter.bookingDate || purchaseBookingDate,
+      sessionMode: filter.sessionMode || purchaseSessionMode,
+      sellerId: selectedSellerId,
+      status: 'unsold',
+      purchaseCategory: filter.purchaseCategory || purchaseCategory,
+      amount: filter.amount || purchaseAmount,
+      boxValue: filter.boxValue || undefined
+    });
+
+    return normalizeAdminSelectedSellerEntries(response.data || [], selectedSellerId)
+      .filter(isRemovableUnsoldEntry);
+  };
+
   const loadPurchaseEntries = async (
     selectedDate = purchaseBookingDate,
     selectedSessionMode = purchaseSessionMode,
@@ -2205,21 +2240,8 @@ const AdminDashboard = ({
         })
       ]);
 
-      const selectedSellerName = directAdminSellers.find((seller) => String(seller.id) === String(selectedSellerId))?.username || '';
-      const normalizeSelectedSellerEntry = (entry) => {
-        const mappedEntry = mapApiEntry(entry);
-        const resolvedSellerName = selectedSellerName || mappedEntry.displaySeller || mappedEntry.username;
-
-        return {
-          ...mappedEntry,
-          username: resolvedSellerName,
-          displaySeller: resolvedSellerName
-        };
-      };
-
-      setPurchaseEntries((assignedResponse.data || []).map(normalizeSelectedSellerEntry));
-      setUnsoldPurchaseEntries((unsoldResponse.data || [])
-        .map(normalizeSelectedSellerEntry)
+      setPurchaseEntries(normalizeAdminSelectedSellerEntries(assignedResponse.data || [], selectedSellerId));
+      setUnsoldPurchaseEntries(normalizeAdminSelectedSellerEntries(unsoldResponse.data || [], selectedSellerId)
         .filter((entry) => activeTab === 'unsold-remove' ? isRemovableUnsoldEntry(entry) : true));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading purchase record');
@@ -2330,24 +2352,17 @@ const AdminDashboard = ({
     setError('');
 
     try {
-      const response = await lotteryService.getPurchases({
-        bookingDate: purchaseBookingDate,
-        sessionMode: filter.sessionMode,
-        sellerId: purchaseSellerId,
-        status: isUnsoldRemoveLookup ? 'unsold' : 'accepted',
-        purchaseCategory: filter.purchaseCategory,
-        amount: purchaseAmount,
-        boxValue: filter.boxValue || undefined
-      });
-
       const lookupEntries = isUnsoldRemoveLookup
-        ? (response.data || []).filter((entry) => (
-          isRemovableUnsoldEntry(entry)
-          && entry.memoNumber !== null
-          && entry.memoNumber !== undefined
-          && String(entry.memoNumber).trim() !== ''
-        ))
-        : (response.data || []).filter((entry) => (
+        ? await getAdminUnsoldRemoveStockEntries(filter)
+        : ((await lotteryService.getPurchases({
+          bookingDate: purchaseBookingDate,
+          sessionMode: filter.sessionMode,
+          sellerId: purchaseSellerId,
+          status: 'accepted',
+          purchaseCategory: filter.purchaseCategory,
+          amount: purchaseAmount,
+          boxValue: filter.boxValue || undefined
+        })).data || []).filter((entry) => (
           entry.memoNumber !== null
           && entry.memoNumber !== undefined
           && String(entry.memoNumber).trim() !== ''
@@ -2358,10 +2373,10 @@ const AdminDashboard = ({
       openBlockingWarning(
         lookupEntries.length
           ? isUnsoldRemoveLookup
-            ? `${sellerLabel} ke saved unsold me ye range available hai`
+            ? `${sellerLabel} ke unsold remove stock me ye range available hai`
             : `${sellerLabel} ke purchase stock me ye range available hai`
           : isUnsoldRemoveLookup
-            ? `${sellerLabel} ke saved unsold me selected filter ka maal nahi hai`
+            ? `${sellerLabel} ke unsold remove stock me selected filter ka maal nahi hai`
             : `${sellerLabel} ke purchase stock me selected filter ka maal nahi hai`,
         details,
         isUnsoldRemoveLookup ? 'F4 Unsold Remove Stock' : 'F4 Unsold Stock'
@@ -3218,7 +3233,7 @@ const AdminDashboard = ({
 
     const isUnsoldRemoveMode = activeTab === 'unsold-remove';
     const editingExistingUnsoldRow = Boolean(purchaseDraftRows[purchaseActiveRowIndex]?.isExistingUnsoldMemoRow);
-    const editingExistingAdminUnsoldMemo = Boolean(selectedAdminUnsoldMemoOption && !selectedAdminUnsoldMemoOption.isNew);
+    const editingExistingAdminUnsoldMemo = !isUnsoldRemoveMode && Boolean(selectedAdminUnsoldMemoOption && !selectedAdminUnsoldMemoOption.isNew);
 
     const conflictingDraft = purchaseDraftRows.find((row, index) => (
       index !== purchaseActiveRowIndex
@@ -3235,11 +3250,13 @@ const AdminDashboard = ({
     }
 
     try {
-      const stockValidation = editingExistingUnsoldRow || editingExistingAdminUnsoldMemo || isUnsoldRemoveMode
+      const stockValidation = editingExistingUnsoldRow || editingExistingAdminUnsoldMemo
         ? { ok: true }
-        : await validateAdminUnsoldRowInStock(result.row, {
-          currentMemoNumber: getActiveAdminUnsoldMemoNumber()
-        });
+        : isUnsoldRemoveMode
+          ? await validateAdminUnsoldRemoveRowInStock(result.row)
+          : await validateAdminUnsoldRowInStock(result.row, {
+            currentMemoNumber: getActiveAdminUnsoldMemoNumber()
+          });
       if (stockValidation.error) {
         openBlockingWarning(
           stockValidation.error,
@@ -3286,44 +3303,6 @@ const AdminDashboard = ({
     });
   };
 
-  const validateAdminUnsoldRowInRemovableStock = async (row) => {
-    const requestedNumbers = buildConsecutiveNumbers(row.from, row.to);
-    if (requestedNumbers.error) {
-      return { error: requestedNumbers.error };
-    }
-
-    const response = await lotteryService.getPurchases({
-      bookingDate: row.drawDate || purchaseBookingDate,
-      sessionMode: row.resolvedSessionMode || purchaseSessionMode,
-      sellerId: purchaseSellerId,
-      status: 'unsold',
-      purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
-      amount: row.bookingAmount || purchaseAmount,
-      boxValue: row.semValue
-    });
-
-    const sellerLabel = getSelectedAdminUnsoldSellerName();
-    const removableNumbers = new Set((response.data || [])
-      .filter((entry) => (
-        isRemovableUnsoldEntry(entry)
-        && String(entry.sem || entry.boxValue || '') === String(row.semValue || '')
-        && Number(entry.amount || 0) === Number(row.bookingAmount || purchaseAmount || 0)
-        && String(entry.sessionMode || entry.session_mode || '') === String(row.resolvedSessionMode || purchaseSessionMode || '')
-        && String(entry.purchaseCategory || '') === String(row.resolvedPurchaseCategory || purchaseCategory || '')
-        && getDateOnlyValue(entry.bookingDate || '') === getDateOnlyValue(row.drawDate || purchaseBookingDate)
-      ))
-      .map((entry) => String(entry.number || '').padStart(5, '0')));
-    const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !removableNumbers.has(currentNumber));
-
-    if (missingNumbers.length > 0) {
-      return {
-        error: `${formatAdminUnsoldErrorDate(row.drawDate || purchaseBookingDate)} date me ${sellerLabel} ke current unsold me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
-      };
-    }
-
-    return { ok: true };
-  };
-
   const validateAdminDraftRowAgainstActiveTab = async (row) => {
     if (activeTab === 'unsold') {
       return validateAdminUnsoldRowInStock(row, {
@@ -3332,11 +3311,56 @@ const AdminDashboard = ({
     }
 
     if (activeTab === 'unsold-remove') {
-      return validateAdminUnsoldRowInRemovableStock(row);
+      return validateAdminUnsoldRemoveRowInStock(row);
     }
 
     return { ok: true };
   };
+
+  const validateAdminUnsoldRemoveRowInStock = async (row) => {
+    const payload = {
+      sellerId: purchaseSellerId,
+      bookingDate: row.drawDate || purchaseBookingDate,
+      sessionMode: row.resolvedSessionMode || purchaseSessionMode,
+      purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
+      amount: row.bookingAmount || purchaseAmount,
+      boxValue: row.semValue,
+      rangeStart: row.from,
+      rangeEnd: row.to
+    };
+
+    try {
+      await lotteryService.checkPurchaseUnsoldRemove(payload);
+      return { ok: true };
+    } catch (err) {
+      const requestedNumbers = buildConsecutiveNumbers(row.from, row.to);
+      if (requestedNumbers.error) {
+        return { error: err.response?.data?.message || requestedNumbers.error };
+      }
+
+      const lookupEntries = await getAdminUnsoldRemoveStockEntries({
+        bookingDate: payload.bookingDate,
+        sessionMode: payload.sessionMode,
+        purchaseCategory: payload.purchaseCategory,
+        sellerId: payload.sellerId,
+        amount: payload.amount,
+        boxValue: payload.boxValue
+      });
+      const removableNumbers = new Set(lookupEntries
+        .map((entry) => String(entry.number || '').padStart(5, '0')));
+      const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !removableNumbers.has(currentNumber));
+
+      if (missingNumbers.length === 0) {
+        return { ok: true };
+      }
+
+      return {
+        error: err.response?.data?.message
+          || `${formatAdminUnsoldErrorDate(payload.bookingDate)} date me ${getSelectedAdminUnsoldSellerName()} ke unsold remove stock me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
+      };
+    }
+  };
+
   const validateAdminEditorRowBeforeCommit = async () => {
     const result = buildPurchaseSendDraftRow();
 
@@ -3347,13 +3371,13 @@ const AdminDashboard = ({
 
     const isUnsoldRemoveMode = activeTab === 'unsold-remove';
     const editingExistingUnsoldRow = Boolean(purchaseDraftRows[purchaseActiveRowIndex]?.isExistingUnsoldMemoRow);
-    const editingExistingAdminUnsoldMemo = Boolean(selectedAdminUnsoldMemoOption && !selectedAdminUnsoldMemoOption.isNew);
+    const editingExistingAdminUnsoldMemo = !isUnsoldRemoveMode && Boolean(selectedAdminUnsoldMemoOption && !selectedAdminUnsoldMemoOption.isNew);
 
     try {
       const stockValidation = editingExistingUnsoldRow || editingExistingAdminUnsoldMemo
         ? { ok: true }
         : isUnsoldRemoveMode
-          ? await validateAdminUnsoldRowInRemovableStock(result.row)
+          ? await validateAdminUnsoldRemoveRowInStock(result.row)
           : await validateAdminUnsoldRowInStock(result.row, {
             currentMemoNumber: getActiveAdminUnsoldMemoNumber()
           });
@@ -4631,6 +4655,12 @@ const AdminDashboard = ({
     const latestExistingMemoOption = [...adminUnsoldMemoOptions].reverse().find((option) => !option.isNew);
     if (latestExistingMemoOption) {
       setPurchaseMemoNumber(latestExistingMemoOption.memoNumber);
+      return;
+    }
+
+    const nextNewMemoOption = adminUnsoldMemoOptions[0];
+    if (nextNewMemoOption) {
+      setPurchaseMemoNumber(nextNewMemoOption.memoNumber);
     }
   }, [activeTab, purchaseMemoNumber, adminUnsoldMemoOptions, purchaseMemoPopupOpen]);
 
@@ -5043,7 +5073,9 @@ const AdminDashboard = ({
                 });
                 return;
               }
-              setPurchaseCategory(parsed.resolvedPurchaseCategory || purchaseCategory);
+              if (activeTab === 'purchase-send') {
+                setPurchaseCategory(parsed.resolvedPurchaseCategory || purchaseCategory);
+              }
               setPurchaseCodeInput(buildRetroTicketCode(parsed.resolvedSessionMode, parsed.semValue, parsed.resolvedPurchaseCategory));
               setError('');
               window.requestAnimationFrame(() => (
@@ -5072,7 +5104,9 @@ const AdminDashboard = ({
                 });
                 return;
               }
-              setPurchaseCategory(parsed.resolvedPurchaseCategory || purchaseCategory);
+              if (activeTab === 'purchase-send') {
+                setPurchaseCategory(parsed.resolvedPurchaseCategory || purchaseCategory);
+              }
               setPurchaseCodeInput(buildRetroTicketCode(parsed.resolvedSessionMode, parsed.semValue, parsed.resolvedPurchaseCategory));
               setError('');
               window.requestAnimationFrame(() => (
