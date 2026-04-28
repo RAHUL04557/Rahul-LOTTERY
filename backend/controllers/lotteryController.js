@@ -385,6 +385,8 @@ const findExistingPurchaseNumbers = async ({
   sessionMode,
   purchaseCategory,
   amount,
+  boxValue = '',
+  ownerUserId = null,
   excludeEntryIds = [],
   ignoreAmount = false
 }) => {
@@ -396,18 +398,36 @@ const findExistingPurchaseNumbers = async ({
     [PURCHASE_ENTRY_SOURCE, ADMIN_PURCHASE_ENTRY_SOURCE],
     bookingDate,
     sessionMode,
-    purchaseCategory,
-    numbers
+    purchaseCategory
   ];
   let amountClause = '';
+  let boxValueClause = '';
+  let ownerClause = '';
   let excludeClause = '';
 
   if (!ignoreAmount) {
-    params.splice(4, 0, amount);
-    amountClause = `AND amount = $5::numeric`;
+    params.push(amount);
+    amountClause = `AND amount = $${params.length}::numeric`;
   }
 
-  const numbersParamIndex = ignoreAmount ? 5 : 6;
+  if (boxValue) {
+    params.push(boxValue);
+    boxValueClause = `AND box_value = $${params.length}`;
+  }
+
+  if (ownerUserId) {
+    params.push(ADMIN_PURCHASE_ENTRY_SOURCE, PURCHASE_ENTRY_SOURCE, ownerUserId);
+    const adminSourceIndex = params.length - 2;
+    const purchaseSourceIndex = params.length - 1;
+    const ownerIndex = params.length;
+    ownerClause = `AND (
+         (entry_source = $${adminSourceIndex} AND user_id = $${ownerIndex})
+         OR (entry_source = $${purchaseSourceIndex} AND forwarded_by = $${ownerIndex})
+       )`;
+  }
+
+  params.push(numbers);
+  const numbersParamIndex = params.length;
 
   if (excludeEntryIds.length > 0) {
     params.push(excludeEntryIds);
@@ -422,6 +442,8 @@ const findExistingPurchaseNumbers = async ({
        AND session_mode = $3
        AND purchase_category = $4
        ${amountClause}
+       ${boxValueClause}
+       ${ownerClause}
        AND number = ANY($${numbersParamIndex}::varchar[])
        ${excludeClause}
      ORDER BY number ASC`,
@@ -438,6 +460,8 @@ const findExistingPurchaseAllocations = async ({
   sessionMode,
   purchaseCategory,
   amount,
+  boxValue = '',
+  ownerUserId = null,
   excludeEntryIds = []
 }) => {
   if (!Array.isArray(numbers) || numbers.length === 0) {
@@ -452,7 +476,25 @@ const findExistingPurchaseAllocations = async ({
     amount,
     numbers
   ];
+  let boxValueClause = '';
+  let ownerClause = '';
   let excludeClause = '';
+
+  if (boxValue) {
+    params.push(boxValue);
+    boxValueClause = `AND le.box_value = $${params.length}`;
+  }
+
+  if (ownerUserId) {
+    params.push(ADMIN_PURCHASE_ENTRY_SOURCE, PURCHASE_ENTRY_SOURCE, ownerUserId);
+    const adminSourceIndex = params.length - 2;
+    const purchaseSourceIndex = params.length - 1;
+    const ownerIndex = params.length;
+    ownerClause = `AND (
+         (le.entry_source = $${adminSourceIndex} AND le.user_id = $${ownerIndex})
+         OR (le.entry_source = $${purchaseSourceIndex} AND le.forwarded_by = $${ownerIndex})
+       )`;
+  }
 
   if (excludeEntryIds.length > 0) {
     params.push(excludeEntryIds);
@@ -469,6 +511,8 @@ const findExistingPurchaseAllocations = async ({
        AND le.purchase_category = $4
        AND le.amount = $5::numeric
        AND le.number = ANY($6::varchar[])
+       ${boxValueClause}
+       ${ownerClause}
        ${excludeClause}
      ORDER BY seller_name ASC, le.number ASC`,
     params
@@ -483,7 +527,9 @@ const ensureAdminPurchaseNumbersAreAssignable = async ({
   bookingDate,
   sessionMode,
   purchaseCategory,
-  amount
+  amount,
+  boxValue = '',
+  ownerUserId = null
 }) => {
   const duplicateAllocations = await findExistingPurchaseAllocations({
     db,
@@ -491,7 +537,9 @@ const ensureAdminPurchaseNumbersAreAssignable = async ({
     bookingDate,
     sessionMode,
     purchaseCategory,
-    amount
+    amount,
+    boxValue,
+    ownerUserId
   });
 
   if (duplicateAllocations.length > 0) {
@@ -1387,7 +1435,8 @@ const assignPurchasedEntries = async (req, res) => {
       sessionMode,
       purchaseCategory,
       amount: normalizedAmount,
-      boxValue: normalizedBoxValue
+      boxValue: normalizedBoxValue,
+      ownerUserId: req.user.id
     });
 
     if (duplicateNumbers.length > 0) {
@@ -1511,7 +1560,8 @@ const addAdminPurchaseEntries = async (req, res) => {
       sessionMode,
       purchaseCategory,
       amount: normalizedAmount,
-      boxValue: normalizedBoxValue
+      boxValue: normalizedBoxValue,
+      ownerUserId: req.user.id
     });
 
     if (duplicateNumbers.length > 0) {
@@ -1701,7 +1751,8 @@ const replaceAdminPurchaseMemoEntries = async (req, res) => {
         sessionMode: resolvedSessionMode,
         purchaseCategory: resolvedPurchaseCategory,
         amount: rowAmount,
-        boxValue: rowBoxValue
+        boxValue: rowBoxValue,
+        ownerUserId: req.user.id
       });
 
       if (duplicateNumbers.length > 0) {
@@ -2031,7 +2082,8 @@ const sendAdminPurchaseEntries = async (req, res) => {
         sessionMode,
         purchaseCategory,
         amount: normalizedAmount,
-        boxValue: normalizedBoxValue
+        boxValue: normalizedBoxValue,
+        ownerUserId: req.user.id
       });
 
       if (duplicateValidation.error) {
@@ -2119,6 +2171,7 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
       memoNumber,
       amount,
       purchaseCategory: rawPurchaseCategory,
+      entryIds,
       rows,
       bookingDate: rawBookingDate
     } = req.body;
@@ -2127,6 +2180,13 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
     const targetSellerId = Number(sellerId || sellerUserId);
     const normalizedMemoNumber = Number(memoNumber);
     const normalizedRows = Array.isArray(rows) ? rows : [];
+    const memoEntryIds = [
+      ...(Array.isArray(entryIds) ? entryIds : []),
+      ...normalizedRows.flatMap((row) => Array.isArray(row.entryIds) ? row.entryIds : [])
+    ]
+      .map((entryId) => Number(entryId))
+      .filter((entryId) => Number.isInteger(entryId) && entryId > 0);
+    const uniqueMemoEntryIds = [...new Set(memoEntryIds)];
     const currentUserIsAdmin = isAdminRole(req.user.role);
 
     if (!sessionMode || !bookingDate) {
@@ -2189,21 +2249,34 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
 
     await client.query('BEGIN');
 
-    const existingMemoResult = await client.query(
-      `SELECT *
-       FROM lottery_entries
-       WHERE user_id = $1
-         AND entry_source = $2
-         AND forwarded_by = $3
-         AND memo_number = $4
-         AND booking_date = $5::date
-         AND session_mode = $6
-         AND purchase_category = $7
-         AND amount = $8::numeric
-         AND status IN ('accepted', 'unsold')
-       ORDER BY number ASC`,
-      [targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount]
-    );
+    const existingMemoResult = uniqueMemoEntryIds.length > 0
+      ? await client.query(
+        `SELECT *
+         FROM lottery_entries
+         WHERE id = ANY($1::int[])
+           AND user_id = $2
+           AND entry_source = $3
+           AND forwarded_by = $4
+           AND memo_number = $5
+           AND status IN ('accepted', 'unsold')
+         ORDER BY number ASC`,
+        [uniqueMemoEntryIds, targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber]
+      )
+      : await client.query(
+        `SELECT *
+         FROM lottery_entries
+         WHERE user_id = $1
+           AND entry_source = $2
+           AND forwarded_by = $3
+           AND memo_number = $4
+           AND booking_date = $5::date
+           AND session_mode = $6
+           AND purchase_category = $7
+           AND amount = $8::numeric
+           AND status IN ('accepted', 'unsold')
+         ORDER BY number ASC`,
+        [targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount]
+      );
 
     if (existingMemoResult.rows.length > 0) {
       const existingIds = existingMemoResult.rows.map((row) => row.id);
@@ -2289,7 +2362,8 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
           sessionMode: resolvedSessionMode,
           purchaseCategory: resolvedPurchaseCategory,
           amount: rowAmount,
-          boxValue: rowBoxValue
+          boxValue: rowBoxValue,
+          ownerUserId: req.user.id
         });
 
         if (duplicateValidation.error) {
@@ -2541,6 +2615,9 @@ const getPurchaseEntries = async (req, res) => {
 
         params.push(adminScopedBranchIds);
         conditions.push(`le.user_id = ANY($${params.length}::int[])`);
+      } else {
+        params.push(req.user.id);
+        conditions.push(`le.forwarded_by = $${params.length}`);
       }
     } else if (sellerId && sellerId !== Number(req.user.id)) {
       const childSellerResult = await query(

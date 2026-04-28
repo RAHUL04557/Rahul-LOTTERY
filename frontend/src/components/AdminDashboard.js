@@ -2740,9 +2740,6 @@ const AdminDashboard = ({
       setPurchaseCodeInput(row.code || '');
       setPurchaseFromInput(row.from || '');
       setPurchaseToInput(row.to || '');
-      if (row.drawDate) {
-        setPurchaseBookingDate(row.drawDate);
-      }
       setPurchaseActiveRowIndex(targetIndex);
       return;
     }
@@ -3025,12 +3022,18 @@ const AdminDashboard = ({
       return;
     }
 
-    if (hasPendingPurchaseSendEditorValues()) {
-      openBlockingWarning('Pehle A-Add karke row confirm karo, uske baad Save karo', [], 'Warning');
+    const rowsForSaveResult = await getPurchaseSendRowsForSave();
+
+    if (rowsForSaveResult.error) {
+      openBlockingWarning(
+        rowsForSaveResult.error,
+        rowsForSaveResult.details || [],
+        rowsForSaveResult.title || 'Warning'
+      );
       return;
     }
 
-    const rowsToSave = [...purchaseDraftRows];
+    const rowsToSave = rowsForSaveResult.rows || [];
 
     if (rowsToSave.length === 0 && !isEditingExistingPurchaseMemo) {
       openBlockingWarning('Save karne ke liye row add karo');
@@ -3042,13 +3045,28 @@ const AdminDashboard = ({
     setSuccess('');
 
     try {
+      if (rowsForSaveResult.consumedEditor) {
+        setPurchaseDraftRows(rowsToSave);
+      }
+
       const effectiveMemoNumber = Number(purchaseMemoNumber || nextPurchaseMemoNumber);
+      const refreshBookingDate = rowsToSave[0]?.drawDate || purchaseBookingDate;
+      const currentMemoEntryIds = isEditingExistingPurchaseMemo
+        ? [...purchaseEntries, ...unsoldPurchaseEntries]
+          .filter((entry) => (
+            Number(entry.memoNumber || 0) === effectiveMemoNumber
+            && String(entry.userId || '') === String(purchaseSellerId || '')
+          ))
+          .map((entry) => entry.id)
+          .filter(Boolean)
+        : [];
 
       if (isEditingExistingPurchaseMemo) {
         const response = await lotteryService.replacePurchaseSendMemo({
           sellerId: purchaseSellerId,
           memoNumber: effectiveMemoNumber,
-          bookingDate: rowsToSave[0]?.drawDate || purchaseBookingDate,
+          entryIds: currentMemoEntryIds,
+          bookingDate: refreshBookingDate,
           sessionMode: purchaseSessionMode,
           amount: purchaseAmount,
           purchaseCategory,
@@ -3059,7 +3077,8 @@ const AdminDashboard = ({
             amount: purchaseAmount,
             bookingDate: row.drawDate || purchaseBookingDate,
             sessionMode: row.resolvedSessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory
+            purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
+            entryIds: row.entryIds || []
           }))
         });
         setSuccess(response.data.message || `Memo ${effectiveMemoNumber} updated successfully`);
@@ -3088,6 +3107,13 @@ const AdminDashboard = ({
         setPurchaseActiveRowIndex(0);
         setPurchaseEditorVisible(true);
         resetPurchaseSendEntryInputs();
+      } else if (rowsToSave.length > 0) {
+        setPurchaseMemoNumber(null);
+        setPurchaseMemoSelectionIndex(0);
+        setPurchaseDraftRows([]);
+        setPurchaseActiveRowIndex(0);
+        setPurchaseEditorVisible(true);
+        resetPurchaseSendEntryInputs();
       } else if (rowsToSave.length === 0) {
         setPurchaseMemoNumber(null);
         setPurchaseMemoSelectionIndex(0);
@@ -3097,7 +3123,7 @@ const AdminDashboard = ({
         resetPurchaseSendEntryInputs();
       }
       setPurchaseMemoPopupOpen(false);
-      await loadPurchaseEntries(purchaseBookingDate, purchaseSessionMode, purchaseSellerId);
+      await loadPurchaseEntries(refreshBookingDate, purchaseSessionMode, purchaseSellerId);
       focusAdminSendSellerSelect();
     } catch (err) {
       const rawErrorMessage = err.response?.data?.message || err.message || '';

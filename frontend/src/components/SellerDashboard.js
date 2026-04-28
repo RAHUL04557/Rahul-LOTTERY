@@ -2250,7 +2250,8 @@ const SellerDashboard = ({
       const updatedRows = [...currentRows];
       updatedRows[retroActiveRowIndex] = {
         ...result.row,
-        id: currentRows[retroActiveRowIndex].id
+        id: currentRows[retroActiveRowIndex].id,
+        entryIds: currentRows[retroActiveRowIndex].entryIds || []
       };
       return { rows: updatedRows, consumedEditor: true, consumedRow: result.row };
     }
@@ -2275,6 +2276,21 @@ const SellerDashboard = ({
     });
 
     const availableNumbers = new Set((response.data || []).map((entry) => String(entry.number || '').padStart(5, '0')));
+    if (isEditingExistingPurchaseSendMemo) {
+      purchaseSendMemoEntries.forEach((entry) => {
+        if (
+          Number(entry.purchaseMemoNumber || entry.memoNumber || 0) === Number(purchaseSendMemoNumber || 0)
+          && String(entry.userId || '') === String(purchaseSendSellerId || '')
+          && String(entry.sem || entry.boxValue || '') === String(row.semValue || '')
+          && String(entry.amount || '') === String(row.bookingAmount || amount || '')
+          && String(entry.sessionMode || '') === String(row.resolvedSessionMode || sessionMode || '')
+          && String(entry.purchaseCategory || '') === String(row.resolvedPurchaseCategory || activePurchaseCategory || '')
+          && String(getDateOnlyValue(entry.bookingDate || '')) === String(row.drawDate || bookingDate || '')
+        ) {
+          availableNumbers.add(String(entry.number || '').padStart(5, '0'));
+        }
+      });
+    }
     const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !availableNumbers.has(currentNumber));
 
     if (missingNumbers.length > 0) {
@@ -2326,7 +2342,8 @@ const SellerDashboard = ({
           const updatedRows = [...currentRows];
           updatedRows[retroActiveRowIndex] = {
             ...result.row,
-            id: currentRows[retroActiveRowIndex].id
+            id: currentRows[retroActiveRowIndex].id,
+            entryIds: currentRows[retroActiveRowIndex].entryIds || []
           };
           return updatedRows;
         }
@@ -2363,9 +2380,6 @@ const SellerDashboard = ({
       setSelectedPartyName(row.partyName || selectedPartyName);
       setPartyKeyword(getPartyKeyword(row.partyName || selectedPartyName));
       setSelectedBox(row.semValue || '');
-      if (row.drawDate) {
-        setBookingDate(row.drawDate);
-      }
       setRetroActiveRowIndex(targetIndex);
       return;
     }
@@ -2881,10 +2895,19 @@ const SellerDashboard = ({
       setSuccess('');
 
       try {
+        const currentMemoEntryIds = purchaseSendMemoEntries
+          .filter((entry) => (
+            Number(entry.purchaseMemoNumber || entry.memoNumber || 0) === effectiveMemoNumber
+            && String(entry.userId || '') === String(purchaseSendSellerId || '')
+          ))
+          .map((entry) => entry.id)
+          .filter(Boolean);
+
         await lotteryService.replacePurchaseSendMemo({
           sellerId: purchaseSendSellerId,
           bookingDate: nextRows[0]?.drawDate || bookingDate,
           memoNumber: effectiveMemoNumber,
+          entryIds: currentMemoEntryIds,
           sessionMode,
           amount,
           purchaseCategory: activePurchaseCategory,
@@ -2895,7 +2918,8 @@ const SellerDashboard = ({
             amount: row.bookingAmount || amount,
             bookingDate: row.drawDate || bookingDate,
             sessionMode: row.resolvedSessionMode || sessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory
+            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+            entryIds: row.entryIds || []
           }))
         });
 
@@ -2987,12 +3011,23 @@ const SellerDashboard = ({
       }
 
       const effectiveMemoNumber = Number(purchaseSendMemoNumber || nextPurchaseSendMemoNumber);
+      const refreshBookingDate = rowsToSave[0]?.drawDate || bookingDate;
+      const currentMemoEntryIds = isEditingExistingPurchaseSendMemo
+        ? purchaseSendMemoEntries
+          .filter((entry) => (
+            Number(entry.purchaseMemoNumber || entry.memoNumber || 0) === effectiveMemoNumber
+            && String(entry.userId || '') === String(purchaseSendSellerId || '')
+          ))
+          .map((entry) => entry.id)
+          .filter(Boolean)
+        : [];
 
       if (isEditingExistingPurchaseSendMemo) {
         await lotteryService.replacePurchaseSendMemo({
           sellerId: purchaseSendSellerId,
-          bookingDate,
+          bookingDate: refreshBookingDate,
           memoNumber: effectiveMemoNumber,
+          entryIds: currentMemoEntryIds,
           sessionMode,
           amount,
           purchaseCategory: activePurchaseCategory,
@@ -3001,8 +3036,10 @@ const SellerDashboard = ({
             rangeEnd: row.numberEnd || row.to,
             boxValue: row.semValue,
             amount: row.bookingAmount || amount,
+            bookingDate: row.drawDate || bookingDate,
             sessionMode: row.resolvedSessionMode || sessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory
+            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+            entryIds: row.entryIds || []
           }))
         });
       } else {
@@ -3024,7 +3061,7 @@ const SellerDashboard = ({
 
       const [, refreshedMemoEntries] = await Promise.all([
         loadPurchaseEntries(),
-        loadPurchaseSendMemoEntries(purchaseSendSellerId, bookingDate),
+        loadPurchaseSendMemoEntries(purchaseSendSellerId, refreshBookingDate),
         loadSeePurchaseEntries(),
         loadTransferHistory(getHistoryFilters())
       ]);
