@@ -519,12 +519,22 @@ const expandPurchaseRowsForSave = (rows = [], maxRangeSize = 2000) => rows.flatM
   return expandedRows;
 });
 
-const createRetroGridRows = (rows = []) => rows.map((row, index) => ({
+const formatRetroDisplayDate = (value) => {
+  const normalized = formatDateOnly(value || '');
+  const isoDateMatch = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (isoDateMatch) {
+    return `${isoDateMatch[3]}-${isoDateMatch[2]}-${isoDateMatch[1]}`;
+  }
+
+  return normalized;
+};
+
+const createRetroGridRows = (rows = [], options = {}) => rows.map((row, index) => ({
   id: row.id || `retro-row-${index}`,
   serial: index + 1,
   code: row.code || '',
   itemName: row.itemName || '',
-  drawDate: formatDateOnly(row.drawDate || ''),
+  drawDate: formatRetroDisplayDate(options.drawDate || row.drawDate || ''),
   day: row.day || '',
   prefix: row.prefix || '',
   series: row.series || '',
@@ -1350,8 +1360,13 @@ const AdminDashboard = ({
   const dashboardRef = useRef(null);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [exitConfirmSelected, setExitConfirmSelected] = useState('no');
+  const [saveConfirmOpen, setSaveConfirmOpen] = useState(false);
+  const [saveConfirmSelected, setSaveConfirmSelected] = useState('no');
+  const [saveConfirmMessage, setSaveConfirmMessage] = useState('Save karna hai?');
   const [exitReadyFromFirstControl, setExitReadyFromFirstControl] = useState(false);
   const launcherTitle = entryCompanyLabel || 'Admin Keyboard Menu';
+  const saveConfirmActionRef = useRef(null);
+  const saveConfirmFocusRef = useRef(null);
   const blockingWarningActionRef = useRef(null);
   const clearBlockingWarning = () => {
     const action = blockingWarningActionRef.current;
@@ -4261,6 +4276,39 @@ const AdminDashboard = ({
     handleTabBack();
   };
 
+  const refocusAfterSaveConfirmation = () => {
+    const focusTarget = saveConfirmFocusRef.current;
+    saveConfirmFocusRef.current = null;
+    window.requestAnimationFrame(() => {
+      focusTarget?.focus?.();
+      focusTarget?.select?.();
+    });
+  };
+
+  const requestSaveConfirmation = (action, message = 'Save karna hai?') => {
+    saveConfirmActionRef.current = action;
+    saveConfirmFocusRef.current = document.activeElement;
+    setSaveConfirmMessage(message);
+    setSaveConfirmSelected('no');
+    setSaveConfirmOpen(true);
+  };
+
+  const cancelSaveConfirmation = () => {
+    saveConfirmActionRef.current = null;
+    setSaveConfirmOpen(false);
+    setSaveConfirmSelected('no');
+    refocusAfterSaveConfirmation();
+  };
+
+  const confirmSaveRequest = () => {
+    const action = saveConfirmActionRef.current;
+    saveConfirmActionRef.current = null;
+    setSaveConfirmOpen(false);
+    setSaveConfirmSelected('no');
+    refocusAfterSaveConfirmation();
+    action?.();
+  };
+
   const handleDashboardFocusCapture = (event) => {
     if (!exitReadyFromFirstControl || exitConfirmOpen) {
       return;
@@ -4284,7 +4332,7 @@ const AdminDashboard = ({
         return;
       }
       if (!adminStockLoading) {
-        saveAdminStockDraftRows();
+        requestSaveConfirmation(saveAdminStockDraftRows);
       }
     },
     F3: () => {
@@ -4321,7 +4369,7 @@ const AdminDashboard = ({
         return;
       }
       if (!purchaseLoading) {
-        savePurchaseSendDraftRows();
+        requestSaveConfirmation(savePurchaseSendDraftRows);
       }
     },
     F3: () => {
@@ -4355,7 +4403,10 @@ const AdminDashboard = ({
     },
     F2: () => {
       if (!purchaseLoading) {
-        saveAdminUnsoldRows(activeTab === 'unsold-remove' ? 'remove' : 'mark');
+        requestSaveConfirmation(
+          () => saveAdminUnsoldRows(activeTab === 'unsold-remove' ? 'remove' : 'mark'),
+          activeTab === 'unsold-remove' ? 'Remove karna hai?' : 'Save karna hai?'
+        );
       }
     },
     F3: deletePurchaseDraftRow,
@@ -5010,7 +5061,7 @@ const AdminDashboard = ({
       shortcut: 'F2',
       variant: 'primary',
       disabled: adminStockLoading || Boolean(blockingWarning),
-      onClick: saveAdminStockDraftRows
+      onClick: () => requestSaveConfirmation(saveAdminStockDraftRows)
     },
     {
       label: 'Delete (F3)',
@@ -5041,7 +5092,7 @@ const AdminDashboard = ({
   const activePurchaseSendRows = purchaseDraftRows;
   const adminSendVisibleQuantity = activePurchaseSendRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
   const adminSendVisibleAmount = activePurchaseSendRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
-  const adminPurchaseGridRows = createRetroGridRows(activePurchaseSendRows);
+  const adminPurchaseGridRows = createRetroGridRows(activePurchaseSendRows, { drawDate: purchaseBookingDate });
   const selectedAdminSendSeller = activeAmountAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId));
   const purchaseMetrics = getRetroRangeMetrics(
     purchaseCodeInput,
@@ -5447,7 +5498,15 @@ const AdminDashboard = ({
             if (e.key === 'Enter') {
               e.preventDefault();
               e.stopPropagation();
-              window.requestAnimationFrame(() => adminSendMemoRef.current?.focus());
+              window.requestAnimationFrame(() => {
+                if (activeTab === 'unsold-remove') {
+                  adminSendCodeInputRef.current?.focus();
+                  adminSendCodeInputRef.current?.select?.();
+                  return;
+                }
+
+                adminSendMemoRef.current?.focus();
+              });
             }
           }}
         />
@@ -5468,7 +5527,7 @@ const AdminDashboard = ({
       shortcut: 'F2',
       variant: 'primary',
       disabled: purchaseLoading || Boolean(blockingWarning),
-      onClick: savePurchaseSendDraftRows
+      onClick: () => requestSaveConfirmation(savePurchaseSendDraftRows)
     },
     {
       label: 'Delete (F3)',
@@ -5517,7 +5576,7 @@ const AdminDashboard = ({
       shortcut: 'F2',
       variant: 'primary',
       disabled: purchaseLoading || Boolean(blockingWarning),
-      onClick: () => saveAdminUnsoldRows('mark')
+      onClick: () => requestSaveConfirmation(() => saveAdminUnsoldRows('mark'))
     },
     {
       label: 'Delete (F3)',
@@ -5552,7 +5611,7 @@ const AdminDashboard = ({
       ? {
           ...action,
           label: purchaseLoading ? 'Removing...' : 'Remove (F2)',
-          onClick: () => saveAdminUnsoldRows('remove')
+          onClick: () => requestSaveConfirmation(() => saveAdminUnsoldRows('remove'), 'Remove karna hai?')
         }
       : action
   ));
@@ -5978,6 +6037,14 @@ const AdminDashboard = ({
         onSelectedChange={setExitConfirmSelected}
         onConfirm={confirmExitRequest}
         onCancel={cancelExitConfirmation}
+      />
+      <ExitConfirmPrompt
+        open={saveConfirmOpen}
+        selected={saveConfirmSelected}
+        message={saveConfirmMessage}
+        onSelectedChange={setSaveConfirmSelected}
+        onConfirm={confirmSaveRequest}
+        onCancel={cancelSaveConfirmation}
       />
       {pieceSummaryOpen && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
@@ -6653,7 +6720,10 @@ const AdminDashboard = ({
                 }}
                 memoSelector={{
                   isOpen: purchaseMemoPopupOpen,
-                  options: purchaseMemoOptions,
+                  options: purchaseMemoOptions.map((option) => ({
+                    ...option,
+                    drawDate: formatRetroDisplayDate(purchaseBookingDate)
+                  })),
                   activeIndex: purchaseMemoSelectionIndex,
                   variant: 'table',
                   onHighlight: setPurchaseMemoSelectionIndex,
@@ -6877,6 +6947,7 @@ const AdminDashboard = ({
                 summaryQuantity={adminSendVisibleQuantity}
                 summaryAmount={adminSendVisibleAmount}
                 showStatusField={false}
+                showMemoField={false}
                 windowClassName="full-page"
                 blockingWarning={activeTab === 'unsold-remove' ? blockingWarning : null}
                 onBlockingWarningClose={clearBlockingWarning}

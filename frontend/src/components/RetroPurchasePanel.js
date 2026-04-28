@@ -154,6 +154,7 @@ const RetroPurchasePanel = ({
   statusLabel = '',
   showShortcuts = true,
   showStatusField = true,
+  showMemoField = true,
   showGrid = true,
   showFooter = true,
   windowClassName = '',
@@ -235,82 +236,84 @@ const RetroPurchasePanel = ({
               </div>
             ) : null}
 
-            <div className="retro-purchase-field retro-purchase-field-memo">
-              <label>Memo No.</label>
-              <div className="retro-purchase-memo-shell">
-                <div className="retro-purchase-field-control retro-purchase-readonly" {...memoProps}>
-                  {memoNumber || ''}
-                </div>
-                {memoSelector?.isOpen ? (
-                  <div className={`retro-purchase-memo-popup ${memoSelector.className || ''}`.trim()}>
-                    {memoSelector.variant === 'table' ? (
-                      <div className="retro-purchase-memo-table-wrap">
-                        <table className="retro-purchase-memo-table">
-                          <thead>
-                            <tr>
-                              <th>Memo No</th>
-                              <th>Draw Date</th>
-                              <th>Qty</th>
-                            </tr>
-                          </thead>
-                          <tbody>
+            {showMemoField ? (
+              <div className="retro-purchase-field retro-purchase-field-memo">
+                <label>Memo No.</label>
+                <div className="retro-purchase-memo-shell">
+                  <div className="retro-purchase-field-control retro-purchase-readonly" {...memoProps}>
+                    {memoNumber || ''}
+                  </div>
+                  {memoSelector?.isOpen ? (
+                    <div className={`retro-purchase-memo-popup ${memoSelector.className || ''}`.trim()}>
+                      {memoSelector.variant === 'table' ? (
+                        <div className="retro-purchase-memo-table-wrap">
+                          <table className="retro-purchase-memo-table">
+                            <thead>
+                              <tr>
+                                <th>Memo No</th>
+                                <th>Draw Date</th>
+                                <th>Qty</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(memoSelector.options || []).map((option, index) => (
+                                <tr
+                                  key={option.key || option.memoNumber || index}
+                                  className={index === memoSelector.activeIndex ? 'active' : ''}
+                                  onMouseEnter={() => memoSelector.onHighlight?.(index)}
+                                  onClick={() => memoSelector.onSelect?.(option, index)}
+                                >
+                                  <td>{option.label ?? ''}</td>
+                                  <td>{option.drawDate ?? ''}</td>
+                                  <td>{option.quantity ?? ''}</td>
+                                </tr>
+                              ))}
+                              {Array.from({
+                                length: Math.max(MEMO_PLACEHOLDER_ROW_COUNT - (memoSelector.options || []).length, 0)
+                              }, (_, index) => (
+                                <tr key={`memo-empty-${index}`}>
+                                  <td>&nbsp;</td>
+                                  <td>&nbsp;</td>
+                                  <td>&nbsp;</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                            <tfoot>
+                              <tr>
+                                <td colSpan="2">Total Qty</td>
+                                <td>
+                                  {(memoSelector.options || []).reduce((sum, option) => sum + Number(option.quantity || 0), 0)}
+                                </td>
+                              </tr>
+                            </tfoot>
+                          </table>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="retro-purchase-memo-list">
                             {(memoSelector.options || []).map((option, index) => (
-                              <tr
+                              <button
                                 key={option.key || option.memoNumber || index}
-                                className={index === memoSelector.activeIndex ? 'active' : ''}
+                                type="button"
+                                className={`retro-purchase-memo-option ${index === memoSelector.activeIndex ? 'active' : ''}`.trim()}
                                 onMouseEnter={() => memoSelector.onHighlight?.(index)}
                                 onClick={() => memoSelector.onSelect?.(option, index)}
                               >
-                                <td>{option.label ?? ''}</td>
-                                <td>{option.drawDate ?? ''}</td>
-                                <td>{option.quantity ?? ''}</td>
-                              </tr>
+                                <span>{option.label}</span>
+                                {option.totalPieceCount ? <strong>{option.totalPieceCount}</strong> : null}
+                              </button>
                             ))}
-                            {Array.from({
-                              length: Math.max(MEMO_PLACEHOLDER_ROW_COUNT - (memoSelector.options || []).length, 0)
-                            }, (_, index) => (
-                              <tr key={`memo-empty-${index}`}>
-                                <td>&nbsp;</td>
-                                <td>&nbsp;</td>
-                                <td>&nbsp;</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                          <tfoot>
-                            <tr>
-                              <td colSpan="2">Total Qty</td>
-                              <td>
-                                {(memoSelector.options || []).reduce((sum, option) => sum + Number(option.quantity || 0), 0)}
-                              </td>
-                            </tr>
-                          </tfoot>
-                        </table>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="retro-purchase-memo-list">
-                          {(memoSelector.options || []).map((option, index) => (
-                            <button
-                              key={option.key || option.memoNumber || index}
-                              type="button"
-                              className={`retro-purchase-memo-option ${index === memoSelector.activeIndex ? 'active' : ''}`.trim()}
-                              onMouseEnter={() => memoSelector.onHighlight?.(index)}
-                              onClick={() => memoSelector.onSelect?.(option, index)}
-                            >
-                              <span>{option.label}</span>
-                              {option.totalPieceCount ? <strong>{option.totalPieceCount}</strong> : null}
-                            </button>
-                          ))}
-                        </div>
-                        <div className="retro-purchase-memo-details">
-                          {memoSelector.detailContent}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ) : null}
+                          </div>
+                          <div className="retro-purchase-memo-details">
+                            {memoSelector.detailContent}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
               </div>
-            </div>
+            ) : null}
           </div>
 
           {showGrid ? (
