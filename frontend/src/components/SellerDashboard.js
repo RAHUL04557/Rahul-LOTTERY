@@ -891,6 +891,7 @@ const SellerDashboard = ({
   const [unsoldTableFromInput, setUnsoldTableFromInput] = useState('');
   const [unsoldTableToInput, setUnsoldTableToInput] = useState('');
   const [stockLookupLoading, setStockLookupLoading] = useState(false);
+  const [unsoldRemoveLookupSnapshot, setUnsoldRemoveLookupSnapshot] = useState(null);
   const purchaseDateInputRef = useRef(null);
   const purchaseSellerSelectRef = useRef(null);
   const myPrizeResultTypeRef = useRef(null);
@@ -2631,9 +2632,9 @@ const SellerDashboard = ({
       return;
     }
 
-    const latestExistingMemoOption = [...unsoldRemoveMemoOptions].reverse().find((option) => !option.isNew);
-    if (latestExistingMemoOption) {
-      setUnsoldRemoveMemoNumber(latestExistingMemoOption.memoNumber);
+    const nextNewMemoOption = unsoldRemoveMemoOptions[0];
+    if (nextNewMemoOption) {
+      setUnsoldRemoveMemoNumber(nextNewMemoOption.memoNumber);
     }
   }, [activeTab, unsoldRemoveMemoNumber, unsoldRemoveMemoOptions, unsoldMemoPopupOpen]);
 
@@ -2737,6 +2738,24 @@ const SellerDashboard = ({
     };
   };
 
+  const buildUnsoldRemoveLookupSnapshotKey = ({
+    bookingDate: targetBookingDate = bookingDate,
+    sessionMode: targetSessionMode = sessionMode,
+    purchaseCategory: targetPurchaseCategory = activePurchaseCategory,
+    amount: targetAmount = amount,
+    sellerId: targetSellerId = unsoldPartyId,
+    boxValue = ''
+  } = {}) => (
+    [
+      getDateOnlyValue(targetBookingDate),
+      String(targetSessionMode || ''),
+      String(targetPurchaseCategory || ''),
+      String(targetAmount || ''),
+      String(targetSellerId || user?.id || ''),
+      String(boxValue || '')
+    ].join('|')
+  );
+
   const buildStockLookupDetails = (entries = [], filterLabel = 'All SEM') => {
     const normalizedEntries = entries.map((entry) => normalizeSeePurchaseEntry(entry));
     const groupedEntries = groupConsecutiveNumberRows(
@@ -2831,6 +2850,19 @@ const SellerDashboard = ({
           return true;
         })
         : (response.data || []);
+      if (isUnsoldRemoveLookup) {
+        setUnsoldRemoveLookupSnapshot({
+          key: buildUnsoldRemoveLookupSnapshotKey({
+            bookingDate,
+            sessionMode: filter.sessionMode,
+            purchaseCategory: filter.purchaseCategory,
+            amount,
+            sellerId: targetSellerId,
+            boxValue: filter.boxValue
+          }),
+          entries: lookupEntries
+        });
+      }
       const details = buildStockLookupDetails(lookupEntries, filter.label);
       const partyLabel = (isUnsoldLookup || isUnsoldRemoveLookup)
         ? selectedUnsoldParty?.username || user?.username || 'Self'
@@ -3580,17 +3612,22 @@ const SellerDashboard = ({
 
     const partyId = String(row.partyId || selectedUnsoldParty?.id || user?.id || '');
     const partyOption = unsoldPartyOptions.find((party) => String(party.id) === partyId) || selectedUnsoldParty || {};
-    const response = await lotteryService.getPurchases({
+    const snapshotKey = buildUnsoldRemoveLookupSnapshotKey({
       bookingDate: row.drawDate || bookingDate,
       sessionMode: row.resolvedSessionMode || sessionMode,
-      sellerId: partyId === String(user?.id || '') ? undefined : partyId,
-      status: 'unsold',
       purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
       amount: row.bookingAmount || amount,
+      sellerId: partyId,
       boxValue: row.semValue
     });
-    const removableNumbers = new Set((response.data || [])
-      .map(mapApiEntry)
+
+    if (!unsoldRemoveLookupSnapshot || unsoldRemoveLookupSnapshot.key !== snapshotKey) {
+      return {
+        error: `${partyOption.username || 'Selected party'} ke liye pehle F4 View me same stock dekho, warna stock missing mana jayega`
+      };
+    }
+
+    const removableNumbers = new Set((unsoldRemoveLookupSnapshot.entries || [])
       .filter((entry) => (
         isRemovableUnsoldEntry(entry)
         && String(entry.sem || entry.boxValue || '') === String(row.semValue || '')
@@ -3629,15 +3666,27 @@ const SellerDashboard = ({
     const editingExistingUnsoldRow = Boolean(unsoldDraftRows[unsoldActiveRowIndex]?.isExistingUnsoldMemoRow);
 
     try {
-      const stockValidation = editingExistingUnsoldRow || isUnsoldRemoveMode
+      const stockValidation = editingExistingUnsoldRow
         ? { ok: true }
-        : await validateUnsoldRowInStock(result.row);
+        : isUnsoldRemoveMode
+          ? await validateUnsoldRowInRemovableStock(result.row)
+          : await validateUnsoldRowInStock(result.row);
       if (stockValidation.error) {
-        openBlockingWarning(stockValidation.error, [], 'Stock Missing', focusUnsoldFromInput);
+        openBlockingWarning(
+          stockValidation.error,
+          [],
+          isUnsoldRemoveMode ? 'Unsold Missing' : 'Stock Missing',
+          focusUnsoldFromInput
+        );
         return false;
       }
     } catch (err) {
-      openBlockingWarning(err.response?.data?.message || 'Stock check nahi ho paya', [], 'Stock Missing', focusUnsoldFromInput);
+      openBlockingWarning(
+        err.response?.data?.message || (isUnsoldRemoveMode ? 'Unsold check nahi ho paya' : 'Stock check nahi ho paya'),
+        [],
+        isUnsoldRemoveMode ? 'Unsold Missing' : 'Stock Missing',
+        focusUnsoldFromInput
+      );
       return false;
     }
 
@@ -3739,12 +3788,8 @@ const SellerDashboard = ({
 
     const activeUnsoldRemoveMemoRow = unsoldDraftRows[unsoldActiveRowIndex];
     if (hasPendingUnsoldEditorValues() && !activeUnsoldRemoveMemoRow?.isExistingUnsoldRemoveMemoRow) {
-      const result = buildUnsoldDraftRow();
-      if (result.error) {
-        openBlockingWarning(result.error);
-        return;
-      }
-      rowsToSave = [...rowsToSave, result.row];
+      openBlockingWarning('Pehle A-Add ya Enter se row confirm karo, uske baad Remove karo', [], 'Warning', focusUnsoldFromInput);
+      return;
     }
 
     if (rowsToSave.length === 0) {
@@ -4830,13 +4875,7 @@ const SellerDashboard = ({
                 setUnsoldNumber(unsoldResolvedFrom);
                 setUnsoldRangeEndNumber(unsoldResolvedTo);
                 setUnsoldMode(nextMode);
-
-                const canCommit = await validateUnsoldEditorRowBeforeCommit();
-                if (!canCommit) {
-                  return;
-                }
-
-                await addUnsoldDraftRow();
+                await handleAddUnsoldAction();
               })();
             }
           }}

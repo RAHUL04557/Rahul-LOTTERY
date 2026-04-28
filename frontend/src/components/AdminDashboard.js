@@ -3413,7 +3413,14 @@ const AdminDashboard = ({
       : [...purchaseDraftRows];
     const activeRemoveMemoRow = purchaseDraftRows[purchaseActiveRowIndex];
     if (hasPendingPurchaseSendEditorValues() && !(mode === 'remove' && activeRemoveMemoRow?.isExistingUnsoldRemoveMemoRow)) {
-      openBlockingWarning('Pehle A-Add karke row confirm karo, uske baad Save karo', [], 'Warning', focusAdminUnsoldFromInput);
+      openBlockingWarning(
+        mode === 'remove'
+          ? 'Pehle A-Add ya Enter se row confirm karo, uske baad Remove karo'
+          : 'Pehle A-Add karke row confirm karo, uske baad Save karo',
+        [],
+        'Warning',
+        focusAdminUnsoldFromInput
+      );
       return;
     }
 
@@ -4632,9 +4639,9 @@ const AdminDashboard = ({
       return;
     }
 
-    const latestRemoveMemoOption = adminUnsoldRemoveMemoOptions[0];
-    if (latestRemoveMemoOption) {
-      setPurchaseRemoveMemoNumber(latestRemoveMemoOption.memoNumber);
+    const nextNewMemoOption = adminUnsoldRemoveMemoOptions[0];
+    if (nextNewMemoOption) {
+      setPurchaseRemoveMemoNumber(nextNewMemoOption.memoNumber);
     }
   }, [activeTab, purchaseRemoveMemoNumber, adminUnsoldRemoveMemoOptions, purchaseMemoPopupOpen]);
 
@@ -5271,7 +5278,7 @@ const AdminDashboard = ({
                   return;
                 }
 
-                await addAdminUnsoldDraftRow();
+                await handleAdminUnsoldAddAction();
               })();
             }
           }}
