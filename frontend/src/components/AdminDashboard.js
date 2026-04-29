@@ -912,6 +912,10 @@ const createManualPrizeInputs = () => PRIZE_OPTIONS.reduce((accumulator, prize) 
   return accumulator;
 }, {});
 
+const sortPrizeNumbersAscending = (numbers = []) => (
+  [...numbers].sort((left, right) => Number(left) - Number(right) || String(left).localeCompare(String(right)))
+);
+
 const OCR_DIGIT_REPLACEMENTS = {
   O: '0',
   o: '0',
@@ -967,12 +971,26 @@ const IGNORED_FIVE_DIGIT_PRIZE_SCAN_NUMBERS = new Set([
   ...PRIZE_OPTIONS.map((prize) => String(prize.amountValue || '').padStart(5, '0'))
 ]);
 
-const getOcrDigitTokens = (text) => (
+const getOcrNumberTokens = (text, digitLength) => (
   String(text || '')
-    .match(/[A-Z0-9|IlOoSsBZ]{3,8}/g) || []
+    .match(/[A-Z0-9|IlOoSsBZ]{3,20}/g) || []
 )
-  .map((token) => normalizeOcrDigitToken(token))
-  .filter(Boolean);
+  .flatMap((token) => {
+    const digits = normalizeOcrDigitToken(token);
+    if (!digits) {
+      return [];
+    }
+
+    if (digits.length === digitLength) {
+      return [digits];
+    }
+
+    if (digits.length > digitLength && digits.length % digitLength === 0) {
+      return digits.match(new RegExp(`\\d{${digitLength}}`, 'g')) || [];
+    }
+
+    return [];
+  });
 
 const getOcrFirstPrizeCandidates = (text) => (
   String(text || '')
@@ -990,15 +1008,14 @@ const getOcrFirstPrizeCandidates = (text) => (
   })
   .filter(Boolean);
 
-const extractFourDigitPrizeLineBlocks = (text) => {
+const extractPrizeLineBlocks = (text, digitLength) => {
   const blocks = [];
   let currentBlock = [];
 
   String(text || '')
-    .split(/\n+/)
+    .split(/\n/)
     .forEach((line) => {
-      const digitsOnLine = getOcrDigitTokens(line)
-        .filter((digits) => digits.length === 4);
+      const digitsOnLine = getOcrNumberTokens(line, digitLength);
 
       if (digitsOnLine.length < 3) {
         if (currentBlock.length > 0) {
@@ -1016,6 +1033,52 @@ const extractFourDigitPrizeLineBlocks = (text) => {
   }
 
   return blocks;
+};
+
+const extractFourDigitPrizeLineBlocks = (text) => extractPrizeLineBlocks(text, 4);
+
+const extractPdfTextFromFile = async (file) => {
+  const pdfData = await file.arrayBuffer();
+  const pdf = await getDocument({ data: pdfData }).promise;
+  const pageTexts = [];
+
+  for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    const page = await pdf.getPage(pageNumber);
+    const textContent = await page.getTextContent();
+    const rows = [];
+
+    textContent.items
+      .map((item) => ({
+        text: String(item.str || '').trim(),
+        x: Number(item.transform?.[4] || 0),
+        y: Number(item.transform?.[5] || 0)
+      }))
+      .filter((item) => item.text)
+      .forEach((item) => {
+        let row = rows.find((candidate) => Math.abs(candidate.y - item.y) <= 3);
+        if (!row) {
+          row = { y: item.y, items: [] };
+          rows.push(row);
+        }
+        row.items.push(item);
+      });
+
+    rows.sort((left, right) => right.y - left.y);
+
+    const lines = [];
+    rows.forEach((row, index) => {
+      if (index > 0 && Math.abs(rows[index - 1].y - row.y) > 22) {
+        lines.push('');
+      }
+
+      row.items.sort((left, right) => left.x - right.x);
+      lines.push(row.items.map((item) => item.text).join(' '));
+    });
+
+    pageTexts.push(lines.join('\n'));
+  }
+
+  return pageTexts.join('\n\n');
 };
 
 const extractPrizeNumbersFromSection = (sectionText, digitLength, options = {}) => {
@@ -1040,8 +1103,7 @@ const extractPrizeNumbersFromSection = (sectionText, digitLength, options = {}) 
     const lineNumbers = String(sectionText || '')
       .split(/\n+/)
       .reduce((numbers, line) => {
-        const digitsOnLine = getOcrDigitTokens(line)
-          .filter((digits) => digits.length === digitLength);
+        const digitsOnLine = getOcrNumberTokens(line, digitLength);
 
         if (digitsOnLine.length < minimumLineNumbers) {
           return numbers;
@@ -1060,7 +1122,7 @@ const extractPrizeNumbersFromSection = (sectionText, digitLength, options = {}) 
     }
   }
 
-  const allNumbers = getOcrDigitTokens(sectionText)
+  const allNumbers = getOcrNumberTokens(sectionText, digitLength)
     .reduce((numbers, digits) => addNumbers(numbers, digits), []);
 
   return maxNumbers > 0 ? allNumbers.slice(0, maxNumbers) : allNumbers;
@@ -1112,7 +1174,7 @@ const sellerSupportsAmount = (seller, amountValue) => {
 
 const parsePrizeScanText = (ocrText) => {
   const normalizedText = String(ocrText || '').replace(/\r/g, '\n');
-  const allFiveDigitNumbers = extractPrizeNumbersFromSection(normalizedText, 5);
+  const allFiveDigitNumbers = getOcrNumberTokens(normalizedText, 5);
   const firstPrizeNumber = chooseFirstPrizeNumber(normalizedText, allFiveDigitNumbers);
   const thirdPrizeStartPatterns = [/3\s*(?:RD|R0|RO)\b/i, /THIRD/i];
   const fourthPrizeStartPatterns = [/(?:^|\n|[^A-Z0-9])(?:4|A)\s*(?:TH|IH|H)\b/i, /FOURTH/i];
@@ -1123,6 +1185,7 @@ const parsePrizeScanText = (ocrText) => {
   const fifthSection = getOcrSection(normalizedText, fifthPrizeStartPatterns, []);
   const firstPrizeSet = new Set(firstPrizeNumber ? [firstPrizeNumber] : []);
   const ignoredFiveDigitNumbers = IGNORED_FIVE_DIGIT_PRIZE_SCAN_NUMBERS;
+  const fiveDigitLineBlocks = extractPrizeLineBlocks(normalizedText, 5);
   const fourDigitLineBlocks = extractFourDigitPrizeLineBlocks(normalizedText);
   const thirdNumbers = extractPrizeNumbersFromSection(thirdSection, 4, {
     numbersPerLine: PRIZE_RESULT_COLUMNS_PER_LINE,
@@ -1139,23 +1202,30 @@ const parsePrizeScanText = (ocrText) => {
     minimumLineNumbers: 3,
     maxNumbers: PRIZE_RESULT_MAX_FIFTH_PRIZE_NUMBERS
   });
+  const secondNumbers = extractPrizeNumbersFromSection(secondSection, 5, {
+    numbersPerLine: PRIZE_RESULT_COLUMNS_PER_LINE,
+    minimumLineNumbers: 3,
+    maxNumbers: PRIZE_RESULT_MAX_SECOND_PRIZE_NUMBERS
+  }).filter((number) => !firstPrizeSet.has(number) && !ignoredFiveDigitNumbers.has(number));
+  const fallbackSecondNumbers = (fiveDigitLineBlocks[0] || [])
+    .filter((number) => !firstPrizeSet.has(number) && !ignoredFiveDigitNumbers.has(number))
+    .slice(0, PRIZE_RESULT_MAX_SECOND_PRIZE_NUMBERS);
 
   return {
     first: firstPrizeNumber ? [firstPrizeNumber] : [],
-    second: extractPrizeNumbersFromSection(secondSection, 5, {
-      numbersPerLine: PRIZE_RESULT_COLUMNS_PER_LINE,
-      minimumLineNumbers: 3,
-      maxNumbers: PRIZE_RESULT_MAX_SECOND_PRIZE_NUMBERS
-    }).filter((number) => !firstPrizeSet.has(number) && !ignoredFiveDigitNumbers.has(number)),
+    second: secondNumbers.length > 0 ? secondNumbers : fallbackSecondNumbers,
     third: thirdNumbers.length > 0
       ? thirdNumbers
       : (fourDigitLineBlocks[0] || []).slice(0, PRIZE_RESULT_MAX_STANDARD_FOUR_DIGIT_NUMBERS),
     fourth: fourthNumbers.length > 0
       ? fourthNumbers
-      : (fourDigitLineBlocks[1] || fourDigitLineBlocks[0] || []).slice(0, PRIZE_RESULT_MAX_STANDARD_FOUR_DIGIT_NUMBERS),
+      : (fourDigitLineBlocks[1] || []).slice(0, PRIZE_RESULT_MAX_STANDARD_FOUR_DIGIT_NUMBERS),
     fifth: fifthNumbers.length > 0
       ? fifthNumbers
-      : fourDigitLineBlocks.slice(2).flat().slice(0, PRIZE_RESULT_MAX_FIFTH_PRIZE_NUMBERS)
+      : (
+        (fourDigitLineBlocks.find((block) => block.length >= PRIZE_RESULT_MAX_FIFTH_PRIZE_NUMBERS) || fourDigitLineBlocks[2] || [])
+          .slice(0, PRIZE_RESULT_MAX_FIFTH_PRIZE_NUMBERS)
+      )
   };
 };
 
@@ -3729,7 +3799,7 @@ const AdminDashboard = ({
       ]);
 
       PRIZE_OPTIONS.forEach((prize) => {
-        (scannedPrizes[prize.key] || []).forEach((number) => {
+        sortPrizeNumbersAscending(scannedPrizes[prize.key] || []).forEach((number) => {
           if (number.length !== prize.digitLength || usedNumbers.has(number)) {
             skippedNumbers.push(number);
             return;
@@ -3773,6 +3843,20 @@ const AdminDashboard = ({
     let worker = null;
     try {
       const isPdf = prizeScanFile.type === 'application/pdf' || prizeScanFile.name.toLowerCase().endsWith('.pdf');
+      if (isPdf) {
+        setPrizeScanProgress('PDF text read ho raha hai...');
+        const pdfText = await extractPdfTextFromFile(prizeScanFile);
+        const pdfPrizes = parsePrizeScanText(pdfText);
+        const pdfNumberCount = Object.values(pdfPrizes).reduce((count, numbers) => count + numbers.length, 0);
+
+        if (pdfNumberCount > 0) {
+          setPrizeScanRawText(pdfText);
+          mergeScannedPrizeEntries(pdfPrizes);
+          setPrizeScanProgress('PDF text scan complete');
+          return;
+        }
+      }
+
       const imageSource = isPdf ? await renderPdfFirstPageToImage(prizeScanFile) : prizeScanFile;
       setPrizeScanProgress(isPdf ? 'PDF ka first page scan ho raha hai...' : 'Photo scan ho raha hai...');
 
@@ -4039,9 +4123,9 @@ const AdminDashboard = ({
     }
 
     const entriesToUpload = PRIZE_OPTIONS.flatMap((prize) =>
-      pendingPrizeEntries[prize.key].map((entry) => ({
+      sortPrizeNumbersAscending((pendingPrizeEntries[prize.key] || []).map((entry) => entry.winningNumber)).map((winningNumber) => ({
         prizeKey: prize.key,
-        winningNumber: entry.winningNumber
+        winningNumber
       }))
     );
 
@@ -4797,7 +4881,7 @@ const AdminDashboard = ({
   const uploadedPrizeSummary = PRIZE_OPTIONS
     .map((prize) => ({
       ...prize,
-      numbers: (uploadedPrizeResultsByKey[prize.key] || []).map((entry) => entry.winningNumber)
+      numbers: sortPrizeNumbersAscending((uploadedPrizeResultsByKey[prize.key] || []).map((entry) => entry.winningNumber))
     }))
     .filter((prize) => prize.numbers.length > 0);
   const isCurrentUploadDate = uploadResultDate === currentIndiaDateTime.date;
@@ -6247,10 +6331,12 @@ const AdminDashboard = ({
                     </div>
 
                     <div style={{ marginTop: '14px' }}>
-                      <strong>Pending Upload:</strong>
+                      <strong>Pending Upload ({pendingPrizeEntries[prize.key].length}):</strong>
                       {pendingPrizeEntries[prize.key].length > 0 ? (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginTop: '10px' }}>
-                          {pendingPrizeEntries[prize.key].map((entry) => (
+                          {[...(pendingPrizeEntries[prize.key] || [])]
+                            .sort((left, right) => Number(left.winningNumber) - Number(right.winningNumber) || String(left.winningNumber).localeCompare(String(right.winningNumber)))
+                            .map((entry) => (
                             editingPendingPrizeId === `${prize.key}:${entry.id}` ? (
                               <div
                                 key={entry.id}
@@ -6332,10 +6418,12 @@ const AdminDashboard = ({
                     </div>
 
                     <div style={{ marginTop: '14px' }}>
-                      <strong>Uploaded Final:</strong>
+                      <strong>Uploaded Final ({uploadedPrizeResultsByKey[prize.key]?.length || 0}):</strong>
                       {uploadedPrizeResultsByKey[prize.key]?.length > 0 ? (
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '10px', marginTop: '10px' }}>
-                          {uploadedPrizeResultsByKey[prize.key].map((entry) => (
+                          {[...(uploadedPrizeResultsByKey[prize.key] || [])]
+                            .sort((left, right) => Number(left.winningNumber) - Number(right.winningNumber) || String(left.winningNumber).localeCompare(String(right.winningNumber)))
+                            .map((entry) => (
                             editingUploadedResultId === entry.id ? (
                               <div
                                 key={entry.id}

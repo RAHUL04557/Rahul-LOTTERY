@@ -19,11 +19,23 @@ const resolveConnectionString = () => {
 
 const connectionString = resolveConnectionString();
 
+const parsePositiveInteger = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const poolOptions = {
+  max: parsePositiveInteger(process.env.PGPOOL_MAX, 30),
+  idleTimeoutMillis: parsePositiveInteger(process.env.PGPOOL_IDLE_TIMEOUT_MS, 30000),
+  connectionTimeoutMillis: parsePositiveInteger(process.env.PGPOOL_CONNECTION_TIMEOUT_MS, 10000),
+  ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : false
+};
+
 const pool = new Pool(
   connectionString
     ? {
         connectionString,
-        ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : false
+        ...poolOptions
       }
     : {
         host: process.env.PGHOST || 'localhost',
@@ -31,7 +43,7 @@ const pool = new Pool(
         user: process.env.PGUSER || 'postgres',
         password: process.env.PGPASSWORD || '',
         database: process.env.PGDATABASE || 'lottery_booking',
-        ssl: process.env.PGSSLMODE === 'require' ? { rejectUnauthorized: false } : false
+        ...poolOptions
       }
 );
 
@@ -147,6 +159,16 @@ const initDB = async () => {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_owner_keyword_unique
     ON users (owner_admin_id, UPPER(keyword))
     WHERE owner_admin_id IS NOT NULL AND keyword IS NOT NULL AND TRIM(keyword) <> ''
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_users_parent_id
+    ON users (parent_id)
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_users_owner_admin_id
+    ON users (owner_admin_id)
   `);
 
   await query(`
@@ -268,6 +290,11 @@ const initDB = async () => {
   `);
 
   await query(`
+    CREATE INDEX IF NOT EXISTS idx_prize_results_match_lookup
+    ON prize_results (uploaded_by, result_for_date, session_mode, purchase_category, digit_length, winning_number)
+  `);
+
+  await query(`
     CREATE TABLE IF NOT EXISTS lottery_entries (
       id SERIAL PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -359,6 +386,48 @@ const initDB = async () => {
   `);
 
   await query(`
+    CREATE INDEX IF NOT EXISTS idx_lottery_entries_user_status_date
+    ON lottery_entries (user_id, status, session_mode, booking_date, amount)
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_lottery_entries_parent_status_date
+    ON lottery_entries (sent_to_parent, status, session_mode, booking_date, amount)
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_lottery_entries_forwarded_date
+    ON lottery_entries (forwarded_by, session_mode, booking_date, status)
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_lottery_entries_purchase_stock_lookup
+    ON lottery_entries (
+      user_id,
+      entry_source,
+      status,
+      booking_date,
+      session_mode,
+      purchase_category,
+      amount,
+      box_value,
+      number
+    )
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_lottery_entries_purchase_memo_lookup
+    ON lottery_entries (
+      user_id,
+      entry_source,
+      forwarded_by,
+      memo_number,
+      booking_date,
+      status
+    )
+  `);
+
+  await query(`
     CREATE TABLE IF NOT EXISTS lottery_entry_history (
       id SERIAL PRIMARY KEY,
       entry_id INTEGER REFERENCES lottery_entries(id) ON DELETE SET NULL,
@@ -397,6 +466,11 @@ const initDB = async () => {
   `);
 
   await query(`
+    ALTER TABLE lottery_entry_history
+    ADD COLUMN IF NOT EXISTS purchase_category VARCHAR(1)
+  `);
+
+  await query(`
     UPDATE lottery_entry_history
     SET session_mode = CASE
       WHEN EXTRACT(HOUR FROM created_at) < 15 THEN 'MORNING'
@@ -409,6 +483,175 @@ const initDB = async () => {
     UPDATE lottery_entry_history
     SET booking_date = DATE(created_at)
     WHERE booking_date IS NULL
+  `);
+
+  await query(`
+    UPDATE lottery_entry_history
+    SET purchase_category = CASE
+      WHEN session_mode = 'NIGHT' THEN 'E'
+      ELSE 'M'
+    END
+    WHERE purchase_category IS NULL OR TRIM(purchase_category) = ''
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_lottery_entry_history_entry_date
+    ON lottery_entry_history (entry_id, booking_date)
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_lottery_entry_history_actor_date
+    ON lottery_entry_history (actor_user_id, booking_date, session_mode, purchase_category, action_type)
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS booking_entries (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      sent_to_admin INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      series VARCHAR(255),
+      number VARCHAR(10) NOT NULL,
+      box_value VARCHAR(20) NOT NULL,
+      amount NUMERIC(12, 2) NOT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'draft',
+      session_mode VARCHAR(20) NOT NULL DEFAULT 'MORNING',
+      purchase_category VARCHAR(1),
+      booking_date DATE NOT NULL DEFAULT CURRENT_DATE,
+      memo_number INTEGER,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      sent_at TIMESTAMP NULL
+    )
+  `);
+
+  await query(`
+    ALTER TABLE booking_entries
+    ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+  `);
+
+  await query(`
+    ALTER TABLE booking_entries
+    ADD COLUMN IF NOT EXISTS sent_to_admin INTEGER REFERENCES users(id) ON DELETE SET NULL
+  `);
+
+  await query(`
+    ALTER TABLE booking_entries
+    ADD COLUMN IF NOT EXISTS session_mode VARCHAR(20) NOT NULL DEFAULT 'MORNING'
+  `);
+
+  await query(`
+    ALTER TABLE booking_entries
+    ADD COLUMN IF NOT EXISTS purchase_category VARCHAR(1)
+  `);
+
+  await query(`
+    ALTER TABLE booking_entries
+    ADD COLUMN IF NOT EXISTS status VARCHAR(20) NOT NULL DEFAULT 'draft'
+  `);
+
+  await query(`
+    ALTER TABLE booking_entries
+    ADD COLUMN IF NOT EXISTS sent_at TIMESTAMP NULL
+  `);
+
+  await query(`
+    ALTER TABLE booking_entries
+    ADD COLUMN IF NOT EXISTS booking_date DATE NOT NULL DEFAULT CURRENT_DATE
+  `);
+
+  await query(`
+    ALTER TABLE booking_entries
+    ADD COLUMN IF NOT EXISTS memo_number INTEGER
+  `);
+
+  await query(`
+    UPDATE booking_entries
+    SET purchase_category = CASE
+      WHEN session_mode = 'NIGHT' THEN 'E'
+      ELSE 'M'
+    END
+    WHERE purchase_category IS NULL OR TRIM(purchase_category) = ''
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_booking_entries_user_status_date
+    ON booking_entries (user_id, status, booking_date, session_mode, purchase_category, amount)
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_booking_entries_admin_status_date
+    ON booking_entries (sent_to_admin, status, booking_date, session_mode, purchase_category, amount)
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_booking_entries_memo_lookup
+    ON booking_entries (user_id, memo_number)
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_booking_entries_bill_lookup
+    ON booking_entries (user_id, booking_date, session_mode, purchase_category, status, amount, box_value)
+  `);
+
+  await query(`
+    CREATE TABLE IF NOT EXISTS booking_entry_history (
+      id SERIAL PRIMARY KEY,
+      entry_id INTEGER REFERENCES booking_entries(id) ON DELETE SET NULL,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      username VARCHAR(255) NOT NULL,
+      actor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      actor_username VARCHAR(255) NOT NULL,
+      to_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      to_username VARCHAR(255),
+      action_type VARCHAR(50) NOT NULL,
+      number VARCHAR(10) NOT NULL,
+      box_value VARCHAR(20) NOT NULL,
+      amount NUMERIC(12, 2) NOT NULL,
+      session_mode VARCHAR(20) NOT NULL DEFAULT 'MORNING',
+      purchase_category VARCHAR(1),
+      booking_date DATE NOT NULL DEFAULT CURRENT_DATE,
+      memo_number INTEGER,
+      created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  await query(`
+    ALTER TABLE booking_entry_history
+    ADD COLUMN IF NOT EXISTS purchase_category VARCHAR(1)
+  `);
+
+  await query(`
+    ALTER TABLE booking_entry_history
+    ADD COLUMN IF NOT EXISTS session_mode VARCHAR(20) NOT NULL DEFAULT 'MORNING'
+  `);
+
+  await query(`
+    ALTER TABLE booking_entry_history
+    ADD COLUMN IF NOT EXISTS booking_date DATE NOT NULL DEFAULT CURRENT_DATE
+  `);
+
+  await query(`
+    ALTER TABLE booking_entry_history
+    ADD COLUMN IF NOT EXISTS memo_number INTEGER
+  `);
+
+  await query(`
+    UPDATE booking_entry_history
+    SET purchase_category = CASE
+      WHEN session_mode = 'NIGHT' THEN 'E'
+      ELSE 'M'
+    END
+    WHERE purchase_category IS NULL OR TRIM(purchase_category) = ''
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_booking_entry_history_actor_date
+    ON booking_entry_history (actor_user_id, booking_date, session_mode, purchase_category, action_type)
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_booking_entry_history_entry_date
+    ON booking_entry_history (entry_id, booking_date)
   `);
 };
 
