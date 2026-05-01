@@ -2,6 +2,10 @@
   "name": "lottery-booking-frontend",
   "version": "0.1.0",
   "private": true,
+  "description": "Lottery booking desktop client",
+  "author": "Rahul Sarkar",
+  "homepage": "./",
+  "main": "electron/main.js",
   "dependencies": {
     "axios": "^1.4.0",
     "pdfjs-dist": "^3.11.174",
@@ -14,6 +18,11 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
+    "electron": "electron .",
+    "electron:dev": "concurrently -k \"npm:start\" \"npm:electron:wait\"",
+    "electron:wait": "wait-on http://localhost:3000 && electron .",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder --win",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
   },
@@ -33,5 +42,40 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.1",
+    "electron": "^41.4.0",
+    "electron-builder": "^26.8.1",
+    "wait-on": "^9.0.5"
+  },
+  "build": {
+    "extends": null,
+    "appId": "com.lottery.booking",
+    "productName": "Lottery Booking",
+    "asar": true,
+    "files": [
+      "build/**/*",
+      "electron/**/*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
+    }
   }
 }

@@ -4,6 +4,7 @@ node_modules/
 .DS_Store
 dist/
 build/
+release/
 *.log
 npm-debug.log*
 yarn-error.log*
