@@ -1,9 +1,12 @@
 {
   "name": "lottery-booking-frontend",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "private": true,
+  "homepage": ".",
+  "main": "electron/main.js",
   "dependencies": {
     "axios": "^1.4.0",
+    "electron-updater": "^6.8.3",
     "pdfjs-dist": "^3.11.174",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -14,8 +17,54 @@
   "scripts": {
     "start": "react-scripts start",
     "build": "react-scripts build",
+    "electron": "electron electron/main.js",
+    "electron:dev": "set ELECTRON_START_URL=http://localhost:3000&& electron electron/main.js",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder",
     "test": "react-scripts test",
     "eject": "react-scripts eject"
+  },
+  "devDependencies": {
+    "electron": "41.5.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "extends": null,
+    "appId": "com.lottery.booking",
+    "productName": "Lottery Booking",
+    "asar": true,
+    "files": [
+      "build/**/*",
+      "electron/**/*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "artifactName": "Lottery-Booking-Setup-${version}.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "RAHUL04557",
+        "repo": "Rahul-LOTTERY"
+      }
+    ],
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        "nsis"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
+    }
   },
   "eslintConfig": {
     "extends": [
