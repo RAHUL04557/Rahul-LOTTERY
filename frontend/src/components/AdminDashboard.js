@@ -403,7 +403,11 @@ const resolveRangeEndValue = (fromValue, toValue) => {
     resolvedToNumber += suffixBase;
   }
 
-  return String(resolvedToNumber);
+  if (resolvedToNumber > 99999) {
+    return '';
+  }
+
+  return String(resolvedToNumber).padStart(5, '0');
 };
 
 const getRetroRangeMetrics = (codeValue, fallbackSessionMode, fromValue, toValue, fallbackPurchaseCategory = '') => {
