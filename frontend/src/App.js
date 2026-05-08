@@ -9,6 +9,8 @@ import { authService } from './services/api';
 import { bootstrapLocalData, flushSyncQueue } from './services/localSync';
 import './styles/index.css';
 
+const isNetworkError = (error) => !error?.response;
+
 const canUseEntryAmount = (user, amount) => {
   if (!user || user.role === 'admin') {
     return true;
@@ -33,12 +35,32 @@ function App() {
   useEffect(() => {
     const restoreSession = async () => {
       const savedToken = localStorage.getItem('token');
+      const savedUser = localStorage.getItem('user');
       const savedEntryConfig = localStorage.getItem('entryConfig');
 
       if (!savedToken) {
         setLoading(false);
         return;
       }
+
+      const restoreEntryConfig = (currentUser) => {
+        if (!savedEntryConfig) {
+          return;
+        }
+
+        try {
+          const parsedEntryConfig = JSON.parse(savedEntryConfig);
+          if (canUseEntryAmount(currentUser, parsedEntryConfig.amount)) {
+            setEntryConfig(parsedEntryConfig);
+          } else {
+            localStorage.removeItem('entryConfig');
+            setEntryConfig(null);
+          }
+        } catch (error) {
+          localStorage.removeItem('entryConfig');
+          setEntryConfig(null);
+        }
+      };
 
       try {
         const response = await authService.getCurrentUser();
@@ -49,21 +71,19 @@ function App() {
           console.warn('Local bootstrap failed:', syncError.message);
         });
 
-        if (savedEntryConfig) {
+        restoreEntryConfig(currentUser);
+      } catch (error) {
+        if (isNetworkError(error) && savedUser) {
           try {
-            const parsedEntryConfig = JSON.parse(savedEntryConfig);
-            if (canUseEntryAmount(currentUser, parsedEntryConfig.amount)) {
-              setEntryConfig(parsedEntryConfig);
-            } else {
-              localStorage.removeItem('entryConfig');
-              setEntryConfig(null);
-            }
-          } catch (error) {
-            localStorage.removeItem('entryConfig');
-            setEntryConfig(null);
+            const cachedUser = JSON.parse(savedUser);
+            setUser(cachedUser);
+            restoreEntryConfig(cachedUser);
+            return;
+          } catch (parseError) {
+            localStorage.removeItem('user');
           }
         }
-      } catch (error) {
+
         localStorage.removeItem('token');
         localStorage.removeItem('user');
         localStorage.removeItem('entryConfig');
