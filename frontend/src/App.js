@@ -6,6 +6,7 @@ import AdminDashboard from './components/AdminDashboard';
 import SuperAdminDashboard from './components/SuperAdminDashboard';
 import EntrySelectionScreen from './components/EntrySelectionScreen';
 import { authService } from './services/api';
+import { bootstrapLocalData, flushSyncQueue } from './services/localSync';
 import './styles/index.css';
 
 const canUseEntryAmount = (user, amount) => {
@@ -44,6 +45,9 @@ function App() {
         const currentUser = response.data;
         setUser(currentUser);
         localStorage.setItem('user', JSON.stringify(currentUser));
+        await bootstrapLocalData().catch((syncError) => {
+          console.warn('Local bootstrap failed:', syncError.message);
+        });
 
         if (savedEntryConfig) {
           try {
@@ -72,6 +76,37 @@ function App() {
 
     restoreSession();
   }, []);
+
+  useEffect(() => {
+    if (!user) {
+      return undefined;
+    }
+
+    flushSyncQueue().catch((syncError) => {
+      console.warn('Offline queue sync failed:', syncError.message);
+    });
+
+    const intervalId = window.setInterval(() => {
+      flushSyncQueue().catch((syncError) => {
+        console.warn('Offline queue sync failed:', syncError.message);
+      });
+    }, 30000);
+
+    const handleOnline = () => {
+      bootstrapLocalData()
+        .then(() => flushSyncQueue())
+        .catch((syncError) => {
+          console.warn('Automatic sync failed:', syncError.message);
+        });
+    };
+
+    window.addEventListener('online', handleOnline);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [user]);
 
   const handleLoginSuccess = (userData) => {
     setUser(userData);

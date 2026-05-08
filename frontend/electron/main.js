@@ -1,6 +1,6 @@
-const { app, BrowserWindow, Menu, dialog, shell } = require('electron');
-const { autoUpdater } = require('electron-updater');
+const { app, BrowserWindow, Menu, dialog, shell, ipcMain } = require('electron');
 const path = require('path');
+const { initLocalDb, setupLocalDbIpc } = require('./localDb');
 
 const DEV_SERVER_URL = process.env.ELECTRON_START_URL || 'http://localhost:3000';
 
@@ -14,9 +14,10 @@ function createWindow() {
     autoHideMenuBar: true,
     backgroundColor: '#ffffff',
     webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: false
     }
   });
 
@@ -41,6 +42,7 @@ function setupAutoUpdates(mainWindow) {
     return;
   }
 
+  const { autoUpdater } = require('electron-updater');
   autoUpdater.autoDownload = false;
 
   autoUpdater.on('update-available', async (info) => {
@@ -85,6 +87,8 @@ function setupAutoUpdates(mainWindow) {
 }
 
 app.whenReady().then(() => {
+  initLocalDb();
+  setupLocalDbIpc(ipcMain);
   const mainWindow = createWindow();
   setupAutoUpdates(mainWindow);
 });

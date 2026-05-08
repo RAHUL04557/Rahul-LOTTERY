@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { lotteryService, priceService, userService } from '../services/api';
 import UserTreeView from './UserTreeView';
 import EntriesTableView from './EntriesTableView';
@@ -10,6 +10,7 @@ import SearchableSellerSelect from './SearchableSellerSelect';
 import { buildBillAmountSummariesWithPrize, buildBillData, buildBillSummaryWithPrize, formatDisplayDate, formatDisplayDateTime, formatSignedRupees, getAllowedAmountsLabel, groupTransferHistoryByActor, openTransferBill } from '../utils/transferBill';
 import { groupConsecutiveNumberRows, sortRowsForConsecutiveNumbers } from '../utils/numberRanges';
 import { useFunctionShortcuts } from '../utils/functionShortcuts';
+import { buildDraftStorageKey, clearDraftRows, loadDraftRows, saveDraftRows } from '../utils/localDraftStorage';
 import '../styles/SellerDashboard.css';
 
 const getTodayDateValue = () => {
@@ -910,6 +911,20 @@ const SellerDashboard = ({
   const [exitConfirmSelected, setExitConfirmSelected] = useState('no');
   const [exitReadyFromFirstControl, setExitReadyFromFirstControl] = useState(false);
   const blockingWarningActionRef = useRef(null);
+  const sellerLocalDraftKey = buildDraftStorageKey([
+    'seller',
+    user?.id,
+    activeTab,
+    activeTab === 'purchase-send' ? purchaseSendSellerId : unsoldPartyId,
+    bookingDate,
+    sessionMode,
+    activePurchaseCategory,
+    amount
+  ]);
+  const sellerPurchaseDraftRestoreKeyRef = useRef('');
+  const sellerUnsoldDraftRestoreKeyRef = useRef('');
+  const sellerPurchaseSkipSaveKeyRef = useRef('');
+  const sellerUnsoldSkipSaveKeyRef = useRef('');
 
   const clearBlockingWarning = () => {
     const action = blockingWarningActionRef.current;
@@ -1520,6 +1535,84 @@ const SellerDashboard = ({
   useEffect(() => {
     setHistoryAmountFilter(initialBillAmount || initialAmount || '7');
   }, [initialBillAmount, initialAmount]);
+
+  useEffect(() => {
+    if (activeTab !== 'purchase-send') {
+      return;
+    }
+
+    if (sellerPurchaseDraftRestoreKeyRef.current === sellerLocalDraftKey) {
+      return;
+    }
+
+    let cancelled = false;
+    sellerPurchaseDraftRestoreKeyRef.current = sellerLocalDraftKey;
+    sellerPurchaseSkipSaveKeyRef.current = sellerLocalDraftKey;
+    loadDraftRows(sellerLocalDraftKey).then((savedRows) => {
+      if (cancelled) {
+        return;
+      }
+      setRetroDraftRows(savedRows);
+      setRetroActiveRowIndex(savedRows.length > 0 ? savedRows.length : 0);
+      setRetroEditorVisible(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, sellerLocalDraftKey]);
+
+  useEffect(() => {
+    if (activeTab !== 'purchase-send') {
+      return;
+    }
+
+    if (sellerPurchaseSkipSaveKeyRef.current === sellerLocalDraftKey) {
+      sellerPurchaseSkipSaveKeyRef.current = '';
+      return;
+    }
+
+    saveDraftRows(sellerLocalDraftKey, retroDraftRows);
+  }, [activeTab, sellerLocalDraftKey, retroDraftRows]);
+
+  useEffect(() => {
+    if (!['unsold', 'unsold-remove'].includes(activeTab)) {
+      return;
+    }
+
+    if (sellerUnsoldDraftRestoreKeyRef.current === sellerLocalDraftKey) {
+      return;
+    }
+
+    let cancelled = false;
+    sellerUnsoldDraftRestoreKeyRef.current = sellerLocalDraftKey;
+    sellerUnsoldSkipSaveKeyRef.current = sellerLocalDraftKey;
+    loadDraftRows(sellerLocalDraftKey).then((savedRows) => {
+      if (cancelled) {
+        return;
+      }
+      setUnsoldDraftRows(savedRows);
+      setUnsoldActiveRowIndex(savedRows.length > 0 ? savedRows.length : 0);
+      setUnsoldEditorVisible(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, sellerLocalDraftKey]);
+
+  useEffect(() => {
+    if (!['unsold', 'unsold-remove'].includes(activeTab)) {
+      return;
+    }
+
+    if (sellerUnsoldSkipSaveKeyRef.current === sellerLocalDraftKey) {
+      sellerUnsoldSkipSaveKeyRef.current = '';
+      return;
+    }
+
+    saveDraftRows(sellerLocalDraftKey, unsoldDraftRows);
+  }, [activeTab, sellerLocalDraftKey, unsoldDraftRows]);
 
   const loadTree = async () => {
     try {
@@ -2449,7 +2542,12 @@ const SellerDashboard = ({
     window.requestAnimationFrame(() => purchaseCodeInputRef.current?.focus());
   };
 
-  const unsoldMemoSummaries = buildCurrentMemoSummaries(unsoldMemoEntries);
+  const editableUnsoldMemoEntries = useMemo(() => (
+    unsoldMemoEntries.filter((entry) => (
+      String(entry.status || '').trim().toLowerCase() === 'unsold_saved'
+    ))
+  ), [unsoldMemoEntries]);
+  const unsoldMemoSummaries = buildCurrentMemoSummaries(editableUnsoldMemoEntries);
   const nextUnsoldMemoNumber = unsoldMemoSummaries.length > 0
     ? Math.max(...unsoldMemoSummaries.map((memo) => memo.memoNumber)) + 1
     : 1;
@@ -2526,9 +2624,10 @@ const SellerDashboard = ({
     setUnsoldMemoPopupOpen(true);
   };
 
-  const hydrateUnsoldDraftRowsForMemo = (memoNumber, sourceEntries = unsoldMemoEntries) => {
+  const hydrateUnsoldDraftRowsForMemo = (memoNumber, sourceEntries = editableUnsoldMemoEntries) => {
     const selectedEntries = sourceEntries.filter((entry) => (
       Number(entry.memoNumber) === Number(memoNumber)
+      && String(entry.status || '').trim().toLowerCase() === 'unsold_saved'
     ));
     const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, amount, {
       existingUnsoldMemo: true,
@@ -2662,14 +2761,14 @@ const SellerDashboard = ({
       return;
     }
 
-    const selectedMemoExists = unsoldMemoEntries.some((entry) => (
+    const selectedMemoExists = editableUnsoldMemoEntries.some((entry) => (
       Number(entry.memoNumber) === Number(unsoldMemoNumber)
     ));
 
     if (selectedMemoExists) {
-      hydrateUnsoldDraftRowsForMemo(unsoldMemoNumber, unsoldMemoEntries);
+      hydrateUnsoldDraftRowsForMemo(unsoldMemoNumber, editableUnsoldMemoEntries);
     }
-  }, [activeTab, unsoldMemoEntries, unsoldMemoNumber, unsoldMemoPopupOpen]);
+  }, [activeTab, editableUnsoldMemoEntries, unsoldMemoNumber, unsoldMemoPopupOpen]);
 
   useEffect(() => {
     if (activeTab !== 'unsold-remove' || unsoldMemoPopupOpen) {
@@ -3072,6 +3171,7 @@ const SellerDashboard = ({
       setPurchaseSendMemoNumber(nextMemoNumber);
       setPurchaseSendMemoSelectionIndex(0);
       setPurchaseSendMemoPopupOpen(false);
+      clearDraftRows(sellerLocalDraftKey);
       setRetroDraftRows([]);
       setRetroActiveRowIndex(0);
       setRetroEditorVisible(true);
@@ -3828,6 +3928,7 @@ const SellerDashboard = ({
       }
 
       setSuccess(`Unsold removed successfully in memo ${effectiveMemoNumber}`);
+      clearDraftRows(sellerLocalDraftKey);
       setUnsoldMemoNumber(null);
       setUnsoldRemoveMemoNumber(effectiveMemoNumber + 1);
       setUnsoldMemoSelectionIndex(0);
@@ -3942,9 +4043,11 @@ const SellerDashboard = ({
       await refreshUnsoldDerivedViews();
       if (editingExistingUnsoldMemo && rowsToSave.length > 0) {
         setUnsoldMemoNumber(effectiveMemoNumber);
+        clearDraftRows(sellerLocalDraftKey);
         hydrateUnsoldDraftRowsForMemo(effectiveMemoNumber, refreshedUnsoldEntries);
         focusActiveSellerSelect();
       } else {
+        clearDraftRows(sellerLocalDraftKey);
         setUnsoldMemoNumber(effectiveMemoNumber + 1);
         setUnsoldDraftRows([]);
         setUnsoldActiveRowIndex(0);

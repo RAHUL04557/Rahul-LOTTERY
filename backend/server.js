@@ -10,6 +10,7 @@ const authRoutes = require('./routes/authRoutes');
 const userRoutes = require('./routes/userRoutes');
 const lotteryRoutes = require('./routes/lotteryRoutes');
 const priceRoutes = require('./routes/priceRoutes');
+const syncRoutes = require('./routes/syncRoutes');
 
 const app = express();
 
@@ -66,6 +67,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/lottery', lotteryRoutes);
 app.use('/api/prices', priceRoutes);
+app.use('/api/sync', syncRoutes);
 
 app.use((err, req, res, next) => {
   console.error('Error:', err.message);

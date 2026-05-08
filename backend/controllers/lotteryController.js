@@ -3498,6 +3498,27 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
 
     await client.query('BEGIN');
 
+    const lockedMemoResult = await client.query(
+      `SELECT 1
+       FROM lottery_entries
+       WHERE user_id = $1
+         AND entry_source = $2
+         AND forwarded_by = $3
+         AND memo_number = $4
+         AND booking_date = $5::date
+         AND session_mode = $6
+         AND purchase_category = $7
+         AND amount = $8::numeric
+         AND LOWER(TRIM(status)) IN ('${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
+       LIMIT 1`,
+      [targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount]
+    );
+
+    if (lockedMemoResult.rows.length > 0) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ message: 'Sent/accepted unsold memo update nahi ho sakta' });
+    }
+
     const existingMemoResult = await client.query(
       `SELECT *
        FROM lottery_entries
@@ -3509,7 +3530,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
          AND session_mode = $6
          AND purchase_category = $7
          AND amount = $8::numeric
-         AND LOWER(TRIM(status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
+         AND LOWER(TRIM(status)) = '${UNSOLD_LOCAL_STATUS}'
        ORDER BY number ASC`,
       [targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount]
     );
@@ -3905,7 +3926,8 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
         ? `Unsold admin ko send ho gaya aur auto accepted ho gaya`
         : `Unsold ${parentUser?.username || 'parent'} ko send ho gaya`,
       entriesSent: updatedResult.rows.length,
-      autoAccepted: targetStatus === UNSOLD_ACCEPTED_STATUS
+      autoAccepted: targetStatus === UNSOLD_ACCEPTED_STATUS,
+      entries: updatedResult.rows.map(mapLotteryEntry)
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });

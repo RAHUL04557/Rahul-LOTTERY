@@ -13,6 +13,7 @@ import SearchableSellerSelect from './SearchableSellerSelect';
 import { buildBillAmountSummariesWithPrize, buildBillData, buildBillSummaryWithPrize, formatDisplayDate, formatDisplayDateTime, formatSignedRupees, getAllowedAmountsLabel, getNormalizedPrizeBaseAmount, getNormalizedPrizeCalculatedAmount, groupTransferHistoryByActor, openTransferBill, summarizeTransferHistory } from '../utils/transferBill';
 import { groupConsecutiveNumberRows, sortRowsForConsecutiveNumbers } from '../utils/numberRanges';
 import { useFunctionShortcuts } from '../utils/functionShortcuts';
+import { buildDraftStorageKey, clearDraftRows, loadDraftRows, saveDraftRows } from '../utils/localDraftStorage';
 import '../styles/AdminDashboard.css';
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -1442,6 +1443,18 @@ const AdminDashboard = ({
   const saveConfirmActionRef = useRef(null);
   const saveConfirmFocusRef = useRef(null);
   const blockingWarningActionRef = useRef(null);
+  const adminLocalDraftKey = buildDraftStorageKey([
+    'admin',
+    user?.id,
+    activeTab,
+    purchaseSellerId,
+    purchaseBookingDate,
+    purchaseSessionMode,
+    purchaseCategory,
+    purchaseAmount
+  ]);
+  const adminPurchaseDraftRestoreKeyRef = useRef('');
+  const adminPurchaseSkipSaveKeyRef = useRef('');
   const clearBlockingWarning = () => {
     const action = blockingWarningActionRef.current;
     blockingWarningActionRef.current = null;
@@ -1649,6 +1662,45 @@ const AdminDashboard = ({
       setTraceAmount(initialAmount);
     }
   }, [initialAmount]);
+
+  useEffect(() => {
+    if (!['purchase-send', 'unsold', 'unsold-remove'].includes(activeTab)) {
+      return;
+    }
+
+    if (adminPurchaseDraftRestoreKeyRef.current === adminLocalDraftKey) {
+      return;
+    }
+
+    let cancelled = false;
+    adminPurchaseDraftRestoreKeyRef.current = adminLocalDraftKey;
+    adminPurchaseSkipSaveKeyRef.current = adminLocalDraftKey;
+    loadDraftRows(adminLocalDraftKey).then((savedRows) => {
+      if (cancelled) {
+        return;
+      }
+      setPurchaseDraftRows(savedRows);
+      setPurchaseActiveRowIndex(savedRows.length > 0 ? savedRows.length : 0);
+      setPurchaseEditorVisible(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, adminLocalDraftKey]);
+
+  useEffect(() => {
+    if (!['purchase-send', 'unsold', 'unsold-remove'].includes(activeTab)) {
+      return;
+    }
+
+    if (adminPurchaseSkipSaveKeyRef.current === adminLocalDraftKey) {
+      adminPurchaseSkipSaveKeyRef.current = '';
+      return;
+    }
+
+    saveDraftRows(adminLocalDraftKey, purchaseDraftRows);
+  }, [activeTab, adminLocalDraftKey, purchaseDraftRows]);
 
   useEffect(() => {
     setExitReadyFromFirstControl(false);
@@ -3192,6 +3244,7 @@ const AdminDashboard = ({
       if (!isEditingExistingPurchaseMemo) {
         setPurchaseMemoNumber(null);
         setPurchaseMemoSelectionIndex(0);
+        clearDraftRows(adminLocalDraftKey);
         setPurchaseDraftRows([]);
         setPurchaseActiveRowIndex(0);
         setPurchaseEditorVisible(true);
@@ -3199,6 +3252,7 @@ const AdminDashboard = ({
       } else if (rowsToSave.length > 0) {
         setPurchaseMemoNumber(null);
         setPurchaseMemoSelectionIndex(0);
+        clearDraftRows(adminLocalDraftKey);
         setPurchaseDraftRows([]);
         setPurchaseActiveRowIndex(0);
         setPurchaseEditorVisible(true);
@@ -3206,6 +3260,7 @@ const AdminDashboard = ({
       } else if (rowsToSave.length === 0) {
         setPurchaseMemoNumber(null);
         setPurchaseMemoSelectionIndex(0);
+        clearDraftRows(adminLocalDraftKey);
         setPurchaseDraftRows([]);
         setPurchaseActiveRowIndex(0);
         setPurchaseEditorVisible(true);
@@ -3659,6 +3714,7 @@ const AdminDashboard = ({
       }
       setPurchaseMemoSelectionIndex(0);
       setPurchaseMemoPopupOpen(false);
+      clearDraftRows(adminLocalDraftKey);
       setPurchaseDraftRows([]);
       setPurchaseActiveRowIndex(0);
       setPurchaseEditorVisible(true);

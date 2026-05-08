@@ -1,0 +1,13 @@
+{
+  "name": "lottery-booking",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "start": "npm --prefix frontend start",
+    "build": "npm --prefix frontend run build",
+    "electron": "npm --prefix frontend run electron",
+    "electron:dev": "npm --prefix frontend run electron:dev",
+    "pack": "npm --prefix frontend run pack",
+    "dist": "npm --prefix frontend run dist"
+  }
+}
