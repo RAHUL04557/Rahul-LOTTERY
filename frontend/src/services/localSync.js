@@ -28,6 +28,9 @@ export const bootstrapLocalData = async () => {
   const savedPrizeResult = localDb.upsertPrizeResults
     ? await localDb.upsertPrizeResults(prizeResults)
     : { saved: 0 };
+  const savedUsersResult = localDb.upsertUsers
+    ? await localDb.upsertUsers(users)
+    : { saved: 0 };
 
   if (localDb.setMetadata) {
     await localDb.setMetadata('lastBootstrapAt', response.data?.serverTime || new Date().toISOString());
@@ -39,7 +42,7 @@ export const bootstrapLocalData = async () => {
     skipped: false,
     saved: savedResult?.saved || purchases.length,
     prizeResults: savedPrizeResult?.saved || prizeResults.length,
-    users: users.length
+    users: savedUsersResult?.saved || users.length
   };
 };
 
@@ -60,12 +63,30 @@ export const flushSyncQueue = async () => {
   for (const item of syncItems) {
     const payload = item.payload || {};
     try {
-      if (payload.method === 'POST') {
-        const response = await api.post(payload.url, payload.body || {});
+      if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(String(payload.method || '').toUpperCase())) {
+        const response = await api.request({
+          method: payload.method,
+          url: payload.url,
+          data: payload.body || {},
+          params: payload.params || undefined
+        });
         const responseEntries = Array.isArray(response.data?.entries) ? response.data.entries : [];
+        const responseResults = Array.isArray(response.data?.results) ? response.data.results : [];
+        const responseUsers = [
+          ...(response.data?.seller ? [response.data.seller] : []),
+          ...(Array.isArray(response.data?.users) ? response.data.users : [])
+        ];
 
         if (responseEntries.length > 0 && localDb.upsertPurchases) {
           await localDb.upsertPurchases(responseEntries);
+        }
+
+        if (responseResults.length > 0 && localDb.upsertPrizeResults) {
+          await localDb.upsertPrizeResults(responseResults);
+        }
+
+        if (responseUsers.length > 0 && localDb.upsertUsers) {
+          await localDb.upsertUsers(responseUsers);
         }
       } else {
         throw new Error(`Unsupported offline sync method: ${payload.method || 'UNKNOWN'}`);

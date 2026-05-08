@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { lotteryService, priceService, userService } from '../services/api';
+import { billCacheService, lotteryService, priceService, userService } from '../services/api';
 import UserTreeView from './UserTreeView';
 import EntriesTableView from './EntriesTableView';
 import PasswordSettingsMenu from './PasswordSettingsMenu';
@@ -5063,7 +5063,26 @@ const SellerDashboard = ({
   const stockTransferTotalPieces = stockTransferEntries.reduce((sum, entry) => sum + Number(entry.sem || 0), 0);
   const stockTransferTotalAmount = stockTransferEntries.reduce((sum, entry) => sum + Number(entry.price || 0), 0);
 
-  const generateBill = () => {
+  const openCachedGeneratedBill = async () => {
+    const cachedBill = await billCacheService.loadGeneratedBill({
+      filters: {
+        ...getBillFilters(),
+        seller: historySellerFilter
+      }
+    });
+    const bill = cachedBill?.bill;
+
+    if (!bill) {
+      return false;
+    }
+
+    return openTransferBill({
+      ...bill,
+      title: bill.title || 'Generate Bill'
+    });
+  };
+
+  const generateBill = async () => {
     setError('');
 
     if (historyFromDate > historyToDate) {
@@ -5072,16 +5091,22 @@ const SellerDashboard = ({
     }
 
     if (transferHistory.length === 0) {
+      if (await openCachedGeneratedBill()) {
+        return;
+      }
       setError('No send record found for bill generation');
       return;
     }
 
     if (billTransferHistory.length === 0) {
+      if (await openCachedGeneratedBill()) {
+        return;
+      }
       setError('No bill data found for selected seller');
       return;
     }
 
-    const didOpen = openTransferBill({
+    const generatedBill = {
       groupedRecords: billTransferHistoryByActor,
       groupedSummaries: billGroupedSummaries,
       groupedAmountSummaries: billGroupedAmountSummaries,
@@ -5092,11 +5117,23 @@ const SellerDashboard = ({
       periodLabel: historyPeriodLabel,
       shiftLabel: `${historyShift === 'ALL' ? 'ALL' : (historyShift || 'All')} | Amount ${historyAmountFilter || '7'}${historySellerFilter ? ` | Seller: ${historySellerFilter}` : ''}`,
       title: 'Generate Bill'
-    });
+    };
+    const didOpen = openTransferBill(generatedBill);
 
     if (!didOpen) {
       setError('Allow pop-up to generate bill');
+      return;
     }
+
+    await billCacheService.saveGeneratedBill({
+      filters: {
+        ...getBillFilters(),
+        seller: historySellerFilter
+      },
+      bill: generatedBill
+    }).catch((error) => {
+      console.warn('Generated bill local save failed:', error.message);
+    });
   };
 
   const handleTraceSearch = async () => {

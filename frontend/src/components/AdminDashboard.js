@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createWorker } from 'tesseract.js';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/build/pdf';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.entry';
-import { lotteryService, priceService, userService } from '../services/api';
+import { billCacheService, lotteryService, priceService, userService } from '../services/api';
 import UserTreeView from './UserTreeView';
 import EntriesTableView from './EntriesTableView';
 import PasswordSettingsMenu from './PasswordSettingsMenu';
@@ -5970,7 +5970,26 @@ const AdminDashboard = ({
     );
   };
 
-  const generateBill = () => {
+  const openCachedGeneratedBill = async () => {
+    const cachedBill = await billCacheService.loadGeneratedBill({
+      filters: {
+        ...getBillFilters(),
+        seller: historySellerFilter
+      }
+    });
+    const bill = cachedBill?.bill;
+
+    if (!bill) {
+      return false;
+    }
+
+    return openTransferBill({
+      ...bill,
+      title: bill.title || 'Generate Bill'
+    });
+  };
+
+  const generateBill = async () => {
     setError('');
 
     if (historyFromDate > historyToDate) {
@@ -5979,16 +5998,22 @@ const AdminDashboard = ({
     }
 
     if (purchaseBillRows.length === 0) {
+      if (await openCachedGeneratedBill()) {
+        return;
+      }
       setError('No bill data found');
       return;
     }
 
     if (billTransferHistory.length === 0) {
+      if (await openCachedGeneratedBill()) {
+        return;
+      }
       setError('No bill data found for selected seller');
       return;
     }
 
-    const didOpen = openTransferBill({
+    const generatedBill = {
       groupedRecords: adminBillVisibleGroups,
       groupedSummaries: adminVisibleGroupedSummaries,
       groupedAmountSummaries: adminVisibleGroupedAmountSummaries,
@@ -5998,11 +6023,23 @@ const AdminDashboard = ({
       periodLabel: historyPeriodLabel,
       shiftLabel: `${historyShift === 'ALL' ? 'ALL' : (historyShift || 'All')} | Amount ${historyAmountFilter || '7'}${historySellerFilter ? ` | Seller: ${historySellerFilter}` : ''}`,
       title: 'Generate Bill'
-    });
+    };
+    const didOpen = openTransferBill(generatedBill);
 
     if (!didOpen) {
       setError('Allow pop-up to generate bill');
+      return;
     }
+
+    await billCacheService.saveGeneratedBill({
+      filters: {
+        ...getBillFilters(),
+        seller: historySellerFilter
+      },
+      bill: generatedBill
+    }).catch((error) => {
+      console.warn('Generated bill local save failed:', error.message);
+    });
   };
 
   const handleTraceSearch = async () => {
@@ -6033,7 +6070,8 @@ const AdminDashboard = ({
           }
         }
       );
-      setTraceResults(response.data.map(mapTraceRecord));
+      const mappedResults = response.data.map(mapTraceRecord);
+      setTraceResults(mappedResults);
     } catch (err) {
       setError(err.response?.data?.message || 'Error tracing number');
       setTraceResults([]);
@@ -6053,8 +6091,10 @@ const AdminDashboard = ({
         sellerId: prizeTrackerSellerId,
         soldStatus: prizeTrackerSoldStatus || 'ALL'
       });
-      setPrizeTrackerResults(response.data?.rows || []);
-      setPrizeTrackerTotalPrize(Number(response.data?.totalPrize || 0));
+      const rows = response.data?.rows || [];
+      const totalPrize = Number(response.data?.totalPrize || 0);
+      setPrizeTrackerResults(rows);
+      setPrizeTrackerTotalPrize(totalPrize);
       setPrizeTrackerSearchPerformed(true);
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading prize tracker');

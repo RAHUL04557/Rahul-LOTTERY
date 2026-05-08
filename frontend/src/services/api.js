@@ -44,13 +44,15 @@ const queueOfflineOperation = async (operationType, payload) => {
     payload
   });
 
+  let localMutationResult = null;
   if (localDb.applyOfflinePurchaseMutation) {
-    await localDb.applyOfflinePurchaseMutation({
+    localMutationResult = await localDb.applyOfflinePurchaseMutation({
       operationType,
       payload: payload?.body || payload,
       userId: currentUser.id
     }).catch((error) => {
       console.warn('Local offline mutation failed:', error.message);
+      return null;
     });
   }
 
@@ -58,27 +60,51 @@ const queueOfflineOperation = async (operationType, payload) => {
     data: {
       message: 'Internet nahi hai. Entry local queue me save ho gayi, net aane par sync/send ho jayegi.',
       offlineQueued: true,
-      localSyncId: queued.localId
+      localSyncId: queued.localId,
+      ...(localMutationResult?.seller && { seller: localMutationResult.seller }),
+      ...(localMutationResult?.results && { results: localMutationResult.results })
     }
   };
 };
 
 const postWithOfflineQueue = async (url, payload, operationType) => {
+  return requestWithOfflineQueue({ method: 'POST', url, data: payload }, operationType);
+};
+
+const requestWithOfflineQueue = async ({ method = 'POST', url, data, config = {} }, operationType) => {
   try {
-    const response = await api.post(url, payload);
+    const response = await api.request({
+      ...config,
+      method,
+      url,
+      data
+    });
     const localDb = getLocalDb();
     const responseEntries = Array.isArray(response.data?.entries) ? response.data.entries : [];
+    const responseResults = Array.isArray(response.data?.results) ? response.data.results : [];
+    const responseUsers = [
+      ...(response.data?.seller ? [response.data.seller] : []),
+      ...(Array.isArray(response.data?.users) ? response.data.users : [])
+    ];
 
     if (localDb?.upsertPurchases && responseEntries.length > 0) {
       await localDb.upsertPurchases(responseEntries).catch((error) => {
         console.warn('Local purchase update failed:', error.message);
       });
     }
+    if (localDb?.upsertPrizeResults && responseResults.length > 0) {
+      await localDb.upsertPrizeResults(responseResults).catch((error) => {
+        console.warn('Local prize result update failed:', error.message);
+      });
+    }
+    if (responseUsers.length > 0) {
+      await mergeLocalVisibleUsers(responseUsers);
+    }
 
     return response;
   } catch (error) {
     if (isNetworkError(error)) {
-      return queueOfflineOperation(operationType, { url, method: 'POST', body: payload });
+      return queueOfflineOperation(operationType, { url, method, body: data, params: config.params });
     }
 
     throw error;
@@ -114,12 +140,85 @@ const canUseLocalRead = async () => {
 
 const getLocalPurchaseBillSummary = async (params = {}) => {
   const localDb = getLocalDb();
+  const currentUser = getCurrentUser();
 
-  if (!localDb?.getPurchaseBillSummary || !(await canUseLocalRead())) {
+  if (!localDb?.getPurchaseBillSummary || !(await canUseLocalRead()) || !currentUser?.id) {
     return null;
   }
 
-  return { data: await localDb.getPurchaseBillSummary(params) };
+  return {
+    data: await localDb.getPurchaseBillSummary({
+      ...params,
+      user: currentUser
+    })
+  };
+};
+
+const getLocalPurchasePieceSummary = async (params = {}) => {
+  const localDb = getLocalDb();
+  const currentUser = getCurrentUser();
+
+  if (!localDb?.getPurchasePieceSummary || !(await canUseLocalRead()) || !currentUser?.id) {
+    return null;
+  }
+
+  return {
+    data: await localDb.getPurchasePieceSummary({
+      ...params,
+      user: currentUser
+    })
+  };
+};
+
+const mergeLocalVisibleUsers = async (users = []) => {
+  const localDb = getLocalDb();
+  const validUsers = (Array.isArray(users) ? users : []).filter((user) => user?.id);
+
+  if (!localDb || validUsers.length === 0) {
+    return;
+  }
+
+  if (localDb.upsertUsers) {
+    await localDb.upsertUsers(validUsers).catch((error) => {
+      console.warn('Local user update failed:', error.message);
+    });
+  }
+
+  if (localDb.getMetadata && localDb.setMetadata) {
+    const existingUsers = await localDb.getMetadata('visibleUsers').catch(() => []);
+    const usersById = new Map((Array.isArray(existingUsers) ? existingUsers : []).map((user) => [Number(user.id), user]));
+    validUsers.forEach((user) => usersById.set(Number(user.id), user));
+    await localDb.setMetadata('visibleUsers', [...usersById.values()]).catch((error) => {
+      console.warn('Local visible users update failed:', error.message);
+    });
+  }
+};
+
+const getLocalUserTree = async () => {
+  const localDb = getLocalDb();
+  const currentUser = getCurrentUser();
+
+  if (!localDb?.getUserTree || !currentUser?.id) {
+    return null;
+  }
+
+  return { data: await localDb.getUserTree({ user: currentUser }) };
+};
+
+const getLocalChildSellers = async () => {
+  const localDb = getLocalDb();
+  const currentUser = getCurrentUser();
+
+  if (!localDb?.listUsers || !currentUser?.id) {
+    return null;
+  }
+
+  const users = await localDb.listUsers();
+  return {
+    data: (Array.isArray(users) ? users : [])
+      .filter((user) => Number(user.parentId) === Number(currentUser.id) && String(user.role || '').toLowerCase() === 'seller')
+      .sort((left, right) => String(left.username || '').localeCompare(String(right.username || '')))
+  };
 };
 
 const traceFromLocalDb = async (params = {}) => {
@@ -231,14 +330,99 @@ export const authService = {
 };
 
 export const userService = {
-  createSeller: (username, keyword, password, rateAmount6, rateAmount12, sellerType = 'seller') => api.post('/users/create-seller', { username, keyword, password, rateAmount6, rateAmount12, sellerType }),
-  createAdmin: (username, password) => api.post('/users/create-admin', { username, password }),
+  createSeller: async (username, keyword, password, rateAmount6, rateAmount12, sellerType = 'seller') => {
+    const body = { username, keyword, password, rateAmount6, rateAmount12, sellerType };
+    let response;
+
+    try {
+      response = await api.post('/users/create-seller', body);
+    } catch (error) {
+      if (isNetworkError(error)) {
+        response = await queueOfflineOperation('create_seller', {
+          url: '/users/create-seller',
+          method: 'POST',
+          body
+        });
+      } else {
+        throw error;
+      }
+    }
+
+    const seller = response.data?.seller;
+
+    if (seller) {
+      await mergeLocalVisibleUsers([seller]);
+    }
+
+    return response;
+  },
+  createAdmin: (username, password) => requestWithOfflineQueue({
+    method: 'POST',
+    url: '/users/create-admin',
+    data: { username, password }
+  }, 'create_admin'),
   getAdmins: () => api.get('/users/admins'),
-  getChildSellers: () => api.get('/users/child-sellers'),
-  getAllSellers: () => api.get('/users/all-sellers'),
-  getUserTree: () => api.get('/users/tree'),
-  changeChildPassword: (userId, newPassword) => api.patch(`/users/${userId}/password`, { newPassword }),
-  deleteUser: (userId) => api.delete(`/users/${userId}`)
+  getChildSellers: async () => {
+    try {
+      return await api.get('/users/child-sellers');
+    } catch (error) {
+      if (isNetworkError(error)) {
+        const localResult = await getLocalChildSellers();
+        if (localResult) {
+          return localResult;
+        }
+      }
+      throw error;
+    }
+  },
+  getAllSellers: async () => {
+    try {
+      return await api.get('/users/all-sellers');
+    } catch (error) {
+      if (isNetworkError(error)) {
+        const localDb = getLocalDb();
+        if (localDb?.listUsers) {
+          const users = await localDb.listUsers();
+          return {
+            data: (Array.isArray(users) ? users : [])
+              .filter((user) => String(user.role || '').toLowerCase() === 'seller')
+              .sort((left, right) => String(left.username || '').localeCompare(String(right.username || '')))
+          };
+        }
+      }
+      throw error;
+    }
+  },
+  getUserTree: async () => {
+    try {
+      const response = await api.get('/users/tree');
+      const flattenTree = (node) => {
+        if (!node) {
+          return [];
+        }
+        return [node, ...(node.children || []).flatMap(flattenTree)];
+      };
+      await mergeLocalVisibleUsers(flattenTree(response.data));
+      return response;
+    } catch (error) {
+      if (isNetworkError(error)) {
+        const localResult = await getLocalUserTree();
+        if (localResult) {
+          return localResult;
+        }
+      }
+      throw error;
+    }
+  },
+  changeChildPassword: (userId, newPassword) => requestWithOfflineQueue({
+    method: 'PATCH',
+    url: `/users/${userId}/password`,
+    data: { newPassword }
+  }, 'change_child_password'),
+  deleteUser: (userId) => requestWithOfflineQueue({
+    method: 'DELETE',
+    url: `/users/${userId}`
+  }, 'delete_user')
 };
 
 export const syncService = {
@@ -251,10 +435,40 @@ export const syncService = {
   })
 };
 
+export const billCacheService = {
+  saveGeneratedBill: async ({ filters, bill }) => {
+    const localDb = getLocalDb();
+    const currentUser = getCurrentUser();
+
+    if (!localDb?.saveGeneratedBill || !currentUser?.id) {
+      return { skipped: true };
+    }
+
+    return localDb.saveGeneratedBill({
+      userId: currentUser.id,
+      filters,
+      bill
+    });
+  },
+  loadGeneratedBill: async ({ filters }) => {
+    const localDb = getLocalDb();
+    const currentUser = getCurrentUser();
+
+    if (!localDb?.loadGeneratedBill || !currentUser?.id) {
+      return null;
+    }
+
+    return localDb.loadGeneratedBill({
+      userId: currentUser.id,
+      filters
+    });
+  }
+};
+
 export const lotteryService = {
-  addEntry: (payload) => api.post('/lottery/add-entry', payload),
-  addAdminPurchase: (payload) => api.post('/lottery/admin-purchases', payload),
-  replaceAdminPurchaseMemo: (payload) => api.put('/lottery/admin-purchases/memo', payload),
+  addEntry: (payload) => requestWithOfflineQueue({ method: 'POST', url: '/lottery/add-entry', data: payload }, 'add_entry'),
+  addAdminPurchase: (payload) => requestWithOfflineQueue({ method: 'POST', url: '/lottery/admin-purchases', data: payload }, 'add_admin_purchase'),
+  replaceAdminPurchaseMemo: (payload) => requestWithOfflineQueue({ method: 'PUT', url: '/lottery/admin-purchases/memo', data: payload }, 'replace_admin_purchase_memo'),
   getAdminPurchases: ({ bookingDate, sessionMode, amount, boxValue, purchaseCategory } = {}, requestOptions = {}) =>
     api.get('/lottery/admin-purchases', {
       ...requestOptions,
@@ -267,10 +481,10 @@ export const lotteryService = {
       }
     }),
   sendAdminPurchase: (payload) => postWithOfflineQueue('/lottery/purchases/send', payload, 'purchase_send'),
-  replacePurchaseSendMemo: (payload) => api.put('/lottery/purchases/memo', payload),
+  replacePurchaseSendMemo: (payload) => requestWithOfflineQueue({ method: 'PUT', url: '/lottery/purchases/memo', data: payload }, 'replace_purchase_send_memo'),
   sendPurchase: (payload) => postWithOfflineQueue('/lottery/purchases/send', payload, 'purchase_send'),
   transferRemainingStock: (payload) => postWithOfflineQueue('/lottery/purchases/stock-transfer', payload, 'stock_transfer'),
-  assignPurchase: (payload) => api.post('/lottery/purchases/assign', payload),
+  assignPurchase: (payload) => requestWithOfflineQueue({ method: 'POST', url: '/lottery/purchases/assign', data: payload }, 'assign_purchase'),
   getPurchases: async ({ bookingDate, sessionMode, sellerId, status, purchaseCategory, amount, boxValue, remaining } = {}, requestOptions = {}) => {
     const params = {
       ...(bookingDate && { bookingDate }),
@@ -308,16 +522,28 @@ export const lotteryService = {
         ...(amount && { amount })
       }
     }),
-  getPurchasePieceSummary: ({ bookingDate, sessionMode, purchaseCategory, amount } = {}, requestOptions = {}) =>
-    api.get('/lottery/purchases/piece-summary', {
-      ...requestOptions,
-      params: {
-        ...(bookingDate && { bookingDate }),
-        ...(sessionMode && { sessionMode }),
-        ...(purchaseCategory && { purchaseCategory }),
-        ...(amount && { amount })
+  getPurchasePieceSummary: async ({ bookingDate, sessionMode, purchaseCategory, amount } = {}, requestOptions = {}) => {
+    const params = {
+      ...(bookingDate && { bookingDate }),
+      ...(sessionMode && { sessionMode }),
+      ...(purchaseCategory && { purchaseCategory }),
+      ...(amount && { amount })
+    };
+
+    try {
+      const localResult = await getLocalPurchasePieceSummary(params);
+      if (localResult) {
+        return localResult;
       }
-    }),
+    } catch (error) {
+      console.warn('Local piece summary failed, falling back to server:', error.message);
+    }
+
+    return api.get('/lottery/purchases/piece-summary', {
+      ...requestOptions,
+      params
+    });
+  },
   getPurchaseUnsoldSendSummary: ({ bookingDate, sessionMode, purchaseCategory, amount } = {}, requestOptions = {}) =>
     api.get('/lottery/purchases/unsold-send-summary', {
       ...requestOptions,
@@ -342,7 +568,7 @@ export const lotteryService = {
   markPurchaseUnsold: (payload) => postWithOfflineQueue('/lottery/purchases/mark-unsold', payload, 'unsold_save'),
   removePurchaseUnsold: (payload) => postWithOfflineQueue('/lottery/purchases/remove-unsold', payload, 'unsold_remove'),
   checkPurchaseUnsoldRemove: (payload) => api.post('/lottery/purchases/remove-unsold/check', payload),
-  replacePurchaseUnsoldMemo: (payload) => api.put('/lottery/purchases/unsold-memo', payload),
+  replacePurchaseUnsoldMemo: (payload) => requestWithOfflineQueue({ method: 'PUT', url: '/lottery/purchases/unsold-memo', data: payload }, 'replace_unsold_memo'),
   sendPurchaseUnsold: (payload) => postWithOfflineQueue('/lottery/purchases/send-unsold', payload, 'unsold_send'),
   getPendingEntries: ({ bookingDate, amount } = {}) =>
     api.get('/lottery/pending-entries', {
@@ -352,15 +578,23 @@ export const lotteryService = {
       }
     }),
   deletePendingEntry: (entryId, { bookingDate } = {}) =>
-    api.delete(`/lottery/pending-entries/${entryId}`, {
-      params: {
-        ...(bookingDate && { bookingDate })
+    requestWithOfflineQueue({
+      method: 'DELETE',
+      url: `/lottery/pending-entries/${entryId}`,
+      config: {
+        params: {
+          ...(bookingDate && { bookingDate })
+        }
       }
-    }),
-  sendEntries: ({ bookingDate, amount } = {}) => api.post('/lottery/send-entries', {
-    ...(bookingDate && { bookingDate }),
-    ...(amount && { amount })
-  }),
+    }, 'delete_pending_entry'),
+  sendEntries: ({ bookingDate, amount } = {}) => requestWithOfflineQueue({
+    method: 'POST',
+    url: '/lottery/send-entries',
+    data: {
+      ...(bookingDate && { bookingDate }),
+      ...(amount && { amount })
+    }
+  }, 'send_entries'),
   getSentEntries: ({ date, fromDate, toDate, sessionMode, purchaseCategory } = {}, requestOptions = {}) =>
     api.get('/lottery/sent-entries', {
       ...requestOptions,
@@ -386,10 +620,14 @@ export const lotteryService = {
       ...(amount && { amount })
     }
   }),
-  updateReceivedEntryStatus: (entryId, action, { amount } = {}) => api.patch(`/lottery/received-entries/${entryId}`, {
-    action,
-    ...(amount && { amount })
-  }),
+  updateReceivedEntryStatus: (entryId, action, { amount } = {}) => requestWithOfflineQueue({
+    method: 'PATCH',
+    url: `/lottery/received-entries/${entryId}`,
+    data: {
+      action,
+      ...(amount && { amount })
+    }
+  }, 'update_received_entry_status'),
   getAcceptedBookEntries: ({ bookingDate, amount } = {}) =>
     api.get('/lottery/accepted-book-entries', {
       params: {
@@ -464,28 +702,31 @@ export const lotteryService = {
 
 export const priceService = {
   uploadPrice: async ({ entries, sessionMode, purchaseCategory, resultForDate }) => {
-    const response = await api.post('/prices/upload', { entries, sessionMode, purchaseCategory, resultForDate });
-    const localDb = getLocalDb();
-    const results = Array.isArray(response.data?.results) ? response.data.results : [];
-
-    if (localDb?.upsertPrizeResults && results.length > 0) {
-      await localDb.upsertPrizeResults(results).catch((error) => {
-        console.warn('Local prize result update failed:', error.message);
-      });
-    }
-
-    return response;
+    return requestWithOfflineQueue({
+      method: 'POST',
+      url: '/prices/upload',
+      data: { entries, sessionMode, purchaseCategory, resultForDate }
+    }, 'price_upload');
   },
-  updatePrizeResult: (id, winningNumber) => api.patch(`/prices/${id}`, { winningNumber }),
-  deletePrizeResult: (id) => api.delete(`/prices/${id}`),
+  updatePrizeResult: (id, winningNumber) => requestWithOfflineQueue({
+    method: 'PATCH',
+    url: `/prices/${id}`,
+    data: { winningNumber }
+  }, 'update_prize_result'),
+  deletePrizeResult: (id) => requestWithOfflineQueue({
+    method: 'DELETE',
+    url: `/prices/${id}`
+  }, 'delete_prize_result'),
   deletePrizeResults: ({ resultForDate, sessionMode, purchaseCategory }) =>
-    api.delete('/prices/bulk-delete', {
+    requestWithOfflineQueue({
+      method: 'DELETE',
+      url: '/prices/bulk-delete',
       data: {
         resultForDate,
         sessionMode,
         purchaseCategory
       }
-    }),
+    }, 'delete_prize_results'),
   checkPrize: async ({ number, date, sessionMode, purchaseCategory, amount, sem }) => {
     const params = {
       ...(number && { number }),
