@@ -1,6 +1,6 @@
 {
   "name": "lottery-booking-frontend",
-  "version": "0.1.6",
+  "version": "2.1.1",
   "private": true,
   "homepage": ".",
   "main": "electron/main.js",
