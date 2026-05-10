@@ -467,6 +467,28 @@ export const billCacheService = {
   }
 };
 
+export const bookingService = {
+  replaceMemo: (payload) => requestWithOfflineQueue({
+    method: 'PUT',
+    url: '/booking/memo',
+    data: payload
+  }, 'replace_booking_memo'),
+  getEntries: ({ sellerId, bookingDate, fromDate, toDate, sessionMode, purchaseCategory, amount, status } = {}, requestOptions = {}) =>
+    api.get('/booking/entries', {
+      ...requestOptions,
+      params: {
+        ...(sellerId && { sellerId }),
+        ...(bookingDate && { bookingDate }),
+        ...(fromDate && { fromDate }),
+        ...(toDate && { toDate }),
+        ...(sessionMode && { sessionMode }),
+        ...(purchaseCategory && { purchaseCategory }),
+        ...(amount && { amount }),
+        ...(status && { status })
+      }
+    })
+};
+
 export const lotteryService = {
   addEntry: (payload) => requestWithOfflineQueue({ method: 'POST', url: '/lottery/add-entry', data: payload }, 'add_entry'),
   addAdminPurchase: (payload) => requestWithOfflineQueue({ method: 'POST', url: '/lottery/admin-purchases', data: payload }, 'add_admin_purchase'),

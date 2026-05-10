@@ -1797,6 +1797,12 @@ const AdminDashboard = ({
 
       event.preventDefault();
       event.stopPropagation();
+      if (
+        activeTab === 'booking-book'
+        && dashboardRef.current?.querySelector('.retro-purchase-window.booking-full-page.warning-active')
+      ) {
+        return;
+      }
       if (blockingWarning) {
         clearBlockingWarning();
         return;

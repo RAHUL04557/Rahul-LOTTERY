@@ -519,6 +519,7 @@ const initDB = async () => {
       purchase_category VARCHAR(1),
       booking_date DATE NOT NULL DEFAULT CURRENT_DATE,
       memo_number INTEGER,
+      row_order INTEGER DEFAULT 0,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       sent_at TIMESTAMP NULL
     )
@@ -562,6 +563,11 @@ const initDB = async () => {
   await query(`
     ALTER TABLE booking_entries
     ADD COLUMN IF NOT EXISTS memo_number INTEGER
+  `);
+
+  await query(`
+    ALTER TABLE booking_entries
+    ADD COLUMN IF NOT EXISTS row_order INTEGER DEFAULT 0
   `);
 
   await query(`

@@ -163,6 +163,7 @@ const mapBookingEntry = (row) => ({
   purchaseCategory: row.purchase_category || (row.session_mode === 'NIGHT' ? 'E' : 'M'),
   bookingDate: row.booking_date,
   memoNumber: row.memo_number,
+  rowOrder: Number(row.row_order || 0),
   createdAt: row.created_at,
   sentAt: row.sent_at
 });
@@ -292,6 +293,10 @@ const replaceBookingMemoEntries = async (req, res) => {
   const entries = Array.isArray(req.body.entries) ? req.body.entries : [];
   const memoNumber = Number(req.body.memoNumber || 0);
   const targetSellerId = req.user.role === 'admin' ? Number(req.body.sellerId || 0) : Number(req.user.id);
+  const scopeBookingDate = req.body.bookingDate ? normalizeDate(req.body.bookingDate) : '';
+  const scopeSessionMode = normalizeSessionMode(req.body.sessionMode);
+  const hasScopePurchaseCategory = req.body.purchaseCategory || scopeSessionMode;
+  const scopePurchaseCategory = hasScopePurchaseCategory ? normalizePurchaseCategory(req.body.purchaseCategory, scopeSessionMode) : '';
 
   if (!Number.isInteger(memoNumber) || memoNumber <= 0) {
     return res.status(400).json({ message: 'Valid memo number required' });
@@ -299,10 +304,6 @@ const replaceBookingMemoEntries = async (req, res) => {
   if (!targetSellerId) {
     return res.status(400).json({ message: 'Seller select karo' });
   }
-  if (entries.length === 0) {
-    return res.status(400).json({ message: 'At least one booking row required' });
-  }
-
   let targetUser = req.user;
   if (req.user.role === 'admin') {
     const validation = await validateSellerTarget(req.user, targetSellerId);
@@ -317,11 +318,26 @@ const replaceBookingMemoEntries = async (req, res) => {
   try {
     await client.query('BEGIN');
 
+    const deleteParams = [targetUser.id, memoNumber];
+    const deleteConditions = ['user_id = $1', 'memo_number = $2'];
+    if (scopeBookingDate) {
+      deleteParams.push(scopeBookingDate);
+      deleteConditions.push(`booking_date = $${deleteParams.length}::date`);
+    }
+    if (scopeSessionMode) {
+      deleteParams.push(scopeSessionMode);
+      deleteConditions.push(`session_mode = $${deleteParams.length}`);
+    }
+    if (scopePurchaseCategory) {
+      deleteParams.push(scopePurchaseCategory);
+      deleteConditions.push(`purchase_category = $${deleteParams.length}`);
+    }
+
     const existingRows = await client.query(
       `DELETE FROM booking_entries
-       WHERE user_id = $1 AND memo_number = $2
+       WHERE ${deleteConditions.join(' AND ')}
        RETURNING *`,
-      [targetUser.id, memoNumber]
+      deleteParams
     );
 
     await insertHistory(
@@ -332,8 +348,16 @@ const replaceBookingMemoEntries = async (req, res) => {
       adminUser
     );
 
+    if (entries.length === 0) {
+      await client.query('COMMIT');
+      return res.json({
+        message: 'Booking memo delete ho gaya',
+        entries: []
+      });
+    }
+
     const insertedRows = [];
-    for (const entry of entries) {
+    for (const [entryIndex, entry] of entries.entries()) {
       const bookingDate = normalizeDate(entry.bookingDate);
       const sessionMode = normalizeSessionMode(entry.sessionMode);
       const purchaseCategory = normalizePurchaseCategory(entry.purchaseCategory, sessionMode);
@@ -350,8 +374,8 @@ const replaceBookingMemoEntries = async (req, res) => {
         const result = await client.query(
           `INSERT INTO booking_entries (
             user_id, created_by, sent_to_admin, series, number, box_value, amount, status,
-            session_mode, purchase_category, booking_date, memo_number, sent_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, $12, $13)
+            session_mode, purchase_category, booking_date, memo_number, row_order, sent_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date, $12, $13, $14)
           RETURNING *`,
           [
             targetUser.id,
@@ -366,6 +390,7 @@ const replaceBookingMemoEntries = async (req, res) => {
             purchaseCategory,
             bookingDate,
             memoNumber,
+            Number.isInteger(Number(entry.rowOrder)) ? Number(entry.rowOrder) : entryIndex,
             req.user.role === 'admin' ? new Date() : null
           ]
         );

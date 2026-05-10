@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { priceService, userService } from '../services/api';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { bookingService, priceService, userService } from '../services/api';
 import SearchableSellerSelect from './SearchableSellerSelect';
 import RetroPurchasePanel from './RetroPurchasePanel';
 import { formatDisplayDate, formatSignedRupees, getPrizeAdjustmentAmounts, openTransferBill } from '../utils/transferBill';
@@ -89,10 +89,24 @@ const numberInput = (value) => String(value || '').replace(/[^0-9]/g, '').slice(
 
 const buildBookingCode = (shift, semValue) => `${getPurchaseCategory(shift)}${String(semValue || '').replace(/[^0-9]/g, '')}`;
 
+const getAvailableSemOptions = (selectedAmount) => {
+  if (String(selectedAmount) === '7') {
+    return ['5', '10', '25', '50', '100', '200'];
+  }
+  if (String(selectedAmount) === '12') {
+    return ['5', '10', '15', '20', '30', '50', '100', '200'];
+  }
+  return [];
+};
+
 const parseBookingCode = (value, fallbackShift) => {
   const rawValue = String(value || '').trim().toUpperCase();
   const prefix = rawValue.match(/[MDE]/)?.[0];
   const semValue = rawValue.replace(/[^0-9]/g, '').slice(0, 3);
+  const fallbackCategory = getPurchaseCategory(fallbackShift);
+  if (prefix && prefix !== fallbackCategory) {
+    return { error: `${prefix}${semValue} is not allowed. Is company me sirf ${fallbackCategory}${semValue} chalega` };
+  }
   let shift = fallbackShift;
   if (prefix === 'M') shift = 'MORNING';
   if (prefix === 'D') shift = 'DAY';
@@ -107,6 +121,11 @@ const getShiftFromSession = (sessionMode, purchaseCategory = '') => {
 };
 
 const getEntryShift = (entry) => getShiftLabel(entry?.sessionMode, entry?.purchaseCategory);
+
+const isSameBookingScope = (entry, sessionMode, purchaseCategory) => (
+  String(entry?.sessionMode || 'MORNING') === String(sessionMode || 'MORNING')
+  && String(entry?.purchaseCategory || (entry?.sessionMode === 'NIGHT' ? 'E' : 'M')) === String(purchaseCategory || '')
+);
 
 const sellerSupportsAmount = (seller, amountValue) => {
   if (!seller || !amountValue) {
@@ -171,41 +190,55 @@ const getNumberRangeGroups = (numbers = []) => {
       return counts;
     }, {});
   const uniqueNumbers = Object.keys(numberCounts).sort((left, right) => Number(left) - Number(right));
+  const maxCount = uniqueNumbers.reduce((max, number) => Math.max(max, numberCounts[number] || 0), 0);
 
   const ranges = [];
-  let rangeStart = '';
-  let previousNumber = '';
-  let rangeCount = 0;
 
-  const flushRange = () => {
-    if (!rangeStart) return;
-    ranges.push({
-      label: rangeStart === previousNumber ? rangeStart : `${rangeStart}-${previousNumber}`,
-      count: rangeCount
-    });
-  };
+  for (let occurrence = 1; occurrence <= maxCount; occurrence += 1) {
+    let rangeStart = '';
+    let previousNumber = '';
+    let rangeCount = 0;
 
-  uniqueNumbers.forEach((number) => {
-    if (!rangeStart) {
+    const flushRange = () => {
+      if (!rangeStart) return;
+      ranges.push({
+        label: rangeStart === previousNumber ? rangeStart : `${rangeStart}-${previousNumber}`,
+        count: rangeCount,
+        occurrence
+      });
+    };
+
+    uniqueNumbers.forEach((number) => {
+      if ((numberCounts[number] || 0) < occurrence) {
+        flushRange();
+        rangeStart = '';
+        previousNumber = '';
+        rangeCount = 0;
+        return;
+      }
+
+      if (!rangeStart) {
+        rangeStart = number;
+        previousNumber = number;
+        rangeCount = 1;
+        return;
+      }
+
+      if (Number(number) === Number(previousNumber) + 1) {
+        previousNumber = number;
+        rangeCount += 1;
+        return;
+      }
+
+      flushRange();
       rangeStart = number;
       previousNumber = number;
-      rangeCount = numberCounts[number];
-      return;
-    }
-
-    if (Number(number) === Number(previousNumber) + 1) {
-      previousNumber = number;
-      rangeCount += numberCounts[number];
-      return;
-    }
+      rangeCount = 1;
+    });
 
     flushRange();
-    rangeStart = number;
-    previousNumber = number;
-    rangeCount = numberCounts[number];
-  });
+  }
 
-  flushRange();
   return ranges;
 };
 
@@ -218,13 +251,40 @@ const getEntrySignature = (entry) => [
   entry.sessionMode,
   entry.purchaseCategory,
   entry.amount,
-  entry.boxValue
+  entry.boxValue,
+  entry.rowOrder
 ].join('|');
+
+const getBookingEntryScopeKey = (entry) => [
+  entry.sellerId,
+  entry.memoNumber,
+  normalizeDateValue(entry.bookingDate),
+  entry.sessionMode,
+  entry.purchaseCategory
+].join('|');
+
+const normalizeServerBookingEntries = (entries = []) => normalizeStoredBookingEntries(
+  (Array.isArray(entries) ? entries : []).map((entry) => ({
+    id: `server-booking-${entry.id}`,
+    serverId: entry.id,
+    memoNumber: entry.memoNumber,
+    rowOrder: Number(entry.rowOrder || 0),
+    sellerId: String(entry.userId || entry.sellerId || ''),
+    sellerName: entry.username || entry.sellerName || entry.sellerUsername || '',
+    bookingDate: normalizeDateValue(entry.bookingDate),
+    shift: getShiftLabel(entry.sessionMode, entry.purchaseCategory),
+    sessionMode: entry.sessionMode,
+    purchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M'),
+    amount: String(entry.amount || ''),
+    boxValue: String(entry.boxValue || ''),
+    number: entry.number,
+    createdAt: entry.createdAt || ''
+  })).filter((entry) => entry.sellerId && entry.memoNumber && entry.number)
+);
 
 const normalizeStoredBookingEntries = (entries = []) => {
   const normalizedEntries = [];
   const singlesBySignature = new Map();
-  const rangeKeys = new Set();
 
   const pushSingle = (entry, number) => {
     const signature = getEntrySignature(entry);
@@ -242,15 +302,6 @@ const normalizeStoredBookingEntries = (entries = []) => {
     if (entry?.rangeStart) {
       const rangeStart = String(entry.rangeStart).padStart(5, '0');
       const rangeEnd = String(entry.rangeEnd || entry.rangeStart).padStart(5, '0');
-      if (rangeStart === rangeEnd) {
-        pushSingle(entry, rangeStart);
-        return;
-      }
-      const rangeKey = `${getEntrySignature(entry)}|${rangeStart}|${rangeEnd}`;
-      if (rangeKeys.has(rangeKey)) {
-        return;
-      }
-      rangeKeys.add(rangeKey);
       normalizedEntries.push({
         ...entry,
         bookingDate: normalizeDateValue(entry.bookingDate),
@@ -298,6 +349,7 @@ const normalizeStoredBookingEntries = (entries = []) => {
 
   return normalizedEntries.sort((left, right) => (
     new Date(left.createdAt || 0).getTime() - new Date(right.createdAt || 0).getTime()
+    || Number(left.rowOrder ?? 0) - Number(right.rowOrder ?? 0)
   ));
 };
 
@@ -521,6 +573,7 @@ const BookingPanel = ({
   const [resultRows, setResultRows] = useState([]);
   const [loading, setLoading] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  const [blockingWarning, setBlockingWarning] = useState(null);
 
   const sellerInputRef = useRef(null);
   const dateInputRef = useRef(null);
@@ -528,14 +581,83 @@ const BookingPanel = ({
   const codeInputRef = useRef(null);
   const fromInputRef = useRef(null);
   const toInputRef = useRef(null);
+  const serverSyncKeyRef = useRef('');
 
   const selectedSeller = sellers.find((seller) => String(seller.id) === String(sellerId)) || null;
   const activeSem = sem;
 
+  const clearBlockingWarning = useCallback(() => {
+    const onClear = blockingWarning?.onClear;
+    setBlockingWarning(null);
+    if (typeof onClear === 'function') {
+      onClear();
+    }
+  }, [blockingWarning]);
+
+  const openBlockingWarning = (message, details = [], title = 'Warning', onClear = null) => {
+    onError?.('');
+    onSuccess?.('');
+    setBlockingWarning({
+      message,
+      details: Array.isArray(details) ? details : [],
+      title,
+      onClear
+    });
+  };
+
+  const openCodeWarning = (message) => {
+    openBlockingWarning(message, [], 'Warning', () => {
+      window.requestAnimationFrame(() => {
+        codeInputRef.current?.focus();
+        codeInputRef.current?.select?.();
+      });
+    });
+  };
+
+  const openSellerWarning = (message) => {
+    openBlockingWarning(message, [], 'Warning', () => {
+      window.requestAnimationFrame(() => {
+        sellerInputRef.current?.focus();
+        sellerInputRef.current?.select?.();
+      });
+    });
+  };
+
+  const openFromWarning = (message) => {
+    openBlockingWarning(message, [], 'Warning', () => {
+      window.requestAnimationFrame(() => {
+        fromInputRef.current?.focus();
+        fromInputRef.current?.select?.();
+      });
+    });
+  };
+
+  const openToWarning = (message) => {
+    openBlockingWarning(message, [], 'Warning', () => {
+      window.requestAnimationFrame(() => {
+        toInputRef.current?.focus();
+        toInputRef.current?.select?.();
+      });
+    });
+  };
+
   const commitCodeInput = () => {
     const parsed = parseBookingCode(codeInput, shift);
+    if (parsed.error) {
+      setCodeInput('');
+      setSem('');
+      openCodeWarning(parsed.error);
+      return false;
+    }
     if (!parsed.semValue) {
-      onError?.('Code is empty');
+      openCodeWarning('Code is empty');
+      return false;
+    }
+    const allowedSemOptions = getAvailableSemOptions(amount);
+    if (allowedSemOptions.length > 0 && !allowedSemOptions.includes(String(parsed.semValue))) {
+      setCodeInput('');
+      setSem('');
+      openCodeWarning(`Amount ${amount} me SEM ${allowedSemOptions.join(', ')} hi allowed hai`);
       return false;
     }
     setShift(parsed.shift);
@@ -622,6 +744,7 @@ const BookingPanel = ({
     const scoped = allEntries.filter((entry) => (
       String(entry.sellerId) === String(sellerId || '')
       && isSameDateValue(entry.bookingDate, currentDate)
+      && isSameBookingScope(entry, currentSessionMode, currentPurchaseCategory)
     ));
     return groupRows(
       scoped,
@@ -629,13 +752,15 @@ const BookingPanel = ({
       (entry) => ({
         memoNumber: Number(entry.memoNumber || 0),
         drawDate: normalizeDateValue(entry.bookingDate),
+        sessionMode: entry.sessionMode,
+        purchaseCategory: entry.purchaseCategory,
         quantity: 0
       }),
       (summary, entry) => {
         summary.quantity += getEntryNumbers(entry).length * Number(entry.boxValue || 0);
       }
     ).filter((summary) => summary.memoNumber > 0).sort((left, right) => left.memoNumber - right.memoNumber);
-  }, [allEntries, bookingDate, sellerId]);
+  }, [allEntries, bookingDate, currentPurchaseCategory, currentSessionMode, sellerId]);
 
   const nextMemoNumber = memoSummaries.length > 0
     ? Math.max(...memoSummaries.map((memo) => memo.memoNumber)) + 1
@@ -717,11 +842,13 @@ const BookingPanel = ({
 
   useEffect(() => {
     if (mode !== 'book' || !hydrated) return;
+    onError?.('');
+    onSuccess?.('');
     window.requestAnimationFrame(() => {
       sellerInputRef.current?.focus();
       sellerInputRef.current?.select?.();
     });
-  }, [hydrated, mode]);
+  }, [hydrated, mode, onError, onSuccess]);
 
   useFunctionShortcuts(mode === 'book', {
     A: () => {
@@ -739,9 +866,25 @@ const BookingPanel = ({
       resetEntryInputs();
     },
     ESCAPE: () => {
+      if (blockingWarning) {
+        clearBlockingWarning();
+        return;
+      }
       onExit?.();
     }
   });
+
+  useEffect(() => {
+    if (mode !== 'book' || !blockingWarning) return undefined;
+    const handleWarningEscape = (event) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      clearBlockingWarning();
+    };
+    window.addEventListener('keydown', handleWarningEscape, true);
+    return () => window.removeEventListener('keydown', handleWarningEscape, true);
+  }, [blockingWarning, clearBlockingWarning, mode]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -769,18 +912,84 @@ const BookingPanel = ({
     writeJson(entriesKey, normalizedEntries);
   };
 
+  useEffect(() => {
+    if (mode !== 'book' || !hydrated || serverSyncKeyRef.current === entriesKey) return;
+    serverSyncKeyRef.current = entriesKey;
+    bookingService.getEntries()
+      .then((response) => {
+        const serverEntries = normalizeServerBookingEntries(response.data);
+        if (serverEntries.length === 0) return;
+        const serverScopeKeys = new Set(serverEntries.map(getBookingEntryScopeKey));
+        setAllEntries((currentEntries) => {
+          const mergedEntries = normalizeStoredBookingEntries([
+            ...currentEntries.filter((entry) => !serverScopeKeys.has(getBookingEntryScopeKey(entry))),
+            ...serverEntries
+          ]);
+          writeJson(entriesKey, mergedEntries);
+          return mergedEntries;
+        });
+      })
+      .catch((error) => {
+        console.warn('Booking server sync failed:', error.response?.data?.message || error.message);
+      });
+  }, [entriesKey, hydrated, mode]);
+
+  const backupMemoToServer = ({ memoNumber: targetMemoNumber, sellerId: targetSellerId, bookingDate: targetDate, rows }) => {
+    const payload = {
+      memoNumber: targetMemoNumber,
+      sellerId: targetSellerId,
+      bookingDate: targetDate,
+      sessionMode: currentSessionMode,
+      purchaseCategory: currentPurchaseCategory,
+      entries: rows.map((row, index) => ({
+        rowOrder: index,
+        bookingDate: targetDate,
+        sessionMode: row.sessionMode,
+        purchaseCategory: row.purchaseCategory,
+        amount: row.amount,
+        boxValue: row.boxValue,
+        rangeStart: row.rangeStart,
+        rangeEnd: row.rangeEnd || row.rangeStart
+      }))
+    };
+
+    bookingService.replaceMemo(payload)
+      .then((response) => {
+        const serverEntries = normalizeServerBookingEntries(response.data?.entries);
+        if (serverEntries.length === 0) return;
+        const serverScopeKeys = new Set(serverEntries.map(getBookingEntryScopeKey));
+        setAllEntries((currentEntries) => {
+          const mergedEntries = normalizeStoredBookingEntries([
+            ...currentEntries.filter((entry) => !serverScopeKeys.has(getBookingEntryScopeKey(entry))),
+            ...serverEntries
+          ]);
+          writeJson(entriesKey, mergedEntries);
+          return mergedEntries;
+        });
+      })
+      .catch((error) => {
+        console.warn('Booking memo server backup failed:', error.response?.data?.message || error.message);
+      });
+  };
+
   const addOrUpdateDraftRow = () => {
     onError?.('');
+    onSuccess?.('');
     if (!sellerId) {
-      onError?.('Seller select karo');
+      openSellerWarning('Seller select karo');
       return false;
     }
     if (!activeSem) {
-      onError?.('Code/SEM required');
+      openCodeWarning('Code is empty');
+      return false;
+    }
+    const allowedSemOptions = getAvailableSemOptions(amount);
+    if (allowedSemOptions.length > 0 && !allowedSemOptions.includes(String(activeSem))) {
+      openCodeWarning(`Amount ${amount} me SEM ${allowedSemOptions.join(', ')} hi allowed hai`);
       return false;
     }
     if (!rangeStart) {
-      onError?.('From number required');
+      openFromWarning('From number required');
       return false;
     }
     const previousRow = draftRows[Math.min(activeRowIndex, draftRows.length) - 1] || null;
@@ -788,15 +997,15 @@ const BookingPanel = ({
     const normalizedEnd = normalizeRangeEndInput(rangeEnd, normalizedFrom.value);
     const normalizedTo = normalizedEnd.value;
     if (normalizedFrom.error || !normalizedFrom.value) {
-      onError?.(normalizedFrom.error);
+      openFromWarning(normalizedFrom.error);
       return false;
     }
     if (normalizedEnd.error || !normalizedEnd.value) {
-      onError?.(normalizedEnd.error);
+      openToWarning(normalizedEnd.error);
       return false;
     }
     if (getRangeCount(normalizedFrom.value, normalizedTo) <= 0) {
-      onError?.('To number from number se chhota nahi ho sakta');
+      openToWarning('To number from number se chhota nahi ho sakta');
       return false;
     }
 
@@ -824,8 +1033,9 @@ const BookingPanel = ({
       return [...currentRows, row];
     });
     if (isUpdatingExistingRow) {
-      setRangeStart(normalizedFrom.value);
-      setRangeEnd(normalizedTo);
+      setRangeStart('');
+      setRangeEnd('');
+      setActiveRowIndex(draftRows.length);
       focusCodeInput();
       return true;
     }
@@ -896,7 +1106,7 @@ const BookingPanel = ({
     const currentDate = normalizeDateValue(bookingDate) || getTodayDateValue();
     setBookingDate(currentDate);
     if (!sellerId) {
-      onError?.('Seller select karo');
+      openSellerWarning('Seller select karo');
       return;
     }
     const rowsToSave = getRowsForSave();
@@ -904,6 +1114,7 @@ const BookingPanel = ({
       String(entry.sellerId) === String(sellerId)
       && Number(entry.memoNumber) === Number(effectiveMemoNumber)
       && isSameDateValue(entry.bookingDate, currentDate)
+      && isSameBookingScope(entry, currentSessionMode, currentPurchaseCategory)
     ));
     if (rowsToSave.length === 0) {
       if (memoHasSavedRows) {
@@ -911,21 +1122,29 @@ const BookingPanel = ({
           String(entry.sellerId) === String(sellerId)
           && Number(entry.memoNumber) === Number(effectiveMemoNumber)
           && isSameDateValue(entry.bookingDate, currentDate)
+          && isSameBookingScope(entry, currentSessionMode, currentPurchaseCategory)
         ));
         persistEntries(nextEntries);
+        backupMemoToServer({
+          memoNumber: effectiveMemoNumber,
+          sellerId,
+          bookingDate: currentDate,
+          rows: []
+        });
         setDraftRows([]);
         resetEntryInputs();
         setMemoNumber(null);
-        onSuccess?.('Memo delete ho gaya');
         return;
       }
-      onError?.('Booking row add karo');
+      openCodeWarning('Booking row add karo');
       return;
     }
 
-    const entriesToSave = rowsToSave.map((row) => ({
+    const saveTimestamp = new Date().toISOString();
+    const entriesToSave = rowsToSave.map((row, index) => ({
       id: `admin-booking-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       memoNumber: effectiveMemoNumber,
+      rowOrder: index,
       sellerId: String(row.sellerId),
       sellerName: row.sellerName,
       bookingDate: currentDate,
@@ -936,7 +1155,7 @@ const BookingPanel = ({
       boxValue: String(row.boxValue),
       rangeStart: row.rangeStart,
       rangeEnd: row.rangeEnd || row.rangeStart,
-      createdAt: new Date().toISOString()
+      createdAt: saveTimestamp
     }));
 
     const nextEntries = [
@@ -944,14 +1163,20 @@ const BookingPanel = ({
         String(entry.sellerId) === String(sellerId)
         && Number(entry.memoNumber) === Number(effectiveMemoNumber)
         && isSameDateValue(entry.bookingDate, currentDate)
+        && isSameBookingScope(entry, currentSessionMode, currentPurchaseCategory)
       )),
       ...entriesToSave
     ];
     persistEntries(nextEntries);
+    backupMemoToServer({
+      memoNumber: effectiveMemoNumber,
+      sellerId,
+      bookingDate: currentDate,
+      rows: entriesToSave
+    });
     setDraftRows([]);
     resetEntryInputs();
     setMemoNumber(effectiveMemoNumber);
-    onSuccess?.('Booking numbers local storage me save ho gaye');
   };
 
   const hydrateMemo = (selectedMemo) => {
@@ -961,6 +1186,11 @@ const BookingPanel = ({
         String(entry.sellerId) === String(sellerId)
         && Number(entry.memoNumber) === Number(selectedMemo.memoNumber)
         && isSameDateValue(entry.bookingDate, currentDate)
+        && isSameBookingScope(
+          entry,
+          selectedMemo.sessionMode || currentSessionMode,
+          selectedMemo.purchaseCategory || currentPurchaseCategory
+        )
       ))
       .map((entry) => ({
         id: `booking-existing-${entry.id}`,
@@ -975,23 +1205,6 @@ const BookingPanel = ({
         rangeStart: entry.rangeStart || entry.number,
         rangeEnd: entry.rangeEnd || entry.rangeStart || entry.number
       }));
-    const seenRows = new Set();
-    rows = rows.filter((row) => {
-      const rowKey = [
-        row.sellerId,
-        row.bookingDate,
-        row.shift,
-        row.amount,
-        row.boxValue,
-        row.rangeStart,
-        row.rangeEnd
-      ].join('|');
-      if (seenRows.has(rowKey)) {
-        return false;
-      }
-      seenRows.add(rowKey);
-      return true;
-    });
     setMemoNumber(selectedMemo.memoNumber);
     setBookingDate(currentDate);
     setDraftRows(rows);
@@ -1396,7 +1609,7 @@ const BookingPanel = ({
               const previousRow = draftRows[Math.min(activeRowIndex, draftRows.length) - 1] || null;
               const normalized = normalizeRangeStartInput(rangeStart, previousRow?.rangeStart);
               if (normalized.error || !normalized.value) {
-                onError?.(normalized.error);
+                openFromWarning(normalized.error);
                 return;
               }
               setRangeStart(normalized.value);
@@ -1412,7 +1625,7 @@ const BookingPanel = ({
               const previousRow = draftRows[Math.min(activeRowIndex, draftRows.length) - 1] || null;
               const normalized = normalizeRangeStartInput(rangeStart, previousRow?.rangeStart);
               if (normalized.error || !normalized.value) {
-                onError?.(normalized.error);
+                openFromWarning(normalized.error);
                 return;
               }
               setRangeStart(normalized.value);
@@ -1461,7 +1674,7 @@ const BookingPanel = ({
               event.preventDefault();
               const normalizedTo = normalizeRangeEndInput(rangeEnd, rangeStart);
               if (normalizedTo.error || !normalizedTo.value) {
-                onError?.(normalizedTo.error);
+                openToWarning(normalizedTo.error);
                 return;
               }
               setRangeEnd(normalizedTo.value);
@@ -1639,6 +1852,8 @@ const BookingPanel = ({
         }
       ]}
       showStatusField={false}
+      blockingWarning={blockingWarning}
+      onBlockingWarningClose={clearBlockingWarning}
       topShortcuts={['F2-Save', 'F3-Delete', 'F8-Clear', 'Esc-Exit']}
     />
   );
@@ -1660,7 +1875,7 @@ const BookingSummaryTable = ({ rows }) => (
       </thead>
       <tbody>
         {rows.length > 0 ? rows.map((row) => (
-          <tr key={`${row.sellerId}-${row.amount}-${row.sem}-${row.numberRangeLabel}`}>
+          <tr key={`${row.sellerId}-${row.amount}-${row.sem}-${row.numberRangeLabel}-${row.rangeSortIndex}`}>
             <td>{row.sellerName}</td>
             <td>{row.amount}</td>
             <td>{row.sem}</td>
