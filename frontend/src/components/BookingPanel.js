@@ -163,11 +163,14 @@ const getEntryNumbers = (entry) => {
 };
 
 const getNumberRangeGroups = (numbers = []) => {
-  const uniqueNumbers = [...new Set(
-    (Array.isArray(numbers) ? numbers : [])
-      .map((number) => String(number || '').replace(/[^0-9]/g, '').padStart(5, '0'))
-      .filter((number) => number.length === 5)
-  )].sort((left, right) => Number(left) - Number(right));
+  const numberCounts = (Array.isArray(numbers) ? numbers : [])
+    .map((number) => String(number || '').replace(/[^0-9]/g, '').padStart(5, '0'))
+    .filter((number) => number.length === 5)
+    .reduce((counts, number) => {
+      counts[number] = (counts[number] || 0) + 1;
+      return counts;
+    }, {});
+  const uniqueNumbers = Object.keys(numberCounts).sort((left, right) => Number(left) - Number(right));
 
   const ranges = [];
   let rangeStart = '';
@@ -186,20 +189,20 @@ const getNumberRangeGroups = (numbers = []) => {
     if (!rangeStart) {
       rangeStart = number;
       previousNumber = number;
-      rangeCount = 1;
+      rangeCount = numberCounts[number];
       return;
     }
 
     if (Number(number) === Number(previousNumber) + 1) {
       previousNumber = number;
-      rangeCount += 1;
+      rangeCount += numberCounts[number];
       return;
     }
 
     flushRange();
     rangeStart = number;
     previousNumber = number;
-    rangeCount = 1;
+    rangeCount = numberCounts[number];
   });
 
   flushRange();
@@ -1238,7 +1241,7 @@ const BookingPanel = ({
           <label>From Date:</label>
           <input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} />
           <label>To Date:</label>
-          <input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} disabled={mode === 'price-track'} />
+          <input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} />
           <label>{mode === 'bill' ? 'Select Shift:' : 'Shift:'}</label>
           <select value={shift} onChange={(event) => setShift(event.target.value)}>
             {shiftOptions.map((option) => <option key={option} value={option}>{option}</option>)}
