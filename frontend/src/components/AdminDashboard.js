@@ -10,6 +10,7 @@ import RetroPurchasePanel from './RetroPurchasePanel';
 import DashboardLauncher from './DashboardLauncher';
 import ExitConfirmPrompt from './ExitConfirmPrompt';
 import SearchableSellerSelect from './SearchableSellerSelect';
+import BookingPanel from './BookingPanel';
 import { buildBillAmountSummariesWithPrize, buildBillData, buildBillSummaryWithPrize, formatDisplayDate, formatDisplayDateTime, formatSignedRupees, getAllowedAmountsLabel, getNormalizedPrizeBaseAmount, getNormalizedPrizeCalculatedAmount, groupTransferHistoryByActor, openTransferBill, summarizeTransferHistory } from '../utils/transferBill';
 import { groupConsecutiveNumberRows, sortRowsForConsecutiveNumbers } from '../utils/numberRanges';
 import { useFunctionShortcuts } from '../utils/functionShortcuts';
@@ -4374,6 +4375,12 @@ const AdminDashboard = ({
       return adminSendSellerSelectRef.current || adminUnsoldDateInputRef.current || adminSendCodeInputRef.current;
     }
 
+    if (activeTab === 'booking-book') {
+      return dashboardRef.current?.querySelector(
+        '.retro-purchase-window.booking-full-page input:not([type="hidden"]):not(:disabled), .retro-purchase-window.booking-full-page select:not(:disabled), .retro-purchase-window.booking-full-page [tabindex]:not([tabindex="-1"])'
+      );
+    }
+
     const activeContent = dashboardRef.current?.querySelector('.accordion-content');
     return activeContent?.querySelector('input:not([type="hidden"]):not(:disabled), select:not(:disabled), textarea:not(:disabled), button:not(:disabled)')
       || dashboardRef.current?.querySelector('button:not(:disabled)');
@@ -4575,6 +4582,7 @@ const AdminDashboard = ({
 
   const directAdminSellers = (treeData?.children || []).filter((node) => node.role === 'seller');
   const activeAmountAdminSellers = directAdminSellers.filter((seller) => sellerSupportsAmount(seller, purchaseAmount || initialAmount));
+  const shouldShowAmountTreeNode = (node) => node?.role !== 'seller' || sellerSupportsAmount(node, initialAmount || purchaseAmount);
   const adminPrizeTrackerSellerOptions = [
     { id: '', username: 'All Sellers', keyword: 'ALL' },
     ...activeAmountAdminSellers
@@ -6201,7 +6209,11 @@ const AdminDashboard = ({
     { tab: 'generate-bill', label: 'Generate Bill' },
     { tab: 'track-number', label: 'Track Number' },
     { tab: 'prize-tracker', label: 'Prize Tracker' },
-    { tab: 'see-purchase', label: 'See Purchase' }
+    { tab: 'see-purchase', label: 'See Purchase' },
+    { tab: 'booking-book', label: 'Book Numbers', shortcutLetter: 'N' },
+    { tab: 'booking-summary', label: 'Summary Booking', shortcutLetter: 'O' },
+    { tab: 'booking-prize', label: 'Prize Booking', shortcutLetter: 'P' },
+    { tab: 'booking-bill', label: 'Bill Booking', shortcutLetter: 'Q' }
   ];
   const adminLauncherActions = [
     { id: 'piece-summary', label: 'F10 - Unsold Summary' }
@@ -6320,6 +6332,62 @@ const AdminDashboard = ({
               Upload Price/Result
             </button>
           </div>
+        )}
+
+        {activeTab === 'booking-book' && (
+          <BookingPanel
+            mode="book"
+            currentUser={user}
+            initialSessionMode={initialSessionMode}
+            initialPurchaseCategory={initialPurchaseCategory}
+            initialAmount={initialAmount}
+            entryCompanyLabel={entryCompanyLabel}
+            onExit={requestExitConfirmation}
+            onError={setError}
+            onSuccess={setSuccess}
+          />
+        )}
+
+        {activeTab === 'booking-summary' && (
+          <BookingPanel
+            mode="record"
+            currentUser={user}
+            initialSessionMode={initialSessionMode}
+            initialPurchaseCategory={initialPurchaseCategory}
+            initialAmount={initialAmount}
+            entryCompanyLabel={entryCompanyLabel}
+            onExit={requestExitConfirmation}
+            onError={setError}
+            onSuccess={setSuccess}
+          />
+        )}
+
+        {activeTab === 'booking-prize' && (
+          <BookingPanel
+            mode="price-track"
+            currentUser={user}
+            initialSessionMode={initialSessionMode}
+            initialPurchaseCategory={initialPurchaseCategory}
+            initialAmount={initialAmount}
+            entryCompanyLabel={entryCompanyLabel}
+            onExit={requestExitConfirmation}
+            onError={setError}
+            onSuccess={setSuccess}
+          />
+        )}
+
+        {activeTab === 'booking-bill' && (
+          <BookingPanel
+            mode="bill"
+            currentUser={user}
+            initialSessionMode={initialSessionMode}
+            initialPurchaseCategory={initialPurchaseCategory}
+            initialAmount={initialAmount}
+            entryCompanyLabel={entryCompanyLabel}
+            onExit={requestExitConfirmation}
+            onError={setError}
+            onSuccess={setSuccess}
+          />
         )}
 
         {activeTab === 'upload-price' && (
@@ -6684,6 +6752,7 @@ const AdminDashboard = ({
                 emptyMessage="No tree found"
                 onDelete={handleDeleteUser}
                 deletingUserId={deletingUserId}
+                shouldShowNode={shouldShowAmountTreeNode}
               />
             </div>
           </div>

@@ -1092,6 +1092,7 @@ const SellerDashboard = ({
     node.role === 'seller' && allowedChildSellerTypes.includes(normalizeSellerType(node.sellerType))
   ));
   const activeAmountChildSellers = directChildSellers.filter((seller) => sellerSupportsAmount(seller, amount));
+  const shouldShowAmountTreeNode = (node) => node?.role !== 'seller' || sellerSupportsAmount(node, amount);
   const canCreateChildSeller = allowedChildSellerTypes.length > 0;
   const canForwardPurchase = currentSellerType !== 'normal_seller';
   const canUseStockTransfer = currentSellerType === 'seller' || currentSellerType === 'sub_seller';
@@ -6013,6 +6014,7 @@ const SellerDashboard = ({
                 emptyMessage="No tree found"
                 onDelete={handleDeleteUser}
                 deletingUserId={deletingUserId}
+                shouldShowNode={shouldShowAmountTreeNode}
               />
             </div>
           </div>

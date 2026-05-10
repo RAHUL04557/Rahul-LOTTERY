@@ -403,6 +403,89 @@ const getAdmins = async (req, res) => {
   }
 };
 
+const deleteAdmin = async (req, res) => {
+  try {
+    if (req.user.role !== 'superadmin') {
+      return res.status(403).json({ message: 'Only super admin can delete admin IDs' });
+    }
+
+    const targetAdminId = Number(req.params.userId);
+    if (!targetAdminId) {
+      return res.status(400).json({ message: 'Valid admin id required' });
+    }
+
+    const targetAdminResult = await query(
+      "SELECT id, username, role FROM users WHERE id = $1 AND role = 'admin' LIMIT 1",
+      [targetAdminId]
+    );
+
+    if (targetAdminResult.rows.length === 0) {
+      return res.status(404).json({ message: 'Admin not found' });
+    }
+
+    const branchResult = await query(
+      `WITH RECURSIVE branch_users AS (
+        SELECT id
+        FROM users
+        WHERE id = $1
+        UNION ALL
+        SELECT u.id
+        FROM users u
+        INNER JOIN branch_users bu ON u.parent_id = bu.id
+      )
+      SELECT id FROM branch_users`,
+      [targetAdminId]
+    );
+
+    const branchIds = branchResult.rows.map((row) => row.id);
+    await query('DELETE FROM users WHERE id = ANY($1::int[])', [branchIds]);
+
+    res.json({
+      message: `${targetAdminResult.rows[0].username} admin deleted successfully`,
+      deletedCount: branchIds.length
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+const changeAdminPassword = async (req, res) => {
+  try {
+    if (req.user.role !== 'superadmin') {
+      return res.status(403).json({ message: 'Only super admin can change admin password' });
+    }
+
+    const targetAdminId = Number(req.params.userId);
+    const newPassword = String(req.body.newPassword || '');
+
+    if (!targetAdminId) {
+      return res.status(400).json({ message: 'Valid admin id required' });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ message: 'Password must be at least 8 characters' });
+    }
+
+    const targetAdminResult = await query(
+      "SELECT id, username, role FROM users WHERE id = $1 AND role = 'admin' LIMIT 1",
+      [targetAdminId]
+    );
+
+    if (targetAdminResult.rows.length === 0) {
+      return res.status(404).json({ message: 'Admin not found' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await query('UPDATE users SET password = $1 WHERE id = $2', [hashedPassword, targetAdminId]);
+
+    res.json({
+      message: `Password updated successfully for ${targetAdminResult.rows[0].username}`
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
 const changeChildPassword = async (req, res) => {
   try {
     const targetUserId = Number(req.params.userId);
@@ -455,4 +538,4 @@ const changeChildPassword = async (req, res) => {
   }
 };
 
-module.exports = { createSeller, createAdmin, getAdmins, getChildSellers, getAllSellers, getVisibleUserTree, deleteSeller, changeChildPassword };
+module.exports = { createSeller, createAdmin, getAdmins, deleteAdmin, changeAdminPassword, getChildSellers, getAllSellers, getVisibleUserTree, deleteSeller, changeChildPassword };

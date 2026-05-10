@@ -1,5 +1,5 @@
 const express = require('express');
-const { createSeller, createAdmin, getAdmins, getChildSellers, getAllSellers, getVisibleUserTree, deleteSeller, changeChildPassword } = require('../controllers/userController');
+const { createSeller, createAdmin, getAdmins, deleteAdmin, changeAdminPassword, getChildSellers, getAllSellers, getVisibleUserTree, deleteSeller, changeChildPassword } = require('../controllers/userController');
 const { authenticateToken, authorizeRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -10,6 +10,8 @@ router.post('/create-seller', authenticateToken, createSeller);
 // Super admin can create and view admin IDs
 router.post('/create-admin', authenticateToken, authorizeRole(['superadmin']), createAdmin);
 router.get('/admins', authenticateToken, authorizeRole(['superadmin']), getAdmins);
+router.delete('/admins/:userId', authenticateToken, authorizeRole(['superadmin']), deleteAdmin);
+router.patch('/admins/:userId/password', authenticateToken, authorizeRole(['superadmin']), changeAdminPassword);
 
 // Get child sellers
 router.get('/child-sellers', authenticateToken, getChildSellers);

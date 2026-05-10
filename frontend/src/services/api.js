@@ -362,6 +362,8 @@ export const userService = {
     data: { username, password }
   }, 'create_admin'),
   getAdmins: () => api.get('/users/admins'),
+  deleteAdmin: (userId) => api.delete(`/users/admins/${userId}`),
+  changeAdminPassword: (userId, newPassword) => api.patch(`/users/admins/${userId}/password`, { newPassword }),
   getChildSellers: async () => {
     try {
       return await api.get('/users/child-sellers');
