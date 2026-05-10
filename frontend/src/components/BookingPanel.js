@@ -912,40 +912,26 @@ const BookingPanel = ({
     writeJson(entriesKey, normalizedEntries);
   };
 
-  useEffect(() => {
-    if (mode !== 'book' || !hydrated || serverSyncKeyRef.current === entriesKey) return;
-    serverSyncKeyRef.current = entriesKey;
-    bookingService.getEntries()
-      .then((response) => {
-        const serverEntries = normalizeServerBookingEntries(response.data);
-        if (serverEntries.length === 0) return;
-        const serverScopeKeys = new Set(serverEntries.map(getBookingEntryScopeKey));
-        setAllEntries((currentEntries) => {
-          const mergedEntries = normalizeStoredBookingEntries([
-            ...currentEntries.filter((entry) => !serverScopeKeys.has(getBookingEntryScopeKey(entry))),
-            ...serverEntries
-          ]);
-          writeJson(entriesKey, mergedEntries);
-          return mergedEntries;
-        });
-      })
-      .catch((error) => {
-        console.warn('Booking server sync failed:', error.response?.data?.message || error.message);
-      });
-  }, [entriesKey, hydrated, mode]);
-
-  const backupMemoToServer = ({ memoNumber: targetMemoNumber, sellerId: targetSellerId, bookingDate: targetDate, rows }) => {
+  const uploadMemoRowsToServer = useCallback(({
+    memoNumber: targetMemoNumber,
+    sellerId: targetSellerId,
+    bookingDate: targetDate,
+    sessionMode: targetSessionMode,
+    purchaseCategory: targetPurchaseCategory,
+    rows
+  }) => {
+    const safeRows = Array.isArray(rows) ? rows : [];
     const payload = {
       memoNumber: targetMemoNumber,
       sellerId: targetSellerId,
       bookingDate: targetDate,
-      sessionMode: currentSessionMode,
-      purchaseCategory: currentPurchaseCategory,
-      entries: rows.map((row, index) => ({
-        rowOrder: index,
-        bookingDate: targetDate,
-        sessionMode: row.sessionMode,
-        purchaseCategory: row.purchaseCategory,
+      sessionMode: targetSessionMode || currentSessionMode,
+      purchaseCategory: targetPurchaseCategory || currentPurchaseCategory,
+      entries: safeRows.map((row, index) => ({
+        rowOrder: Number.isInteger(Number(row.rowOrder)) ? Number(row.rowOrder) : index,
+        bookingDate: row.bookingDate || targetDate,
+        sessionMode: row.sessionMode || targetSessionMode || currentSessionMode,
+        purchaseCategory: row.purchaseCategory || targetPurchaseCategory || currentPurchaseCategory,
         amount: row.amount,
         boxValue: row.boxValue,
         rangeStart: row.rangeStart,
@@ -953,10 +939,10 @@ const BookingPanel = ({
       }))
     };
 
-    bookingService.replaceMemo(payload)
+    return bookingService.replaceMemo(payload)
       .then((response) => {
         const serverEntries = normalizeServerBookingEntries(response.data?.entries);
-        if (serverEntries.length === 0) return;
+        if (serverEntries.length === 0) return response;
         const serverScopeKeys = new Set(serverEntries.map(getBookingEntryScopeKey));
         setAllEntries((currentEntries) => {
           const mergedEntries = normalizeStoredBookingEntries([
@@ -966,7 +952,78 @@ const BookingPanel = ({
           writeJson(entriesKey, mergedEntries);
           return mergedEntries;
         });
+        return response;
+      });
+  }, [currentPurchaseCategory, currentSessionMode, entriesKey]);
+
+  useEffect(() => {
+    if (mode !== 'book' || !hydrated || serverSyncKeyRef.current === entriesKey) return;
+    serverSyncKeyRef.current = entriesKey;
+    const localEntriesBeforeSync = allEntries;
+    bookingService.getEntries()
+      .then((response) => {
+        const serverEntries = normalizeServerBookingEntries(response.data);
+        const serverScopeKeys = new Set(serverEntries.map(getBookingEntryScopeKey));
+        if (serverEntries.length > 0) {
+          setAllEntries((currentEntries) => {
+            const mergedEntries = normalizeStoredBookingEntries([
+              ...currentEntries.filter((entry) => !serverScopeKeys.has(getBookingEntryScopeKey(entry))),
+              ...serverEntries
+            ]);
+            writeJson(entriesKey, mergedEntries);
+            return mergedEntries;
+          });
+        }
+
+        const localMemoGroups = groupRows(
+          localEntriesBeforeSync.filter((entry) => (
+            !entry.serverId
+            && entry.memoNumber
+            && entry.sellerId
+            && entry.bookingDate
+            && entry.rangeStart
+          )),
+          getBookingEntryScopeKey,
+          (entry) => ({
+            memoNumber: Number(entry.memoNumber || 0),
+            sellerId: entry.sellerId,
+            bookingDate: normalizeDateValue(entry.bookingDate),
+            sessionMode: entry.sessionMode,
+            purchaseCategory: entry.purchaseCategory,
+            rows: []
+          }),
+          (group, entry) => {
+            group.rows.push(entry);
+          }
+        );
+
+        localMemoGroups.forEach((group) => {
+          uploadMemoRowsToServer({
+            memoNumber: group.memoNumber,
+            sellerId: group.sellerId,
+            bookingDate: group.bookingDate,
+            sessionMode: group.sessionMode,
+            purchaseCategory: group.purchaseCategory,
+            rows: group.rows.sort((left, right) => Number(left.rowOrder ?? 0) - Number(right.rowOrder ?? 0))
+          }).catch((error) => {
+            console.warn('Booking local backup failed:', error.response?.data?.message || error.message);
+          });
+        });
       })
+      .catch((error) => {
+        console.warn('Booking server sync failed:', error.response?.data?.message || error.message);
+      });
+  }, [allEntries, entriesKey, hydrated, mode, uploadMemoRowsToServer]);
+
+  const backupMemoToServer = ({ memoNumber: targetMemoNumber, sellerId: targetSellerId, bookingDate: targetDate, rows }) => {
+    uploadMemoRowsToServer({
+      memoNumber: targetMemoNumber,
+      sellerId: targetSellerId,
+      bookingDate: targetDate,
+      sessionMode: currentSessionMode,
+      purchaseCategory: currentPurchaseCategory,
+      rows
+    })
       .catch((error) => {
         console.warn('Booking memo server backup failed:', error.response?.data?.message || error.message);
       });
