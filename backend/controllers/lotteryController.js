@@ -2368,73 +2368,51 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
       return res.status(400).json({ message: `Selected seller cannot use amount ${normalizedAmount}` });
     }
 
+    const targetBranchIds = Number(targetSeller.id) === Number(req.user.id)
+      ? [Number(req.user.id)]
+      : await getDirectSellerBranchIds(req.user.id, targetSeller.id);
+
+    if (targetBranchIds.length === 0) {
+      return res.status(403).json({ message: 'Selected seller stock access nahi hai' });
+    }
+
     await client.query('BEGIN');
 
-    let existingMemoResult;
-
-    if (currentUserIsAdmin) {
-      existingMemoResult = uniqueMemoEntryIds.length > 0
-        ? await client.query(
-          `SELECT DISTINCT le.*
-           FROM lottery_entries le
-           INNER JOIN lottery_entry_history h ON h.entry_id = le.id
-           WHERE le.id = ANY($1::int[])
-             AND le.entry_source = $2
-             AND h.actor_user_id = $3
-             AND h.to_user_id = $4
-             AND h.action_type = 'purchase_sent'
-             AND h.memo_number = $5
-             AND le.status IN ('accepted', 'unsold')
-           ORDER BY le.number ASC`,
-          [uniqueMemoEntryIds, PURCHASE_ENTRY_SOURCE, req.user.id, targetSeller.id, normalizedMemoNumber]
-        )
-        : await client.query(
-          `SELECT DISTINCT le.*
-           FROM lottery_entry_history h
-           INNER JOIN lottery_entries le ON le.id = h.entry_id
-           WHERE h.actor_user_id = $1
-             AND h.to_user_id = $2
-             AND h.action_type = 'purchase_sent'
-             AND h.memo_number = $3
-             AND h.booking_date = $4::date
-             AND h.session_mode = $5
-             AND h.purchase_category = $6
-             AND h.amount = $7::numeric
-             AND le.entry_source = $8
-             AND le.status IN ('accepted', 'unsold')
-           ORDER BY le.number ASC`,
-          [req.user.id, targetSeller.id, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount, PURCHASE_ENTRY_SOURCE]
-        );
-    } else {
-      existingMemoResult = uniqueMemoEntryIds.length > 0
-        ? await client.query(
-          `SELECT *
-           FROM lottery_entries
-           WHERE id = ANY($1::int[])
-             AND user_id = $2
-             AND entry_source = $3
-             AND forwarded_by = $4
-             AND (memo_number = $5 OR purchase_memo_number = $5)
-             AND status IN ('accepted', 'unsold')
-           ORDER BY number ASC`,
-          [uniqueMemoEntryIds, targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber]
-        )
-        : await client.query(
-          `SELECT *
-           FROM lottery_entries
-           WHERE user_id = $1
-             AND entry_source = $2
-             AND forwarded_by = $3
-             AND (memo_number = $4 OR purchase_memo_number = $4)
-             AND booking_date = $5::date
-             AND session_mode = $6
-             AND purchase_category = $7
-             AND amount = $8::numeric
-             AND status IN ('accepted', 'unsold')
-           ORDER BY number ASC`,
-          [targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount]
-        );
-    }
+    const historyActionType = currentUserIsAdmin ? 'purchase_sent' : 'purchase_forwarded';
+    const existingMemoResult = uniqueMemoEntryIds.length > 0
+      ? await client.query(
+        `SELECT DISTINCT le.*
+         FROM lottery_entries le
+         INNER JOIN lottery_entry_history h ON h.entry_id = le.id
+         WHERE le.id = ANY($1::int[])
+           AND le.user_id = ANY($2::int[])
+           AND le.entry_source = $3
+           AND h.actor_user_id = $4
+           AND h.to_user_id = $5
+           AND h.action_type = $6
+           AND COALESCE(h.memo_number, le.purchase_memo_number, le.memo_number) = $7
+           AND LOWER(TRIM(le.status)) IN ('accepted', 'unsold')
+         ORDER BY le.number ASC`,
+        [uniqueMemoEntryIds, targetBranchIds, PURCHASE_ENTRY_SOURCE, req.user.id, targetSeller.id, historyActionType, normalizedMemoNumber]
+      )
+      : await client.query(
+        `SELECT DISTINCT le.*
+         FROM lottery_entry_history h
+         INNER JOIN lottery_entries le ON le.id = h.entry_id
+         WHERE h.actor_user_id = $1
+           AND h.to_user_id = $2
+           AND h.action_type = $3
+           AND COALESCE(h.memo_number, le.purchase_memo_number, le.memo_number) = $4
+           AND h.booking_date = $5::date
+           AND h.session_mode = $6
+           AND h.purchase_category = $7
+           AND h.amount = $8::numeric
+           AND le.user_id = ANY($9::int[])
+           AND le.entry_source = $10
+           AND LOWER(TRIM(le.status)) IN ('accepted', 'unsold')
+         ORDER BY le.number ASC`,
+        [req.user.id, targetSeller.id, historyActionType, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount, targetBranchIds, PURCHASE_ENTRY_SOURCE]
+      );
 
     if (existingMemoResult.rows.length > 0) {
       const existingIds = existingMemoResult.rows.map((row) => row.id);
