@@ -592,7 +592,7 @@ const buildPurchaseMemoSummaries = (entries = []) => {
   const memoMap = new Map();
 
   entries.forEach((entry) => {
-    const memoNumber = Number(entry.memoNumber || 0);
+    const memoNumber = Number(entry.purchaseMemoNumber || entry.purchase_memo_number || entry.memoNumber || entry.memo_number || 0);
     if (!Number.isInteger(memoNumber) || memoNumber <= 0) {
       return;
     }
@@ -5494,6 +5494,16 @@ const AdminDashboard = ({
                 });
                 return;
               }
+              const allowedSemOptions = getAvailableSemOptions(purchaseAmount);
+              if (allowedSemOptions.length > 0 && !allowedSemOptions.includes(String(parsed.semValue || ''))) {
+                openBlockingWarning(`Amount ${purchaseAmount} me SEM ${allowedSemOptions.join(', ')} hi allowed hai`, [], 'Warning', () => {
+                  window.requestAnimationFrame(() => {
+                    adminSendCodeInputRef.current?.focus();
+                    adminSendCodeInputRef.current?.select?.();
+                  });
+                });
+                return;
+              }
               if (activeTab === 'purchase-send') {
                 setPurchaseCategory(parsed.resolvedPurchaseCategory || purchaseCategory);
               }
@@ -5522,6 +5532,16 @@ const AdminDashboard = ({
                 openBlockingWarning(parsed.error, [], 'Warning', () => {
                   setPurchaseCodeInput('');
                   window.requestAnimationFrame(() => adminSendCodeInputRef.current?.focus());
+                });
+                return;
+              }
+              const allowedSemOptions = getAvailableSemOptions(purchaseAmount);
+              if (allowedSemOptions.length > 0 && !allowedSemOptions.includes(String(parsed.semValue || ''))) {
+                openBlockingWarning(`Amount ${purchaseAmount} me SEM ${allowedSemOptions.join(', ')} hi allowed hai`, [], 'Warning', () => {
+                  window.requestAnimationFrame(() => {
+                    adminSendCodeInputRef.current?.focus();
+                    adminSendCodeInputRef.current?.select?.();
+                  });
                 });
                 return;
               }
