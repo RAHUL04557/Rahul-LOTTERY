@@ -53,7 +53,7 @@ const getDateOnlyValue = (dateValue) => {
 
 const mapApiEntry = (entry) => ({
   id: entry.id,
-  userId: entry.userId,
+  userId: entry.userId || entry.user_id,
   username: entry.username,
   displaySeller: entry.forwardedByUsername || entry.username,
   forwardedBy: entry.forwardedBy,
@@ -562,6 +562,14 @@ const buildCurrentMemoSummaries = (entries = []) => {
 
   return buildPurchaseMemoSummaries(normalizedEntries);
 };
+
+const getPurchaseEntryMemoNumber = (entry = {}) => Number(
+  entry.purchaseMemoNumber
+  || entry.purchase_memo_number
+  || entry.memoNumber
+  || entry.memo_number
+  || 0
+);
 
 const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, options = {}) => {
   const groups = options.ignoreMemoRowOrder
@@ -2383,6 +2391,10 @@ const SellerDashboard = ({
   const getRetroRowsForSave = async () => {
     const currentRows = [...retroDraftRows];
 
+    if (isEditingExistingPurchaseSendMemo && currentRows.length === 0) {
+      return { rows: currentRows };
+    }
+
     if (!hasPendingRetroEditorValues()) {
       return { rows: currentRows };
     }
@@ -2443,9 +2455,13 @@ const SellerDashboard = ({
     const availableNumbers = new Set((response.data || []).map((entry) => String(entry.number || '').padStart(5, '0')));
     if (isEditingExistingPurchaseSendMemo) {
       purchaseSendMemoEntries.forEach((entry) => {
+        const selectedSellerName = String(selectedParty?.username || '').trim().toLowerCase();
+        const entrySellerName = String(entry.displaySeller || entry.username || '').trim().toLowerCase();
+        const sellerMatches = String(entry.userId || entry.user_id || '') === String(purchaseSendSellerId || '')
+          || (selectedSellerName && entrySellerName === selectedSellerName);
         if (
-          Number(entry.purchaseMemoNumber || entry.memoNumber || 0) === Number(purchaseSendMemoNumber || 0)
-          && String(entry.userId || '') === String(purchaseSendSellerId || '')
+          getPurchaseEntryMemoNumber(entry) === Number(purchaseSendMemoNumber || 0)
+          && sellerMatches
           && String(entry.sem || entry.boxValue || '') === String(row.semValue || '')
           && String(entry.amount || '') === String(row.bookingAmount || amount || '')
           && String(entry.sessionMode || '') === String(row.resolvedSessionMode || sessionMode || '')
@@ -2589,7 +2605,7 @@ const SellerDashboard = ({
       setRetroToInput('');
     } else {
       const selectedEntries = purchaseSendMemoEntries.filter((entry) => (
-        Number(entry.purchaseMemoNumber || entry.memoNumber) === Number(option.memoNumber)
+        getPurchaseEntryMemoNumber(entry) === Number(option.memoNumber)
       ));
       const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, amount, { ignoreMemoRowOrder: true });
       setRetroDraftRows(draftRows);
@@ -3145,8 +3161,14 @@ const SellerDashboard = ({
       const currentMemoEntryIds = isEditingExistingPurchaseSendMemo
         ? purchaseSendMemoEntries
           .filter((entry) => (
-            Number(entry.purchaseMemoNumber || entry.memoNumber || 0) === effectiveMemoNumber
-            && String(entry.userId || '') === String(purchaseSendSellerId || '')
+          getPurchaseEntryMemoNumber(entry) === effectiveMemoNumber
+            && (
+              String(entry.userId || entry.user_id || '') === String(purchaseSendSellerId || '')
+              || (
+                String(selectedParty?.username || '').trim()
+                && String(entry.displaySeller || entry.username || '').trim().toLowerCase() === String(selectedParty?.username || '').trim().toLowerCase()
+              )
+            )
           ))
           .map((entry) => entry.id)
           .filter(Boolean)

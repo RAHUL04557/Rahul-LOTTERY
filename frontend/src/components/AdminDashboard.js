@@ -3015,6 +3015,22 @@ const AdminDashboard = ({
 
   const getPurchaseSendRowsForSave = async () => {
     const currentRows = [...purchaseDraftRows];
+    const currentMemoEntryMatches = (entry = {}) => {
+      if (!isEditingExistingPurchaseMemo) {
+        return false;
+      }
+
+      const selectedSellerName = String(selectedPurchaseSeller?.username || '').trim().toLowerCase();
+      const entrySellerName = String(entry.displaySeller || entry.username || '').trim().toLowerCase();
+      const sellerMatches = String(entry.userId || entry.user_id || '') === String(purchaseSellerId || '')
+        || (selectedSellerName && entrySellerName === selectedSellerName);
+
+      return getPurchaseEntryMemoNumber(entry) === Number(purchaseMemoNumber || 0) && sellerMatches;
+    };
+
+    if (isEditingExistingPurchaseMemo && currentRows.length === 0) {
+      return { rows: currentRows };
+    }
 
     if (!hasPendingPurchaseSendEditorValues()) {
       return { rows: currentRows };
@@ -3041,9 +3057,7 @@ const AdminDashboard = ({
 
     const conflictingPurchaseEntries = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
       !(
-        isEditingExistingPurchaseMemo
-        && getPurchaseEntryMemoNumber(entry) === Number(purchaseMemoNumber || 0)
-        && String(entry.userId || '') === String(purchaseSellerId || '')
+        currentMemoEntryMatches(entry)
       )
       && String(entry.sem || '') === String(result.row.semValue || '')
       && String(entry.sessionMode || '') === String(result.row.resolvedSessionMode || '')
@@ -3097,6 +3111,18 @@ const AdminDashboard = ({
     }
 
     const isEditingExistingRow = purchaseActiveRowIndex < purchaseDraftRows.length;
+    const currentMemoEntryMatches = (entry = {}) => {
+      if (!isEditingExistingPurchaseMemo) {
+        return false;
+      }
+
+      const selectedSellerName = String(selectedPurchaseSeller?.username || '').trim().toLowerCase();
+      const entrySellerName = String(entry.displaySeller || entry.username || '').trim().toLowerCase();
+      const sellerMatches = String(entry.userId || entry.user_id || '') === String(purchaseSellerId || '')
+        || (selectedSellerName && entrySellerName === selectedSellerName);
+
+      return getPurchaseEntryMemoNumber(entry) === Number(purchaseMemoNumber || 0) && sellerMatches;
+    };
     const conflictingPurchaseDraft = purchaseDraftRows.find((row, index) => (
       index !== purchaseActiveRowIndex
       && String(row.semValue || '') === String(result.row.semValue || '')
@@ -3117,9 +3143,7 @@ const AdminDashboard = ({
 
     const conflictingPurchaseEntries = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
       !(
-        isEditingExistingPurchaseMemo
-        && getPurchaseEntryMemoNumber(entry) === Number(purchaseMemoNumber || 0)
-        && String(entry.userId || '') === String(purchaseSellerId || '')
+        currentMemoEntryMatches(entry)
       )
       && String(entry.sem || '') === String(result.row.semValue || '')
       && String(entry.sessionMode || '') === String(result.row.resolvedSessionMode || '')
@@ -3147,9 +3171,7 @@ const AdminDashboard = ({
       });
       const serverConflicts = (serverEntriesResponse.data || []).filter((entry) => (
         !(
-          isEditingExistingPurchaseMemo
-          && getPurchaseEntryMemoNumber(entry) === Number(purchaseMemoNumber || 0)
-          && String(entry.userId || entry.user_id || '') === String(purchaseSellerId || '')
+          currentMemoEntryMatches(mapApiEntry(entry))
         )
         && numberFallsWithinRange(entry.number, result.row.from, result.row.to)
       ));
@@ -3328,12 +3350,17 @@ const AdminDashboard = ({
 
       const effectiveMemoNumber = Number(purchaseMemoNumber || nextPurchaseMemoNumber);
       const refreshBookingDate = rowsToSave[0]?.drawDate || purchaseBookingDate;
+      const selectedPurchaseSellerName = String(selectedPurchaseSeller?.username || '').trim().toLowerCase();
       const currentMemoEntryIds = isEditingExistingPurchaseMemo
         ? [...purchaseEntries, ...unsoldPurchaseEntries]
-          .filter((entry) => (
-            getPurchaseEntryMemoNumber(entry) === effectiveMemoNumber
-            && String(entry.userId || '') === String(purchaseSellerId || '')
-          ))
+          .filter((entry) => {
+            const entrySellerName = String(entry.displaySeller || entry.username || '').trim().toLowerCase();
+            return getPurchaseEntryMemoNumber(entry) === effectiveMemoNumber
+              && (
+                String(entry.userId || '') === String(purchaseSellerId || '')
+                || (selectedPurchaseSellerName && entrySellerName === selectedPurchaseSellerName)
+              );
+          })
           .map((entry) => entry.id)
           .filter(Boolean)
         : [];

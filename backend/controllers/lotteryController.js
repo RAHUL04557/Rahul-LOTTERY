@@ -2368,9 +2368,14 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
       return res.status(400).json({ message: `Selected seller cannot use amount ${normalizedAmount}` });
     }
 
-    const targetBranchIds = Number(targetSeller.id) === Number(req.user.id)
-      ? [Number(req.user.id)]
-      : await getDirectSellerBranchIds(req.user.id, targetSeller.id);
+    const targetBranchIds = [Number(targetSeller.id)];
+
+    if (Number(targetSeller.id) !== Number(req.user.id)) {
+      const directBranchIds = await getDirectSellerBranchIds(req.user.id, targetSeller.id);
+      if (!directBranchIds.includes(Number(targetSeller.id))) {
+        return res.status(403).json({ message: 'Selected seller stock access nahi hai' });
+      }
+    }
 
     if (targetBranchIds.length === 0) {
       return res.status(403).json({ message: 'Selected seller stock access nahi hai' });
@@ -2379,7 +2384,8 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
     await client.query('BEGIN');
 
     const historyActionType = currentUserIsAdmin ? 'purchase_sent' : 'purchase_forwarded';
-    const existingMemoResult = uniqueMemoEntryIds.length > 0
+    const shouldLookupMemoByEntryIds = normalizedRows.length > 0 && uniqueMemoEntryIds.length > 0;
+    const existingMemoResult = shouldLookupMemoByEntryIds
       ? await client.query(
         `SELECT DISTINCT le.*
          FROM lottery_entries le
