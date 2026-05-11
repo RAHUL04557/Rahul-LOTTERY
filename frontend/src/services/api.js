@@ -522,6 +522,17 @@ export const lotteryService = {
         ...(purchaseCategory && { purchaseCategory })
       }
     }),
+  getAdminPurchaseSentHistory: ({ bookingDate, sessionMode, amount, boxValue, purchaseCategory } = {}, requestOptions = {}) =>
+    api.get('/lottery/admin-purchases/sent-history', {
+      ...requestOptions,
+      params: {
+        ...(bookingDate && { bookingDate }),
+        ...(sessionMode && { sessionMode }),
+        ...(amount && { amount }),
+        ...(boxValue && { boxValue }),
+        ...(purchaseCategory && { purchaseCategory })
+      }
+    }),
   sendAdminPurchase: (payload) => postWithOfflineQueue('/lottery/purchases/send', payload, 'purchase_send'),
   replacePurchaseSendMemo: (payload) => requestWithOfflineQueue({ method: 'PUT', url: '/lottery/purchases/memo', data: payload }, 'replace_purchase_send_memo'),
   sendPurchase: (payload) => postWithOfflineQueue('/lottery/purchases/send', payload, 'purchase_send'),

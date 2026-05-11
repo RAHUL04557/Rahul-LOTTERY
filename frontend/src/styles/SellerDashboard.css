@@ -43,6 +43,43 @@
   display: none;
 }
 
+.seller-dashboard:has(.retro-purchase-window.full-page) {
+  height: 100vh;
+  overflow: hidden;
+}
+
+.seller-dashboard:has(.retro-purchase-window.full-page) .dashboard-accordion {
+  height: calc(100vh - 44px);
+  min-height: 0;
+  padding: 0 14px 0;
+  overflow: hidden;
+}
+
+.seller-dashboard:has(.retro-purchase-window.full-page) .accordion-item:has(.retro-purchase-shell) {
+  flex: 1;
+  min-height: 0;
+  margin-bottom: 0;
+  border: 0;
+}
+
+.seller-dashboard:has(.retro-purchase-window.full-page) .accordion-content:has(.retro-purchase-shell) {
+  height: 100%;
+  min-height: 0;
+  padding: 0 0 8px;
+  border-top: 0;
+  overflow: hidden;
+}
+
+.seller-dashboard:has(.retro-purchase-window.full-page) .retro-purchase-shell {
+  height: 100%;
+  margin-bottom: 0;
+}
+
+.seller-dashboard:has(.retro-purchase-window.full-page) .retro-purchase-window.full-page {
+  height: 100%;
+  max-height: 100%;
+}
+
 .seller-dashboard-actions {
   position: absolute;
   top: 76px;

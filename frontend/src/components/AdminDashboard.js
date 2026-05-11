@@ -809,7 +809,7 @@ const normalizeSeePurchaseEntry = (entry = {}, sourceType) => ({
   sessionMode: entry.sessionMode || entry.session_mode || '',
   purchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' || entry.session_mode === 'NIGHT' ? 'E' : 'M'),
   memoNumber: entry.memoNumber ?? entry.memo_number ?? '',
-  sellerName: entry.displaySeller || entry.username || '',
+  sellerName: entry.displaySeller || entry.username || entry.sellerUsername || entry.seller_username || entry.toUsername || entry.to_username || '',
   status: entry.status || '',
   sourceType
 });
@@ -1364,6 +1364,7 @@ const AdminDashboard = ({
   const [pieceSummaryOpen, setPieceSummaryOpen] = useState(false);
   const [pieceSummaryDate, setPieceSummaryDate] = useState(getTodayDateValue());
   const [pieceSummaryRows, setPieceSummaryRows] = useState([]);
+  const [pieceSummaryStockNotTransferredPiece, setPieceSummaryStockNotTransferredPiece] = useState(0);
   const [pieceSummaryLoading, setPieceSummaryLoading] = useState(false);
   const [transferHistory, setTransferHistory] = useState([]);
   const [purchaseBillRows, setPurchaseBillRows] = useState([]);
@@ -2590,30 +2591,87 @@ const AdminDashboard = ({
     setError('');
 
     try {
+      const selectedSessionMode = getBillApiShift(seePurchaseShift);
+      const selectedPurchaseCategory = getBillPurchaseCategory(seePurchaseShift);
+      const selectedAmount = initialAmount || adminStockAmount;
+      const loadAdminSentHistory = async () => {
+        try {
+          return await lotteryService.getAdminPurchaseSentHistory({
+            bookingDate: seePurchaseDate,
+            sessionMode: selectedSessionMode,
+            purchaseCategory: selectedPurchaseCategory,
+            amount: initialAmount || purchaseAmount
+          }, { withSessionMode: false });
+        } catch (sentHistoryError) {
+          const [fallbackResponse, currentPurchaseResponse] = await Promise.all([
+            lotteryService.getTransferHistory({
+              date: seePurchaseDate,
+              shift: selectedSessionMode,
+              purchaseCategory: selectedPurchaseCategory,
+              amount: initialAmount || purchaseAmount
+            }, { withSessionMode: false }),
+            lotteryService.getPurchases({
+              bookingDate: seePurchaseDate,
+              sessionMode: selectedSessionMode,
+              purchaseCategory: selectedPurchaseCategory,
+              amount: initialAmount || purchaseAmount
+            }, { withSessionMode: false })
+          ]);
+          const currentPurchaseById = new Map((currentPurchaseResponse.data || []).map((entry) => [
+            String(entry.id || entry.entryId || entry.entry_id || ''),
+            entry
+          ]));
+
+          return {
+            data: (fallbackResponse.data || [])
+              .filter((entry) => (
+                String(entry.actionType || entry.action_type || '') === 'purchase_sent'
+                && String(entry.actorUserId || entry.actor_user_id || '') === String(user?.id || '')
+                && currentPurchaseById.has(String(entry.entryId || entry.entry_id || ''))
+              ))
+              .map((entry) => {
+                const currentEntry = currentPurchaseById.get(String(entry.entryId || entry.entry_id || '')) || {};
+                return {
+                  ...entry,
+                  memoNumber: entry.memoNumber ?? entry.memo_number ?? currentEntry.purchaseMemoNumber ?? currentEntry.purchase_memo_number ?? currentEntry.memoNumber ?? currentEntry.memo_number,
+                  memo_number: entry.memo_number ?? entry.memoNumber ?? currentEntry.purchase_memo_number ?? currentEntry.purchaseMemoNumber ?? currentEntry.memo_number ?? currentEntry.memoNumber
+                };
+              })
+          };
+        }
+      };
+
       const [stockResponse, sentResponse] = await Promise.all([
         lotteryService.getAdminPurchases({
           bookingDate: seePurchaseDate,
-          sessionMode: getBillApiShift(seePurchaseShift),
-          purchaseCategory: getBillPurchaseCategory(seePurchaseShift),
-          amount: initialAmount || adminStockAmount
+          sessionMode: selectedSessionMode,
+          purchaseCategory: selectedPurchaseCategory,
+          amount: selectedAmount
         }, { withSessionMode: false }),
-        lotteryService.getPurchases({
-          bookingDate: seePurchaseDate,
-          sessionMode: getBillApiShift(seePurchaseShift),
-          purchaseCategory: getBillPurchaseCategory(seePurchaseShift),
-          amount: initialAmount || purchaseAmount
-        }, { withSessionMode: false })
+        loadAdminSentHistory()
       ]);
       const normalizeAdminSeePurchaseEntry = (entry, sourceType) => {
+        const entryUserId = entry.userId || entry.user_id;
+        const sellerFromTree = flattenSellerNodes(treeData)
+          .find((seller) => String(seller.id) === String(entryUserId || ''))?.username || '';
+        const entrySellerName = sellerFromTree
+          || entry.displaySeller
+          || entry.username
+          || entry.sellerUsername
+          || entry.seller_username
+          || entry.toUsername
+          || entry.to_username
+          || entry.forwardedByUsername
+          || '';
         const resolvedSellerName = getAdminRootSellerName(
           treeData,
-          entry.displaySeller || entry.username || entry.forwardedByUsername || ''
+          entrySellerName
         );
 
         return normalizeSeePurchaseEntry({
           ...entry,
-          username: resolvedSellerName || entry.username,
-          displaySeller: resolvedSellerName || entry.displaySeller || entry.username
+          username: resolvedSellerName || entrySellerName || entry.username,
+          displaySeller: resolvedSellerName || entrySellerName || entry.displaySeller || entry.username
         }, sourceType);
       };
 
@@ -3176,6 +3234,19 @@ const AdminDashboard = ({
 
   const deletePurchaseDraftRow = () => {
     if (blockingWarning) {
+      return;
+    }
+
+    if (purchaseActiveRowIndex >= purchaseDraftRows.length && hasPendingPurchaseSendEditorValues()) {
+      resetPurchaseSendEntryInputs();
+      setPurchaseEditorVisible(true);
+      setPurchaseActiveRowIndex(purchaseDraftRows.length);
+      setError('');
+      setSuccess('');
+      window.requestAnimationFrame(() => {
+        adminSendCodeInputRef.current?.focus();
+        adminSendCodeInputRef.current?.select?.();
+      });
       return;
     }
 
@@ -4726,16 +4797,19 @@ const AdminDashboard = ({
         amount: summaryAmountValue
       });
 
-      setPieceSummaryRows((response.data || []).map((row) => ({
+      const summaryRows = (response.data || []).map((row) => ({
         id: row.sellerId || row.seller_id,
         sellerName: row.sellerName || row.seller_name || '',
         totalPiece: Number(row.totalPiece || row.total_piece || 0),
         unsoldPiece: Number(row.unsoldPiece || row.unsold_piece || 0),
         stockNotTransferredPiece: Number(row.stockNotTransferredPiece || row.stock_not_transferred_piece || 0)
-      })));
+      }));
+      setPieceSummaryStockNotTransferredPiece(Number(summaryRows[0]?.stockNotTransferredPiece || 0));
+      setPieceSummaryRows(summaryRows.filter((row) => Number(row.totalPiece || 0) > 0));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading piece summary');
       setPieceSummaryRows([]);
+      setPieceSummaryStockNotTransferredPiece(0);
     } finally {
       setPieceSummaryLoading(false);
     }
@@ -6285,7 +6359,6 @@ const AdminDashboard = ({
     !seePurchaseSellerFilter || entry.sellerName === seePurchaseSelectedSeller?.username
   ));
   const seePurchaseTotalEntries = [...seePurchaseAvailableEntries, ...seePurchaseAllSentEntries];
-  const seePurchaseTotalGroups = buildSeePurchaseRangeGroups(seePurchaseTotalEntries);
   const seePurchaseAvailableGroups = buildSeePurchaseRangeGroups(seePurchaseAvailableEntries);
   const seePurchaseSentGroups = buildSeePurchaseRangeGroups(seePurchaseSentOnlyEntries, true);
   const seePurchaseSummary = {
@@ -6393,8 +6466,8 @@ const AdminDashboard = ({
         </div>
       )}
       {pieceSummaryOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
-          <div style={{ background: '#fff', width: 'min(720px, 100%)', borderRadius: '8px', padding: '20px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1000, display: 'flex', padding: 0 }}>
+          <div style={{ background: '#fff', width: '100%', height: '100%', borderRadius: 0, padding: '20px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
               <h2 style={{ margin: 0 }}>F10 Unsold Summary</h2>
               <button type="button" onClick={closePieceSummary}>Close</button>
@@ -6419,33 +6492,35 @@ const AdminDashboard = ({
             {pieceSummaryLoading ? (
               <p>Loading...</p>
             ) : (
-              <table className="entries-table" style={{ marginTop: '16px' }}>
-                <thead>
-                  <tr>
-                    <th>Seller Name</th>
-                    <th>Total Piece</th>
-                    <th>Unsold Piece</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pieceSummaryRows.map((row) => (
-                    <tr key={row.id}>
-                      <td>{row.sellerName}</td>
-                      <td>{Number(row.totalPiece || 0).toFixed(2)}</td>
-                      <td>{Number(row.unsoldPiece || 0).toFixed(2)}</td>
+              <div style={{ marginTop: '16px', flex: 1, minHeight: 0, overflowY: 'auto', border: '1px solid #e2e8f0' }}>
+                <table className="entries-table" style={{ marginTop: 0 }}>
+                  <thead>
+                    <tr>
+                      <th>Seller Name</th>
+                      <th>Total Piece</th>
+                      <th>Unsold Piece</th>
                     </tr>
-                  ))}
-                  <tr>
-                    <td><strong>Total</strong></td>
-                    <td><strong>{pieceSummaryRows.reduce((sum, row) => sum + Number(row.totalPiece || 0), 0).toFixed(2)}</strong></td>
-                    <td><strong>{pieceSummaryRows.reduce((sum, row) => sum + Number(row.unsoldPiece || 0), 0).toFixed(2)}</strong></td>
-                  </tr>
-                  <tr style={{ color: '#c53030', background: '#fff5f5' }}>
-                    <td><strong>STOCK NOT TRANSFERED</strong></td>
-                    <td colSpan="2"><strong>{Number(pieceSummaryRows[0]?.stockNotTransferredPiece || 0).toFixed(2)} Piece</strong></td>
-                  </tr>
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {pieceSummaryRows.map((row) => (
+                      <tr key={row.id}>
+                        <td>{row.sellerName}</td>
+                        <td>{Number(row.totalPiece || 0).toFixed(2)}</td>
+                        <td>{Number(row.unsoldPiece || 0).toFixed(2)}</td>
+                      </tr>
+                    ))}
+                    <tr>
+                      <td><strong>Total</strong></td>
+                      <td><strong>{pieceSummaryRows.reduce((sum, row) => sum + Number(row.totalPiece || 0), 0).toFixed(2)}</strong></td>
+                      <td><strong>{pieceSummaryRows.reduce((sum, row) => sum + Number(row.unsoldPiece || 0), 0).toFixed(2)}</strong></td>
+                    </tr>
+                    <tr style={{ color: '#c53030', background: '#fff5f5' }}>
+                      <td><strong>STOCK NOT TRANSFERED</strong></td>
+                      <td colSpan="2"><strong>{Number(pieceSummaryStockNotTransferredPiece || 0).toFixed(2)} Piece</strong></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </div>
@@ -7430,42 +7505,6 @@ const AdminDashboard = ({
                   <strong>Seller Ko Diya:</strong> {seePurchaseSummary.sentCount} numbers | Pieces {seePurchaseSummary.sentPieces} | Rs. {seePurchaseSummary.sentValue.toFixed(2)} |{' '}
                   <strong>Balance Stock:</strong> {seePurchaseSummary.availableCount} numbers | Pieces {seePurchaseSummary.availablePieces} | Rs. {seePurchaseSummary.availableValue.toFixed(2)}
                 </div>
-
-                {seePurchaseTotalGroups.length > 0 ? (
-                  <>
-                    <h4 style={{ marginBottom: '8px' }}>Total Purchase Added</h4>
-                    <table className="entries-table">
-                      <thead>
-                        <tr>
-                          <th>Date</th>
-                          <th>SEM</th>
-                          <th>From</th>
-                          <th>To</th>
-                          <th>Total Numbers</th>
-                          <th>Total Pieces</th>
-                          <th>Total Rs.</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {seePurchaseTotalGroups.map((group) => (
-                          <tr key={`see-total-${group.label}-${group.firstRow?.bookingDate}`}>
-                            <td>{formatDisplayDate(group.firstRow?.bookingDate)}</td>
-                            <td>{group.firstRow?.boxValue || '-'}</td>
-                            <td>{group.firstRow?.number || '-'}</td>
-                            <td>{group.lastRow?.number || '-'}</td>
-                            <td>{group.rows.length}</td>
-                            <td>{group.rows.reduce((sum, row) => sum + Number(row.boxValue || 0), 0)}</td>
-                            <td>Rs. {group.rows.reduce((sum, row) => (
-                              sum + (Number(row.amount || 0) * Number(row.boxValue || 0))
-                            ), 0).toFixed(2)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </>
-                ) : (
-                  <p>No purchase found for {seePurchaseTitle}.</p>
-                )}
 
                 {seePurchaseSentGroups.length > 0 ? (
                   <>

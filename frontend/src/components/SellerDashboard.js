@@ -85,7 +85,7 @@ const mapHistoryRecord = (record) => ({
   fromUserId: record.fromUserId || record.from_user_id,
   fromUsername: record.fromUsername || record.from_username,
   toUserId: record.toUserId || record.to_user_id,
-  toUsername: record.toUsername || record.to_username,
+  toUsername: record.toUsername || record.to_username || record.currentToUsername || record.current_to_username,
   actorUserId: record.actorUserId || record.actor_user_id,
   actorUsername: record.actorUsername || record.actor_username,
   actionType: record.actionType || record.action_type,
@@ -563,9 +563,29 @@ const buildCurrentMemoSummaries = (entries = []) => {
   return buildPurchaseMemoSummaries(normalizedEntries);
 };
 
-const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, options = {}) => (
-  (entries.some((entry) => entry.memoRowOrder !== null && entry.memoRowOrder !== undefined)
-    ? Array.from(sortRowsForConsecutiveNumbers([...entries], (entry) => [
+const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, options = {}) => {
+  const groups = options.ignoreMemoRowOrder
+    ? groupConsecutiveNumberRows(
+      sortRowsForConsecutiveNumbers(
+        [...entries],
+        (entry) => [
+          entry.bookingDate,
+          entry.sessionMode,
+          entry.purchaseCategory,
+          entry.amount,
+          entry.sem
+        ]
+      ),
+      (entry) => [
+        entry.bookingDate,
+        entry.sessionMode,
+        entry.purchaseCategory,
+        entry.amount,
+        entry.sem
+      ].join('|')
+    )
+    : entries.some((entry) => entry.memoRowOrder !== null && entry.memoRowOrder !== undefined)
+      ? Array.from(sortRowsForConsecutiveNumbers([...entries], (entry) => [
       entry.memoRowOrder ?? 999999,
       entry.bookingDate,
       entry.sessionMode,
@@ -585,10 +605,29 @@ const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, option
       if (!groupMap.has(key)) groupMap.set(key, []);
       groupMap.get(key).push(entry);
       return groupMap;
-    }, new Map()).values()).map((rows) => ({ rows, firstRow: rows[0], lastRow: rows[rows.length - 1] }))
-    : groupConsecutiveNumberRows(
-      sortRowsForConsecutiveNumbers(
-        [...entries],
+    }, new Map()).values()).flatMap((rows) => groupConsecutiveNumberRows(
+      rows,
+      (entry) => [
+        entry.memoRowOrder ?? 'old',
+        entry.bookingDate,
+        entry.sessionMode,
+        entry.purchaseCategory,
+        entry.amount,
+        entry.sem
+      ].join('|')
+    ))
+      : groupConsecutiveNumberRows(
+        sortRowsForConsecutiveNumbers(
+          [...entries],
+          (entry) => [
+            entry.bookingDate,
+            entry.sessionMode,
+            entry.purchaseCategory,
+            entry.amount,
+            entry.sem,
+            entry.createdAt || entry.sentAt || ''
+          ]
+        ),
         (entry) => [
           entry.bookingDate,
           entry.sessionMode,
@@ -596,17 +635,10 @@ const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, option
           entry.amount,
           entry.sem,
           entry.createdAt || entry.sentAt || ''
-        ]
-      ),
-      (entry) => [
-        entry.bookingDate,
-        entry.sessionMode,
-        entry.purchaseCategory,
-        entry.amount,
-        entry.sem,
-        entry.createdAt || entry.sentAt || ''
-      ].join('|')
-    )).map((group, index) => {
+        ].join('|')
+      );
+
+  return groups.map((group, index) => {
     const entry = group.firstRow || {};
     const count = group.rows.length;
     const semValue = Number(entry.sem || 0);
@@ -639,8 +671,8 @@ const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, option
       memoRowOrder: entry.memoRowOrder ?? index,
       entryIds: group.rows.map((row) => row.id).filter(Boolean)
     };
-  })
-);
+  });
+};
 
 const normalizeRangeEndNumber = (startValue, endValue) => {
   const startNumber = sanitizeFiveDigitInput(startValue);
@@ -834,6 +866,7 @@ const SellerDashboard = ({
   const [pieceSummaryOpen, setPieceSummaryOpen] = useState(false);
   const [pieceSummaryDate, setPieceSummaryDate] = useState(getTodayDateValue());
   const [pieceSummaryRows, setPieceSummaryRows] = useState([]);
+  const [pieceSummaryStockNotTransferredPiece, setPieceSummaryStockNotTransferredPiece] = useState(0);
   const [pieceSummaryLoading, setPieceSummaryLoading] = useState(false);
   const [unsoldSendOpen, setUnsoldSendOpen] = useState(false);
   const [unsoldSendSummary, setUnsoldSendSummary] = useState(null);
@@ -914,6 +947,7 @@ const SellerDashboard = ({
   const [unsoldRemoveMemoNumber, setUnsoldRemoveMemoNumber] = useState(null);
   const [unsoldMemoPopupOpen, setUnsoldMemoPopupOpen] = useState(false);
   const [unsoldMemoSelectionIndex, setUnsoldMemoSelectionIndex] = useState(0);
+  const preferNextUnsoldMemoRef = useRef(false);
   const [unsoldCodeInput, setUnsoldCodeInput] = useState('');
   const [unsoldTableFromInput, setUnsoldTableFromInput] = useState('');
   const [unsoldTableToInput, setUnsoldTableToInput] = useState('');
@@ -1193,11 +1227,14 @@ const SellerDashboard = ({
   const selectedSeePurchaseSeller = seePurchaseSellerOptions.find((seller) => String(seller.id) === String(seePurchaseSellerId))
     || seePurchaseSellerOptions[0]
     || null;
-  const loadPieceSummary = async (dateOverride = '') => {
+  const loadPieceSummary = async (dateOverride = '', options = {}) => {
     const summaryDateValue = dateOverride || pieceSummaryDate || getTodayDateValue();
+    const shouldOpen = options.open !== false;
 
     setPieceSummaryLoading(true);
-    setPieceSummaryOpen(true);
+    if (shouldOpen) {
+      setPieceSummaryOpen(true);
+    }
     setPieceSummaryDate(summaryDateValue);
     setError('');
 
@@ -1209,16 +1246,19 @@ const SellerDashboard = ({
         amount
       });
 
-      setPieceSummaryRows((response.data || []).map((row) => ({
+      const summaryRows = (response.data || []).map((row) => ({
         id: row.sellerId || row.seller_id,
         sellerName: `${row.sellerName || row.seller_name || ''}${row.isSelf || row.is_self ? ' (Self)' : ''}`,
         totalPiece: Number(row.totalPiece || row.total_piece || 0),
         unsoldPiece: Number(row.unsoldPiece || row.unsold_piece || 0),
         stockNotTransferredPiece: Number(row.stockNotTransferredPiece || row.stock_not_transferred_piece || 0)
-      })));
+      }));
+      setPieceSummaryStockNotTransferredPiece(Number(summaryRows[0]?.stockNotTransferredPiece || 0));
+      setPieceSummaryRows(summaryRows.filter((row) => Number(row.totalPiece || 0) > 0));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading piece summary');
       setPieceSummaryRows([]);
+      setPieceSummaryStockNotTransferredPiece(0);
     } finally {
       setPieceSummaryLoading(false);
     }
@@ -1579,8 +1619,11 @@ const SellerDashboard = ({
       if (cancelled) {
         return;
       }
-      setRetroDraftRows(savedRows);
-      setRetroActiveRowIndex(savedRows.length > 0 ? savedRows.length : 0);
+      setRetroDraftRows((currentRows) => {
+        const shouldKeepCurrentRows = currentRows.length > 0 && savedRows.length === 0;
+        setRetroActiveRowIndex(shouldKeepCurrentRows ? currentRows.length : (savedRows.length > 0 ? savedRows.length : 0));
+        return shouldKeepCurrentRows ? currentRows : savedRows;
+      });
       setRetroEditorVisible(true);
     });
 
@@ -1603,7 +1646,7 @@ const SellerDashboard = ({
   }, [activeTab, sellerLocalDraftKey, retroDraftRows]);
 
   useEffect(() => {
-    if (!['unsold', 'unsold-remove'].includes(activeTab)) {
+    if (activeTab !== 'unsold') {
       return;
     }
 
@@ -1629,7 +1672,7 @@ const SellerDashboard = ({
   }, [activeTab, sellerLocalDraftKey]);
 
   useEffect(() => {
-    if (!['unsold', 'unsold-remove'].includes(activeTab)) {
+    if (activeTab !== 'unsold') {
       return;
     }
 
@@ -1990,6 +2033,7 @@ const SellerDashboard = ({
     }
 
     if (tabName === 'unsold') {
+      preferNextUnsoldMemoRef.current = true;
       setUnsoldMemoNumber(nextUnsoldMemoNumber);
       setUnsoldMemoSelectionIndex(0);
       setUnsoldMemoPopupOpen(false);
@@ -2013,6 +2057,7 @@ const SellerDashboard = ({
 
   const handleSellerUnsoldDateChange = (nextDate) => {
     setBookingDate(nextDate);
+    preferNextUnsoldMemoRef.current = activeTab === 'unsold';
     setUnsoldMemoNumber(null);
     setUnsoldRemoveMemoNumber(null);
     setUnsoldMemoSelectionIndex(0);
@@ -2546,7 +2591,7 @@ const SellerDashboard = ({
       const selectedEntries = purchaseSendMemoEntries.filter((entry) => (
         Number(entry.purchaseMemoNumber || entry.memoNumber) === Number(option.memoNumber)
       ));
-      const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, amount);
+      const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, amount, { ignoreMemoRowOrder: true });
       setRetroDraftRows(draftRows);
 
       if (draftRows.length > 0) {
@@ -2566,7 +2611,10 @@ const SellerDashboard = ({
       }
     }
 
-    window.requestAnimationFrame(() => purchaseCodeInputRef.current?.focus());
+    window.requestAnimationFrame(() => {
+      purchaseFromInputRef.current?.focus();
+      purchaseFromInputRef.current?.select?.();
+    });
   };
 
   const editableUnsoldMemoEntries = useMemo(() => (
@@ -2662,19 +2710,7 @@ const SellerDashboard = ({
     });
     setUnsoldDraftRows(draftRows);
     setUnsoldEditorVisible(true);
-
-    if (draftRows.length > 0) {
-      const firstRow = draftRows[0];
-      setUnsoldActiveRowIndex(0);
-      setUnsoldCodeInput(firstRow.code || '');
-      setUnsoldTableFromInput(firstRow.from || '');
-      setUnsoldTableToInput(firstRow.to || '');
-      setUnsoldNumber(firstRow.from || '');
-      setUnsoldRangeEndNumber(firstRow.to || '');
-      return;
-    }
-
-    setUnsoldActiveRowIndex(0);
+    setUnsoldActiveRowIndex(draftRows.length);
     setUnsoldCodeInput('');
     setUnsoldTableFromInput('');
     setUnsoldTableToInput('');
@@ -2728,6 +2764,7 @@ const SellerDashboard = ({
     if (activeTab === 'unsold-remove') {
       setUnsoldRemoveMemoNumber(option.memoNumber);
     } else {
+      preferNextUnsoldMemoRef.current = false;
       setUnsoldMemoNumber(option.memoNumber);
     }
     setUnsoldMemoSelectionIndex(Math.max(
@@ -2760,16 +2797,32 @@ const SellerDashboard = ({
       return;
     }
 
-    const latestExistingMemoOption = [...unsoldMemoOptions].reverse().find((option) => !option.isNew);
-    if (latestExistingMemoOption) {
-      setUnsoldMemoNumber(latestExistingMemoOption.memoNumber);
-      return;
-    }
-
     const nextNewMemoOption = unsoldMemoOptions[0];
     if (nextNewMemoOption) {
       setUnsoldMemoNumber(nextNewMemoOption.memoNumber);
     }
+  }, [activeTab, unsoldMemoNumber, unsoldMemoOptions, unsoldMemoPopupOpen]);
+
+  useEffect(() => {
+    if (activeTab !== 'unsold' || !preferNextUnsoldMemoRef.current || unsoldMemoPopupOpen) {
+      return;
+    }
+
+    const nextNewMemoOption = unsoldMemoOptions[0];
+    if (!nextNewMemoOption || !nextNewMemoOption.isNew) {
+      return;
+    }
+
+    if (Number(unsoldMemoNumber) === Number(nextNewMemoOption.memoNumber)) {
+      return;
+    }
+
+    setUnsoldMemoNumber(nextNewMemoOption.memoNumber);
+    setUnsoldMemoSelectionIndex(0);
+    setUnsoldDraftRows([]);
+    setUnsoldActiveRowIndex(0);
+    setUnsoldEditorVisible(true);
+    resetUnsoldEditor({ keepCode: false });
   }, [activeTab, unsoldMemoNumber, unsoldMemoOptions, unsoldMemoPopupOpen]);
 
   useEffect(() => {
@@ -2798,28 +2851,34 @@ const SellerDashboard = ({
   }, [activeTab, editableUnsoldMemoEntries, unsoldMemoNumber, unsoldMemoPopupOpen]);
 
   useEffect(() => {
-    if (activeTab !== 'unsold-remove' || unsoldMemoPopupOpen) {
+    if (activeTab !== 'unsold' || !selectedUnsoldMemoOption?.isNew || unsoldMemoPopupOpen) {
       return;
     }
 
-    const selectedMemoExists = unsoldRemoveMemoEntries.some((entry) => (
-      Number(entry.memoNumber) === Number(unsoldRemoveMemoNumber)
-    ));
-
-    if (selectedMemoExists) {
-      hydrateUnsoldRemoveDraftRowsForMemo(unsoldRemoveMemoNumber, unsoldRemoveMemoEntries);
+    if (!unsoldDraftRows.some((row) => row.isExistingUnsoldMemoRow)) {
       return;
     }
 
     setUnsoldDraftRows([]);
     setUnsoldActiveRowIndex(0);
     setUnsoldEditorVisible(true);
-    setUnsoldCodeInput('');
-    setUnsoldTableFromInput('');
-    setUnsoldTableToInput('');
-    setUnsoldNumber('');
-    setUnsoldRangeEndNumber('');
-  }, [activeTab, unsoldRemoveMemoEntries, unsoldRemoveMemoNumber, unsoldMemoPopupOpen, selectedUnsoldParty?.username, amount, user?.username]);
+    resetUnsoldEditor({ keepCode: false });
+  }, [activeTab, selectedUnsoldMemoOption?.isNew, unsoldDraftRows, unsoldMemoPopupOpen]);
+
+  useEffect(() => {
+    if (activeTab !== 'unsold-remove') {
+      return;
+    }
+
+    if (!unsoldDraftRows.some((row) => row.isExistingUnsoldRemoveMemoRow)) {
+      return;
+    }
+
+    setUnsoldDraftRows([]);
+    setUnsoldActiveRowIndex(0);
+    setUnsoldEditorVisible(true);
+    resetUnsoldEditor({ keepCode: false });
+  }, [activeTab, unsoldDraftRows]);
 
   useEffect(() => {
     const currentMemoOptions = activeTab === 'unsold-remove' ? unsoldRemoveMemoOptions : unsoldMemoOptions;
@@ -2994,7 +3053,7 @@ const SellerDashboard = ({
     loadRetroDraftIntoEditor(nextIndex);
   };
 
-  const deleteRetroDraftRow = async () => {
+  const deleteRetroDraftRow = () => {
     if (retroDraftRows.length === 0) {
       setRetroCodeInput('');
       setRetroFromInput('');
@@ -3008,65 +3067,9 @@ const SellerDashboard = ({
       : retroDraftRows.length - 1;
     const nextRows = retroDraftRows.filter((_, index) => index !== deleteIndex);
 
-    if (isEditingExistingPurchaseSendMemo) {
-      const effectiveMemoNumber = Number(purchaseSendMemoNumber || selectedPurchaseSendMemoOption?.memoNumber || 0);
-      if (!effectiveMemoNumber) {
-        openBlockingWarning('Memo number select karo');
-        return;
-      }
-
-      setRetroSaving(true);
-      setBookingError('');
-      setError('');
-      setSuccess('');
-
-      try {
-        const currentMemoEntryIds = purchaseSendMemoEntries
-          .filter((entry) => (
-            Number(entry.purchaseMemoNumber || entry.memoNumber || 0) === effectiveMemoNumber
-            && String(entry.userId || '') === String(purchaseSendSellerId || '')
-          ))
-          .map((entry) => entry.id)
-          .filter(Boolean);
-
-        await lotteryService.replacePurchaseSendMemo({
-          sellerId: purchaseSendSellerId,
-          bookingDate: nextRows[0]?.drawDate || bookingDate,
-          memoNumber: effectiveMemoNumber,
-          entryIds: currentMemoEntryIds,
-          sessionMode,
-          amount,
-          purchaseCategory: activePurchaseCategory,
-          rows: nextRows.map((row, index) => ({
-            rangeStart: row.numberStart || row.from,
-            rangeEnd: row.numberEnd || row.to,
-            boxValue: row.semValue,
-            amount: row.bookingAmount || amount,
-            bookingDate: row.drawDate || bookingDate,
-            sessionMode: row.resolvedSessionMode || sessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
-            entryIds: row.entryIds || [],
-            memoRowOrder: row.memoRowOrder ?? index
-          }))
-        });
-
-        await Promise.all([
-          loadPurchaseEntries(),
-          loadPurchaseSendMemoEntries(purchaseSendSellerId, bookingDate)
-        ]);
-        setSuccess(nextRows.length === 0
-          ? `Memo ${effectiveMemoNumber} deleted; stock returned`
-          : `Memo ${effectiveMemoNumber} updated; deleted range stock me wapas aa gaya`);
-      } catch (err) {
-        setBookingError(err.response?.data?.message || 'Error deleting purchase send row');
-        return;
-      } finally {
-        setRetroSaving(false);
-      }
-    }
-
     setRetroDraftRows(nextRows);
     setBookingError('');
+    setSuccess('');
 
     window.requestAnimationFrame(() => {
       if (deleteIndex < nextRows.length) {
@@ -3150,7 +3153,7 @@ const SellerDashboard = ({
         : [];
 
       if (isEditingExistingPurchaseSendMemo) {
-        await lotteryService.replacePurchaseSendMemo({
+        const response = await lotteryService.replacePurchaseSendMemo({
           sellerId: purchaseSendSellerId,
           bookingDate: refreshBookingDate,
           memoNumber: effectiveMemoNumber,
@@ -3170,6 +3173,7 @@ const SellerDashboard = ({
             memoRowOrder: row.memoRowOrder ?? index
           }))
         });
+        setSuccess(response.data.message || `Memo ${effectiveMemoNumber} updated successfully`);
       } else {
         for (const [index, row] of rowsToSave.entries()) {
           await lotteryService.sendPurchase({
@@ -3186,6 +3190,7 @@ const SellerDashboard = ({
             memoRowOrder: row.memoRowOrder ?? index
           });
         }
+        setSuccess('Purchase sent successfully');
       }
 
       const [, refreshedMemoEntries] = await Promise.all([
@@ -3208,7 +3213,6 @@ const SellerDashboard = ({
       setRetroFromInput('');
       setRetroToInput('');
       setRetroCodeInput('');
-      setSuccess(isEditingExistingPurchaseSendMemo ? `Memo ${effectiveMemoNumber} updated successfully` : 'Purchase sent successfully');
       focusPurchaseSellerSelectAfterSave();
     } catch (err) {
       const errorMessage = err.response?.data?.message || 'Error sending purchase';
@@ -3297,20 +3301,61 @@ const SellerDashboard = ({
     });
   }
 
-  function deleteUnsoldDraftRow() {
-    resetUnsoldEditor({ keepCode: false });
-    setUnsoldDraftRows((currentRows) => {
-      if (currentRows.length === 0 || unsoldActiveRowIndex >= currentRows.length) {
-        setUnsoldEditorVisible(false);
-        setUnsoldActiveRowIndex(currentRows.length);
-        return currentRows;
-      }
-
+  function loadUnsoldDraftIntoEditor(targetIndex) {
+    if (targetIndex < unsoldDraftRows.length) {
+      const row = unsoldDraftRows[targetIndex];
       setUnsoldEditorVisible(true);
-      const nextRows = currentRows.filter((_, index) => index !== unsoldActiveRowIndex);
-      setUnsoldActiveRowIndex(Math.min(unsoldActiveRowIndex, nextRows.length));
-      return nextRows;
-    });
+      setUnsoldCodeInput(row.code || '');
+      setUnsoldTableFromInput(row.from || '');
+      setUnsoldTableToInput(row.to || '');
+      setUnsoldNumber(row.from || '');
+      setUnsoldRangeEndNumber(row.to || '');
+      setUnsoldActiveRowIndex(targetIndex);
+      return;
+    }
+
+    setUnsoldEditorVisible(true);
+    resetUnsoldEditor({ keepCode: false });
+    setUnsoldActiveRowIndex(unsoldDraftRows.length);
+  }
+
+  function moveUnsoldDraftSelection(direction) {
+    const nextIndex = Math.min(Math.max(unsoldActiveRowIndex + direction, 0), unsoldDraftRows.length);
+    loadUnsoldDraftIntoEditor(nextIndex);
+  }
+
+  function deleteUnsoldDraftRow() {
+    if (unsoldDraftRows.length === 0) {
+      resetUnsoldEditor({ keepCode: false });
+      setUnsoldEditorVisible(false);
+      setUnsoldActiveRowIndex(0);
+      return;
+    }
+
+    const deleteIndex = unsoldActiveRowIndex < unsoldDraftRows.length
+      ? unsoldActiveRowIndex
+      : unsoldDraftRows.length - 1;
+    const nextRows = unsoldDraftRows.filter((_, index) => index !== deleteIndex);
+
+    setUnsoldDraftRows(nextRows);
+    setError('');
+    setSuccess('');
+
+    if (deleteIndex < nextRows.length) {
+      const row = nextRows[deleteIndex];
+      setUnsoldEditorVisible(true);
+      setUnsoldCodeInput(row.code || '');
+      setUnsoldTableFromInput(row.from || '');
+      setUnsoldTableToInput(row.to || '');
+      setUnsoldNumber(row.from || '');
+      setUnsoldRangeEndNumber(row.to || '');
+      setUnsoldActiveRowIndex(deleteIndex);
+    } else {
+      resetUnsoldEditor({ keepCode: false });
+      setUnsoldEditorVisible(true);
+      setUnsoldActiveRowIndex(nextRows.length);
+    }
+
     window.requestAnimationFrame(() => {
       unsoldCodeInputRef.current?.focus();
       unsoldCodeInputRef.current?.select?.();
@@ -3976,7 +4021,8 @@ const SellerDashboard = ({
         loadPurchaseEntries(),
         loadUnsoldMemoEntries(unsoldPartyId, bookingDate),
         loadUnsoldRemoveMemoEntries(unsoldPartyId, bookingDate),
-        loadTransferHistory(getHistoryFilters())
+        loadTransferHistory(getHistoryFilters()),
+        loadPieceSummary(bookingDate, { open: false })
       ]);
       await refreshUnsoldDerivedViews();
       focusActiveSellerSelect();
@@ -3996,33 +4042,65 @@ const SellerDashboard = ({
     setSuccess('');
 
     let rowsToSave = [...unsoldDraftRows];
+    const editingExistingUnsoldMemo = Boolean(selectedUnsoldMemoOption && !selectedUnsoldMemoOption.isNew);
 
     if (hasPendingUnsoldEditorValues()) {
-      openBlockingWarning('Pehle A-Add karke row confirm karo, uske baad Save karo', [], 'Warning', focusUnsoldFromInput);
-      return;
-    }
+      const canCommit = await validateUnsoldEditorRowBeforeCommit();
+      if (!canCommit) {
+        return;
+      }
 
-    const editingExistingUnsoldMemo = Boolean(selectedUnsoldMemoOption && !selectedUnsoldMemoOption.isNew);
+      const result = buildUnsoldDraftRow();
+      const conflictingDraft = rowsToSave.find((row, index) => (
+        index !== unsoldActiveRowIndex
+        && String(row.partyId || '') === String(result.row.partyId || '')
+        && String(row.semValue || '') === String(result.row.semValue || '')
+        && String(row.resolvedSessionMode || '') === String(result.row.resolvedSessionMode || '')
+        && String(row.resolvedPurchaseCategory || '') === String(result.row.resolvedPurchaseCategory || '')
+        && String(row.drawDate || '') === String(result.row.drawDate || '')
+        && rangesOverlap(row.from, row.to, result.row.from, result.row.to)
+      ));
+
+      if (conflictingDraft) {
+        openBlockingWarning('Number already added.', [`Party ${conflictingDraft.partyName || 'N/A'}`], 'Duplicate Number', focusUnsoldFromInput);
+        return;
+      }
+
+      if (unsoldActiveRowIndex < rowsToSave.length) {
+        rowsToSave = rowsToSave.map((row, index) => (
+          index === unsoldActiveRowIndex
+            ? {
+              ...result.row,
+              id: row.id,
+              isExistingUnsoldMemoRow: row.isExistingUnsoldMemoRow,
+              isExistingUnsoldRemoveMemoRow: row.isExistingUnsoldRemoveMemoRow,
+              entryIds: row.entryIds || []
+            }
+            : row
+        ));
+      } else {
+        rowsToSave = [...rowsToSave, result.row];
+      }
+    }
 
     if (rowsToSave.length === 0 && !editingExistingUnsoldMemo) {
       openBlockingWarning('Save karne ke liye kam se kam ek row add karo');
       return;
     }
 
-    try {
-    for (const row of rowsToSave) {
-      if (row.isExistingUnsoldMemoRow) {
-        continue;
-      }
-      const stockValidation = await validateUnsoldRowInStock(row);
-      if (stockValidation.error) {
-        openBlockingWarning(stockValidation.error, [], 'Stock Missing', focusUnsoldFromInput);
-          return;
+    if (!editingExistingUnsoldMemo) {
+      try {
+        for (const row of rowsToSave) {
+          const stockValidation = await validateUnsoldRowInStock(row);
+          if (stockValidation.error) {
+            openBlockingWarning(stockValidation.error, [], 'Stock Missing', focusUnsoldFromInput);
+            return;
+          }
         }
+      } catch (err) {
+        openBlockingWarning(err.response?.data?.message || 'Stock check nahi ho paya', [], 'Stock Missing', focusUnsoldFromInput);
+        return;
       }
-    } catch (err) {
-      openBlockingWarning(err.response?.data?.message || 'Stock check nahi ho paya', [], 'Stock Missing', focusUnsoldFromInput);
-      return;
     }
 
     setUnsoldLoading(true);
@@ -4032,7 +4110,7 @@ const SellerDashboard = ({
       if (editingExistingUnsoldMemo) {
         await lotteryService.replacePurchaseUnsoldMemo({
           sellerId: String(unsoldPartyId || '') === String(user?.id) ? undefined : unsoldPartyId,
-          bookingDate,
+          bookingDate: rowsToSave[0]?.drawDate || bookingDate,
           memoNumber: effectiveMemoNumber,
           sessionMode,
           amount,
@@ -4076,11 +4154,24 @@ const SellerDashboard = ({
       if (editingExistingUnsoldMemo && rowsToSave.length > 0) {
         setUnsoldMemoNumber(effectiveMemoNumber);
         clearDraftRows(sellerLocalDraftKey);
-        hydrateUnsoldDraftRowsForMemo(effectiveMemoNumber, refreshedUnsoldEntries);
+        setUnsoldDraftRows([]);
+        setUnsoldActiveRowIndex(0);
+        setUnsoldEditorVisible(true);
+        setUnsoldCodeInput('');
+        setUnsoldTableFromInput('');
+        setUnsoldTableToInput('');
+        setUnsoldNumber('');
+        setUnsoldRangeEndNumber('');
         focusActiveSellerSelect();
       } else {
+        const refreshedUnsoldMemoSummaries = buildCurrentMemoSummaries(refreshedUnsoldEntries || []);
+        const nextMemoNumber = refreshedUnsoldMemoSummaries.length > 0
+          ? Math.max(...refreshedUnsoldMemoSummaries.map((memo) => memo.memoNumber)) + 1
+          : 1;
         clearDraftRows(sellerLocalDraftKey);
-        setUnsoldMemoNumber(effectiveMemoNumber + 1);
+        setUnsoldMemoNumber(nextMemoNumber);
+        setUnsoldMemoSelectionIndex(0);
+        setUnsoldMemoPopupOpen(false);
         setUnsoldDraftRows([]);
         setUnsoldActiveRowIndex(0);
         setUnsoldEditorVisible(true);
@@ -4624,32 +4715,6 @@ const SellerDashboard = ({
   );
   const sellerPurchaseFormRows = [
     {
-      label: 'Date',
-      className: 'medium',
-      content: (
-        <input
-          ref={purchaseDateInputRef}
-          type="date"
-          value={bookingDate}
-          onChange={(event) => {
-            const nextDate = event.target.value || getTodayDateValue();
-            setBookingDate(nextDate);
-            setPurchaseSendMemoNumber(null);
-            setPurchaseSendMemoSelectionIndex(0);
-            setPurchaseSendMemoPopupOpen(false);
-            setRetroDraftRows([]);
-            setRetroActiveRowIndex(0);
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              e.preventDefault();
-              window.requestAnimationFrame(() => purchaseSellerSelectRef.current?.focus());
-            }
-          }}
-        />
-      )
-    },
-    {
       label: 'Sub Stokist',
       className: 'wide',
       content: (
@@ -4676,6 +4741,33 @@ const SellerDashboard = ({
             }
           }}
           placeholder={retroPartyOptions.length === 0 ? 'No seller' : 'Keyword ya seller name type karo'}
+        />
+      )
+    },
+    {
+      label: 'Date',
+      className: 'medium',
+      content: (
+        <input
+          ref={purchaseDateInputRef}
+          type="date"
+          value={bookingDate}
+          onChange={(event) => {
+            const nextDate = event.target.value || getTodayDateValue();
+            setBookingDate(nextDate);
+            setPurchaseSendMemoNumber(null);
+            setPurchaseSendMemoSelectionIndex(0);
+            setPurchaseSendMemoPopupOpen(false);
+            setRetroDraftRows([]);
+            setRetroActiveRowIndex(0);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              e.stopPropagation();
+              window.requestAnimationFrame(() => purchaseMemoRef.current?.focus());
+            }
+          }}
         />
       )
     }
@@ -4732,6 +4824,7 @@ const SellerDashboard = ({
           getOptionLabel={(party) => `${party.username}${String(party.id) === String(user?.id) ? ' (Self)' : ''} [${getPartyKeyword(party)}] (${getAllowedAmountsLabel(party)})`}
           getOptionSearchLabel={(party) => `${getPartyKeyword(party)} ${party.username} ${getAllowedAmountsLabel(party)}`}
           onChange={(party) => {
+            preferNextUnsoldMemoRef.current = activeTab === 'unsold';
             setUnsoldPartyId(String(party?.id || ''));
             setUnsoldMemoNumber(null);
             setUnsoldRemoveMemoNumber(null);
@@ -4763,7 +4856,15 @@ const SellerDashboard = ({
             if (e.key === 'Enter') {
               e.preventDefault();
               e.stopPropagation();
-              window.requestAnimationFrame(() => unsoldMemoRef.current?.focus());
+              window.requestAnimationFrame(() => {
+                if (activeTab === 'unsold-remove') {
+                  unsoldCodeInputRef.current?.focus();
+                  unsoldCodeInputRef.current?.select?.();
+                  return;
+                }
+
+                unsoldMemoRef.current?.focus();
+              });
             }
           }}
           form={currentUnsoldFormId}
@@ -4849,6 +4950,26 @@ const SellerDashboard = ({
           value={unsoldCodeInput}
           onChange={(e) => setUnsoldCodeInput(e.target.value.toUpperCase())}
           onKeyDown={(e) => {
+            if (shouldMoveFocusVertical(e, 'ArrowUp')) {
+              e.preventDefault();
+              moveUnsoldDraftSelection(-1);
+              window.requestAnimationFrame(() => {
+                unsoldCodeInputRef.current?.focus();
+                unsoldCodeInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (shouldMoveFocusVertical(e, 'ArrowDown')) {
+              e.preventDefault();
+              moveUnsoldDraftSelection(1);
+              window.requestAnimationFrame(() => {
+                unsoldCodeInputRef.current?.focus();
+                unsoldCodeInputRef.current?.select?.();
+              });
+              return;
+            }
+
             if (shouldMoveFocusRight(e)) {
               e.preventDefault();
               const parsedCode = parseRetroCodeValue(e.currentTarget.value, sessionMode, activePurchaseCategory);
@@ -4915,6 +5036,26 @@ const SellerDashboard = ({
             }
           }}
           onKeyDown={(e) => {
+            if (shouldMoveFocusVertical(e, 'ArrowUp')) {
+              e.preventDefault();
+              moveUnsoldDraftSelection(-1);
+              window.requestAnimationFrame(() => {
+                unsoldFromInputRef.current?.focus();
+                unsoldFromInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (shouldMoveFocusVertical(e, 'ArrowDown')) {
+              e.preventDefault();
+              moveUnsoldDraftSelection(1);
+              window.requestAnimationFrame(() => {
+                unsoldFromInputRef.current?.focus();
+                unsoldFromInputRef.current?.select?.();
+              });
+              return;
+            }
+
             if (shouldMoveFocusLeft(e)) {
               e.preventDefault();
               window.requestAnimationFrame(() => {
@@ -4969,6 +5110,26 @@ const SellerDashboard = ({
           value={unsoldTableToInput}
           onChange={(e) => setUnsoldTableToInput(String(e.target.value).replace(/[^0-9]/g, '').slice(0, 5))}
           onKeyDown={(e) => {
+            if (shouldMoveFocusVertical(e, 'ArrowUp')) {
+              e.preventDefault();
+              moveUnsoldDraftSelection(-1);
+              window.requestAnimationFrame(() => {
+                unsoldToInputRef.current?.focus();
+                unsoldToInputRef.current?.select?.();
+              });
+              return;
+            }
+
+            if (shouldMoveFocusVertical(e, 'ArrowDown')) {
+              e.preventDefault();
+              moveUnsoldDraftSelection(1);
+              window.requestAnimationFrame(() => {
+                unsoldToInputRef.current?.focus();
+                unsoldToInputRef.current?.select?.();
+              });
+              return;
+            }
+
             if (shouldMoveFocusLeft(e)) {
               e.preventDefault();
               window.requestAnimationFrame(() => {
@@ -5608,8 +5769,8 @@ const SellerDashboard = ({
         onCancel={cancelExitConfirmation}
       />
       {pieceSummaryOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
-          <div style={{ background: '#fff', width: 'min(720px, 100%)', borderRadius: '8px', padding: '20px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1000, display: 'flex', padding: 0 }}>
+          <div style={{ background: '#fff', width: '100%', height: '100%', borderRadius: 0, padding: '20px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
               <h2 style={{ margin: 0 }}>F10 Unsold Summary</h2>
               <button type="button" onClick={closePieceSummary}>Close</button>
@@ -5634,33 +5795,35 @@ const SellerDashboard = ({
             {pieceSummaryLoading ? (
               <p>Loading...</p>
             ) : (
-              <table className="entries-table" style={{ marginTop: '16px' }}>
-                <thead>
-                  <tr>
-                    <th>Seller Name</th>
-                    <th>Total Piece</th>
-                    <th>Unsold Piece</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pieceSummaryRows.map((row) => (
-                    <tr key={row.id}>
-                      <td>{row.sellerName}</td>
-                      <td>{Number(row.totalPiece || 0).toFixed(2)}</td>
-                      <td>{Number(row.unsoldPiece || 0).toFixed(2)}</td>
+              <div style={{ marginTop: '16px', flex: 1, minHeight: 0, overflowY: 'auto', border: '1px solid #e2e8f0' }}>
+                <table className="entries-table" style={{ marginTop: 0 }}>
+                  <thead>
+                    <tr>
+                      <th>Seller Name</th>
+                      <th>Total Piece</th>
+                      <th>Unsold Piece</th>
                     </tr>
-                  ))}
-                  <tr>
-                    <td><strong>Total</strong></td>
-                    <td><strong>{pieceSummaryRows.reduce((sum, row) => sum + Number(row.totalPiece || 0), 0).toFixed(2)}</strong></td>
-                    <td><strong>{pieceSummaryRows.reduce((sum, row) => sum + Number(row.unsoldPiece || 0), 0).toFixed(2)}</strong></td>
-                  </tr>
-                  <tr style={{ color: '#c53030', background: '#fff5f5' }}>
-                    <td><strong>STOCK NOT TRANSFERED</strong></td>
-                    <td colSpan="2"><strong>{Number(pieceSummaryRows[0]?.stockNotTransferredPiece || 0).toFixed(2)} Piece</strong></td>
-                  </tr>
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {pieceSummaryRows.map((row) => (
+                      <tr key={row.id}>
+                        <td>{row.sellerName}</td>
+                        <td>{Number(row.totalPiece || 0).toFixed(2)}</td>
+                        <td>{Number(row.unsoldPiece || 0).toFixed(2)}</td>
+                      </tr>
+                    ))}
+                    <tr>
+                      <td><strong>Total</strong></td>
+                      <td><strong>{pieceSummaryRows.reduce((sum, row) => sum + Number(row.totalPiece || 0), 0).toFixed(2)}</strong></td>
+                      <td><strong>{pieceSummaryRows.reduce((sum, row) => sum + Number(row.unsoldPiece || 0), 0).toFixed(2)}</strong></td>
+                    </tr>
+                    <tr style={{ color: '#c53030', background: '#fff5f5' }}>
+                      <td><strong>STOCK NOT TRANSFERED</strong></td>
+                      <td colSpan="2"><strong>{Number(pieceSummaryStockNotTransferredPiece || 0).toFixed(2)} Piece</strong></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </div>
@@ -6119,6 +6282,7 @@ const SellerDashboard = ({
                 memoProps={{
                   ref: purchaseMemoRef,
                   tabIndex: 0,
+                  onFocus: openPurchaseSendMemoPopup,
                   onClick: () => {
                     if (!purchaseSendMemoPopupOpen) {
                       openPurchaseSendMemoPopup();
@@ -6152,20 +6316,20 @@ const SellerDashboard = ({
 
                     if (e.key === 'Enter') {
                       e.preventDefault();
-                      if (purchaseSendMemoPopupOpen) {
-                        commitPurchaseSendMemoSelection();
+                      if (!purchaseSendMemoPopupOpen) {
+                        openPurchaseSendMemoPopup();
                         return;
                       }
-                      window.requestAnimationFrame(() => {
-                        purchaseFromInputRef.current?.focus();
-                        purchaseFromInputRef.current?.select?.();
-                      });
+                      commitPurchaseSendMemoSelection();
                     }
                   }
                 }}
                 memoSelector={{
                   isOpen: purchaseSendMemoPopupOpen,
-                  options: purchaseSendMemoOptions,
+                  options: purchaseSendMemoOptions.map((option) => ({
+                    ...option,
+                    drawDate: formatDisplayDate(option.drawDate || bookingDate)
+                  })),
                   activeIndex: purchaseSendMemoSelectionIndex,
                   variant: 'table',
                   onHighlight: setPurchaseSendMemoSelectionIndex,
@@ -6308,7 +6472,7 @@ const SellerDashboard = ({
                         <td>{group.firstRow?.number || '-'}</td>
                         <td>{group.lastRow?.number || '-'}</td>
                         <td>{group.rows.reduce((sum, row) => sum + Number(row.boxValue || 0), 0)}</td>
-                        <td>{group.firstRow?.fromUsername || group.firstRow?.sellerName || '-'}</td>
+                        <td>{[...new Set(group.rows.map((row) => row.fromUsername || row.sellerName).filter(Boolean))].join(', ') || '-'}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -6689,6 +6853,8 @@ const SellerDashboard = ({
                 summaryQuantity={sellerUnsoldSummaryQuantity}
                 summaryAmount={sellerUnsoldSummaryAmount}
                 statusLabel={sessionMode}
+                showStatusField={false}
+                showMemoField={false}
                 windowClassName="full-page"
                 blockingWarning={activeTab === 'unsold-remove' ? blockingWarning : null}
                 onBlockingWarningClose={clearBlockingWarning}
