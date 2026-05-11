@@ -4087,6 +4087,7 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
 const getPurchasePieceSummary = async (req, res) => {
   try {
     await ensureHistoryStorage();
+    await repairMissingPurchaseMemoNumbers();
 
     const sessionMode = getOptionalSessionMode(req);
     const bookingDate = normalizeBookingDate(req.query.bookingDate);
