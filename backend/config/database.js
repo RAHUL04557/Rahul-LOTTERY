@@ -1,4 +1,7 @@
 const { Pool } = require('pg');
+const bcrypt = require('bcryptjs');
+
+const DEFAULT_RESULT_UPLOAD_PASSWORD = 'rahul@9749';
 
 const resolveConnectionString = () => {
   const candidates = [
@@ -63,6 +66,7 @@ const initDB = async () => {
       username VARCHAR(255) UNIQUE NOT NULL,
       keyword VARCHAR(30),
       password VARCHAR(255) NOT NULL,
+      result_upload_password VARCHAR(255),
       role VARCHAR(20) NOT NULL DEFAULT 'seller',
       seller_type VARCHAR(30) NOT NULL DEFAULT 'seller',
       parent_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -83,6 +87,22 @@ const initDB = async () => {
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS owner_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL
   `);
+
+  await query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS result_upload_password VARCHAR(255)
+  `);
+
+  const defaultResultUploadPasswordHash = await bcrypt.hash(DEFAULT_RESULT_UPLOAD_PASSWORD, 10);
+  await query(
+    `
+      UPDATE users
+      SET result_upload_password = $1
+      WHERE role = 'admin'
+        AND (result_upload_password IS NULL OR TRIM(result_upload_password) = '')
+    `,
+    [defaultResultUploadPasswordHash]
+  );
 
   await query(`
     UPDATE users
@@ -335,6 +355,11 @@ const initDB = async () => {
   await query(`
     ALTER TABLE lottery_entries
     ADD COLUMN IF NOT EXISTS memo_number INTEGER
+  `);
+
+  await query(`
+    ALTER TABLE lottery_entries
+    ADD COLUMN IF NOT EXISTS memo_row_order INTEGER
   `);
 
   await query(`

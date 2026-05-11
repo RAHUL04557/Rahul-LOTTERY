@@ -2,6 +2,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { query } = require('../config/database');
 
+const DEFAULT_RESULT_UPLOAD_PASSWORD = 'rahul@9749';
+
 const mapUser = (row) => ({
   id: row.id,
   username: row.username,
@@ -26,11 +28,12 @@ const ensureDefaultAdminUser = async () => {
   const existingAdminResult = await query('SELECT * FROM users WHERE username = $1 LIMIT 1', [adminUsername]);
   const existingAdmin = existingAdminResult.rows[0];
   const hashedPassword = await bcrypt.hash(adminPassword, 10);
+  const hashedResultUploadPassword = await bcrypt.hash(DEFAULT_RESULT_UPLOAD_PASSWORD, 10);
 
   if (!existingAdmin) {
     const insertedAdminResult = await query(
-      'INSERT INTO users (username, password, role, seller_type, parent_id, rate_amount_6, rate_amount_12) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-      [adminUsername, hashedPassword, 'admin', 'admin', null, 0, 0]
+      'INSERT INTO users (username, password, result_upload_password, role, seller_type, parent_id, rate_amount_6, rate_amount_12) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
+      [adminUsername, hashedPassword, hashedResultUploadPassword, 'admin', 'admin', null, 0, 0]
     );
     await query('UPDATE users SET owner_admin_id = id WHERE id = $1', [insertedAdminResult.rows[0].id]);
     return {
@@ -39,7 +42,16 @@ const ensureDefaultAdminUser = async () => {
     };
   }
 
-  await query('UPDATE users SET password = $1, role = $2, seller_type = $3, owner_admin_id = id WHERE id = $4', [hashedPassword, 'admin', 'admin', existingAdmin.id]);
+  await query(
+    `UPDATE users
+     SET password = $1,
+         role = $2,
+         seller_type = $3,
+         owner_admin_id = id,
+         result_upload_password = COALESCE(NULLIF(result_upload_password, ''), $4)
+     WHERE id = $5`,
+    [hashedPassword, 'admin', 'admin', hashedResultUploadPassword, existingAdmin.id]
+  );
   return {
     ...existingAdmin,
     password: hashedPassword,

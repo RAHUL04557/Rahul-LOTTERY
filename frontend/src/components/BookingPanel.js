@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { bookingService, priceService, userService } from '../services/api';
 import SearchableSellerSelect from './SearchableSellerSelect';
 import RetroPurchasePanel from './RetroPurchasePanel';
+import ExitConfirmPrompt from './ExitConfirmPrompt';
 import { formatDisplayDate, formatSignedRupees, getPrizeAdjustmentAmounts, openTransferBill } from '../utils/transferBill';
 import { useFunctionShortcuts } from '../utils/functionShortcuts';
 
@@ -574,6 +575,8 @@ const BookingPanel = ({
   const [loading, setLoading] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [blockingWarning, setBlockingWarning] = useState(null);
+  const [saveConfirmOpen, setSaveConfirmOpen] = useState(false);
+  const [saveConfirmSelected, setSaveConfirmSelected] = useState('no');
 
   const sellerInputRef = useRef(null);
   const dateInputRef = useRef(null);
@@ -582,6 +585,7 @@ const BookingPanel = ({
   const fromInputRef = useRef(null);
   const toInputRef = useRef(null);
   const serverSyncKeyRef = useRef('');
+  const saveConfirmFocusRef = useRef(null);
 
   const selectedSeller = sellers.find((seller) => String(seller.id) === String(sellerId)) || null;
   const activeSem = sem;
@@ -1016,7 +1020,7 @@ const BookingPanel = ({
   }, [allEntries, entriesKey, hydrated, mode, uploadMemoRowsToServer]);
 
   const backupMemoToServer = ({ memoNumber: targetMemoNumber, sellerId: targetSellerId, bookingDate: targetDate, rows }) => {
-    uploadMemoRowsToServer({
+    return uploadMemoRowsToServer({
       memoNumber: targetMemoNumber,
       sellerId: targetSellerId,
       bookingDate: targetDate,
@@ -1156,8 +1160,7 @@ const BookingPanel = ({
     return rows;
   };
 
-  const saveBookNumbers = (event) => {
-    event.preventDefault();
+  const performSaveBookNumbers = async () => {
     onError?.('');
     onSuccess?.('');
     const currentDate = normalizeDateValue(bookingDate) || getTodayDateValue();
@@ -1182,7 +1185,7 @@ const BookingPanel = ({
           && isSameBookingScope(entry, currentSessionMode, currentPurchaseCategory)
         ));
         persistEntries(nextEntries);
-        backupMemoToServer({
+        await backupMemoToServer({
           memoNumber: effectiveMemoNumber,
           sellerId,
           bookingDate: currentDate,
@@ -1225,7 +1228,7 @@ const BookingPanel = ({
       ...entriesToSave
     ];
     persistEntries(nextEntries);
-    backupMemoToServer({
+    await backupMemoToServer({
       memoNumber: effectiveMemoNumber,
       sellerId,
       bookingDate: currentDate,
@@ -1234,6 +1237,35 @@ const BookingPanel = ({
     setDraftRows([]);
     resetEntryInputs();
     setMemoNumber(effectiveMemoNumber);
+  };
+
+  const refocusAfterSaveConfirmation = () => {
+    const focusTarget = saveConfirmFocusRef.current;
+    saveConfirmFocusRef.current = null;
+    window.requestAnimationFrame(() => {
+      focusTarget?.focus?.();
+      focusTarget?.select?.();
+    });
+  };
+
+  const saveBookNumbers = (event) => {
+    event.preventDefault();
+    saveConfirmFocusRef.current = document.activeElement;
+    setSaveConfirmSelected('no');
+    setSaveConfirmOpen(true);
+  };
+
+  const cancelSaveConfirmation = () => {
+    setSaveConfirmOpen(false);
+    setSaveConfirmSelected('no');
+    refocusAfterSaveConfirmation();
+  };
+
+  const confirmSaveRequest = () => {
+    setSaveConfirmOpen(false);
+    setSaveConfirmSelected('no');
+    refocusAfterSaveConfirmation();
+    performSaveBookNumbers();
   };
 
   const hydrateMemo = (selectedMemo) => {
@@ -1747,7 +1779,16 @@ const BookingPanel = ({
   );
 
   return (
-    <RetroPurchasePanel
+    <>
+      <ExitConfirmPrompt
+        open={saveConfirmOpen}
+        selected={saveConfirmSelected}
+        message="Save karna hai?"
+        onSelectedChange={setSaveConfirmSelected}
+        onConfirm={confirmSaveRequest}
+        onCancel={cancelSaveConfirmation}
+      />
+      <RetroPurchasePanel
       screenCode="RAHUL"
       screenTitle={entryCompanyLabel || 'ADMIN BOOK NUMBERS'}
       panelTitle="Book Numbers"
@@ -1912,7 +1953,8 @@ const BookingPanel = ({
       blockingWarning={blockingWarning}
       onBlockingWarningClose={clearBlockingWarning}
       topShortcuts={['F2-Save', 'F3-Delete', 'F8-Clear', 'Esc-Exit']}
-    />
+      />
+    </>
   );
 };
 

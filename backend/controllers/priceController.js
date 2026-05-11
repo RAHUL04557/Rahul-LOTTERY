@@ -1,4 +1,7 @@
 const { getClient, query } = require('../config/database');
+const bcrypt = require('bcryptjs');
+
+const DEFAULT_RESULT_UPLOAD_PASSWORD = 'rahul@9749';
 
 const PRIZE_CONFIG = {
   first: { label: 'First Prize', fullPrizeAmount: 25000, digitLength: 5 },
@@ -27,6 +30,51 @@ const getPrizeOwnerId = (user) => (
     ? user.id
     : user?.ownerAdminId || user?.parentId || user?.id
 );
+
+const verifyResultUploadPassword = async (user, passwordValue) => {
+  if (user?.role !== 'admin') {
+    return { valid: false, status: 403, message: 'Only admin can manage result upload' };
+  }
+
+  const password = String(passwordValue || '');
+  if (!password) {
+    return { valid: false, status: 401, message: 'Result upload password required' };
+  }
+
+  const adminResult = await query(
+    "SELECT id, result_upload_password FROM users WHERE id = $1 AND role = 'admin' LIMIT 1",
+    [user.id]
+  );
+
+  if (adminResult.rows.length === 0) {
+    return { valid: false, status: 404, message: 'Admin not found' };
+  }
+
+  const savedPassword = adminResult.rows[0].result_upload_password || '';
+  let isValid = false;
+
+  try {
+    isValid = await bcrypt.compare(password, savedPassword);
+  } catch (error) {
+    isValid = false;
+  }
+
+  if (!isValid && savedPassword === password) {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await query('UPDATE users SET result_upload_password = $1 WHERE id = $2', [hashedPassword, user.id]);
+    isValid = true;
+  }
+
+  if (!isValid && password === DEFAULT_RESULT_UPLOAD_PASSWORD) {
+    const hashedPassword = await bcrypt.hash(DEFAULT_RESULT_UPLOAD_PASSWORD, 10);
+    await query('UPDATE users SET result_upload_password = $1 WHERE id = $2', [hashedPassword, user.id]);
+    isValid = true;
+  }
+
+  return isValid
+    ? { valid: true }
+    : { valid: false, status: 401, message: 'Invalid result upload password' };
+};
 
 const getNormalizedPrizeConfig = (prizeKey, fallbackLabel = '', fallbackDigitLength = 0) => {
   const normalizedKey = String(prizeKey || '').trim().toLowerCase();
@@ -352,6 +400,11 @@ const getPrizeMultiplier = (amountValue, sameValue) => {
 
 const uploadPrice = async (req, res) => {
   const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+  const passwordCheck = await verifyResultUploadPassword(req.user, req.body?.resultUploadPassword);
+  if (!passwordCheck.valid) {
+    return res.status(passwordCheck.status).json({ message: passwordCheck.message });
+  }
+
   const resultShift = resolveResultShift({
     sessionMode: req.body?.sessionMode,
     purchaseCategory: req.body?.purchaseCategory,
@@ -471,6 +524,11 @@ const uploadPrice = async (req, res) => {
 
 const updatePrizeResult = async (req, res) => {
   try {
+    const passwordCheck = await verifyResultUploadPassword(req.user, req.body?.resultUploadPassword);
+    if (!passwordCheck.valid) {
+      return res.status(passwordCheck.status).json({ message: passwordCheck.message });
+    }
+
     const resultId = Number(req.params.id);
     const winningNumber = normalizeWinningNumber(req.body?.winningNumber);
     const prizeOwnerId = getPrizeOwnerId(req.user);
@@ -538,6 +596,11 @@ const updatePrizeResult = async (req, res) => {
 
 const deletePrizeResult = async (req, res) => {
   try {
+    const passwordCheck = await verifyResultUploadPassword(req.user, req.body?.resultUploadPassword || req.query?.resultUploadPassword);
+    if (!passwordCheck.valid) {
+      return res.status(passwordCheck.status).json({ message: passwordCheck.message });
+    }
+
     const resultId = Number(req.params.id);
     const prizeOwnerId = getPrizeOwnerId(req.user);
 
@@ -565,6 +628,11 @@ const deletePrizeResult = async (req, res) => {
 
 const deletePrizeResults = async (req, res) => {
   try {
+    const passwordCheck = await verifyResultUploadPassword(req.user, req.body?.resultUploadPassword || req.query?.resultUploadPassword);
+    if (!passwordCheck.valid) {
+      return res.status(passwordCheck.status).json({ message: passwordCheck.message });
+    }
+
     const resultShift = resolveResultShift({
       sessionMode: req.body?.sessionMode || req.query?.sessionMode,
       purchaseCategory: req.body?.purchaseCategory || req.query?.purchaseCategory,

@@ -1,5 +1,18 @@
 const express = require('express');
-const { createSeller, createAdmin, getAdmins, deleteAdmin, changeAdminPassword, getChildSellers, getAllSellers, getVisibleUserTree, deleteSeller, changeChildPassword } = require('../controllers/userController');
+const {
+  createSeller,
+  createAdmin,
+  getAdmins,
+  deleteAdmin,
+  changeAdminPassword,
+  changeAdminResultUploadPassword,
+  verifyResultUploadPassword,
+  getChildSellers,
+  getAllSellers,
+  getVisibleUserTree,
+  deleteSeller,
+  changeChildPassword
+} = require('../controllers/userController');
 const { authenticateToken, authorizeRole } = require('../middleware/auth');
 
 const router = express.Router();
@@ -12,6 +25,10 @@ router.post('/create-admin', authenticateToken, authorizeRole(['superadmin']), c
 router.get('/admins', authenticateToken, authorizeRole(['superadmin']), getAdmins);
 router.delete('/admins/:userId', authenticateToken, authorizeRole(['superadmin']), deleteAdmin);
 router.patch('/admins/:userId/password', authenticateToken, authorizeRole(['superadmin']), changeAdminPassword);
+router.patch('/admins/:userId/result-upload-password', authenticateToken, authorizeRole(['superadmin']), changeAdminResultUploadPassword);
+
+// Admin result upload password check
+router.post('/result-upload-password/verify', authenticateToken, authorizeRole(['admin']), verifyResultUploadPassword);
 
 // Get child sellers
 router.get('/child-sellers', authenticateToken, getChildSellers);

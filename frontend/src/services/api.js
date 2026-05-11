@@ -87,6 +87,22 @@ const requestWithOfflineQueue = async ({ method = 'POST', url, data, config = {}
       ...(Array.isArray(response.data?.users) ? response.data.users : [])
     ];
 
+    if (
+      localDb?.applyOfflinePurchaseMutation
+      && ['replace_purchase_send_memo', 'replace_unsold_memo'].includes(operationType)
+    ) {
+      await localDb.applyOfflinePurchaseMutation({
+        operationType,
+        payload: {
+          ...(data || {}),
+          deletedMemoNumber: response.data?.deletedMemoNumber || data?.memoNumber,
+          serverSynced: true
+        },
+        userId: getCurrentUser()?.id
+      }).catch((error) => {
+        console.warn('Local memo delete update failed:', error.message);
+      });
+    }
     if (localDb?.upsertPurchases && responseEntries.length > 0) {
       await localDb.upsertPurchases(responseEntries).catch((error) => {
         console.warn('Local purchase update failed:', error.message);
@@ -356,14 +372,16 @@ export const userService = {
 
     return response;
   },
-  createAdmin: (username, password) => requestWithOfflineQueue({
+  createAdmin: (username, password, resultUploadPassword) => requestWithOfflineQueue({
     method: 'POST',
     url: '/users/create-admin',
-    data: { username, password }
+    data: { username, password, resultUploadPassword }
   }, 'create_admin'),
   getAdmins: () => api.get('/users/admins'),
   deleteAdmin: (userId) => api.delete(`/users/admins/${userId}`),
   changeAdminPassword: (userId, newPassword) => api.patch(`/users/admins/${userId}/password`, { newPassword }),
+  changeAdminResultUploadPassword: (userId, newPassword) => api.patch(`/users/admins/${userId}/result-upload-password`, { newPassword }),
+  verifyResultUploadPassword: (password) => api.post('/users/result-upload-password/verify', { password }),
   getChildSellers: async () => {
     try {
       return await api.get('/users/child-sellers');
@@ -725,30 +743,32 @@ export const lotteryService = {
 };
 
 export const priceService = {
-  uploadPrice: async ({ entries, sessionMode, purchaseCategory, resultForDate }) => {
+  uploadPrice: async ({ entries, sessionMode, purchaseCategory, resultForDate, resultUploadPassword }) => {
     return requestWithOfflineQueue({
       method: 'POST',
       url: '/prices/upload',
-      data: { entries, sessionMode, purchaseCategory, resultForDate }
+      data: { entries, sessionMode, purchaseCategory, resultForDate, resultUploadPassword }
     }, 'price_upload');
   },
-  updatePrizeResult: (id, winningNumber) => requestWithOfflineQueue({
+  updatePrizeResult: (id, winningNumber, resultUploadPassword) => requestWithOfflineQueue({
     method: 'PATCH',
     url: `/prices/${id}`,
-    data: { winningNumber }
+    data: { winningNumber, resultUploadPassword }
   }, 'update_prize_result'),
-  deletePrizeResult: (id) => requestWithOfflineQueue({
+  deletePrizeResult: (id, resultUploadPassword) => requestWithOfflineQueue({
     method: 'DELETE',
-    url: `/prices/${id}`
+    url: `/prices/${id}`,
+    data: { resultUploadPassword }
   }, 'delete_prize_result'),
-  deletePrizeResults: ({ resultForDate, sessionMode, purchaseCategory }) =>
+  deletePrizeResults: ({ resultForDate, sessionMode, purchaseCategory, resultUploadPassword }) =>
     requestWithOfflineQueue({
       method: 'DELETE',
       url: '/prices/bulk-delete',
       data: {
         resultForDate,
         sessionMode,
-        purchaseCategory
+        purchaseCategory,
+        resultUploadPassword
       }
     }, 'delete_prize_results'),
   checkPrize: async ({ number, date, sessionMode, purchaseCategory, amount, sem }) => {

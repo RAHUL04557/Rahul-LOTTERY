@@ -605,6 +605,7 @@ const mapLotteryEntry = (row) => ({
   entrySource: row.entry_source || BOOKING_ENTRY_SOURCE,
   memoNumber: row.memo_number,
   purchaseMemoNumber: row.purchase_memo_number || row.memo_number,
+  memoRowOrder: row.memo_row_order,
   purchaseCategory: row.purchase_category || getDefaultPurchaseCategory(row.session_mode),
   sentToParent: row.sent_to_parent,
   bookingDate: row.booking_date,
@@ -801,6 +802,11 @@ const ensureHistoryStorage = async () => {
   await query(`
     ALTER TABLE lottery_entries
     ADD COLUMN IF NOT EXISTS purchase_memo_number INTEGER
+  `);
+
+  await query(`
+    ALTER TABLE lottery_entries
+    ADD COLUMN IF NOT EXISTS memo_row_order INTEGER
   `);
 
   await query(`
@@ -1516,6 +1522,7 @@ const addAdminPurchaseEntries = async (req, res) => {
       boxValue,
       amount,
       memoNumber,
+      memoRowOrder,
       bookingDate: rawBookingDate
     } = req.body;
     const sessionMode = getRequiredSessionMode(req, res);
@@ -1732,7 +1739,7 @@ const replaceAdminPurchaseMemoEntries = async (req, res) => {
     const shouldReturnInsertedEntries = replacementNumbers.length <= 5000;
     const generatedUniqueCodes = new Set();
 
-    for (const row of normalizedRows) {
+    for (const [rowIndex, row] of normalizedRows.entries()) {
       const rangeResult = buildPurchaseNumbers(row.rangeStart, row.rangeEnd);
 
       if (rangeResult.error) {
@@ -1881,12 +1888,13 @@ const insertDirectPurchaseEntries = async ({
   bookingDate,
   sessionMode,
   purchaseCategory,
-  memoNumber
+  memoNumber,
+  memoRowOrder = null
 }) => {
   const insertedEntries = [];
   const usedCodes = new Set();
   const chunkSize = 1000;
-  const columnsPerRow = 15;
+  const columnsPerRow = 16;
   const shouldDirectAssign = shouldDirectAssignPurchaseToTarget({ currentUser, targetSeller });
   const effectiveMemoNumber = shouldDirectAssign ? memoNumber : null;
   const sentToParent = Number(targetSeller.id) === Number(currentUser.id)
@@ -1918,18 +1926,19 @@ const insertDirectPurchaseEntries = async ({
         PURCHASE_ENTRY_SOURCE,
         effectiveMemoNumber,
         effectiveMemoNumber,
+        memoRowOrder,
         purchaseCategory,
         'accepted'
       );
 
-      return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}::date, $${offset + 11}, $${offset + 12}, $${offset + 13}, $${offset + 14}, $${offset + 15})`;
+      return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}::date, $${offset + 11}, $${offset + 12}, $${offset + 13}, $${offset + 14}, $${offset + 15}, $${offset + 16})`;
     });
 
     const insertedResult = await db.query(
       `INSERT INTO lottery_entries (
         user_id, series, number, box_value, unique_code, amount,
         sent_to_parent, forwarded_by, session_mode, booking_date,
-        entry_source, memo_number, purchase_memo_number, purchase_category, status
+        entry_source, memo_number, purchase_memo_number, memo_row_order, purchase_category, status
       )
       VALUES ${placeholders.join(', ')}
       RETURNING *`,
@@ -1951,7 +1960,8 @@ const forwardSellerOwnedPurchaseEntries = async ({
   bookingDate,
   sessionMode,
   purchaseCategory,
-  memoNumber
+  memoNumber,
+  memoRowOrder = null
 }) => {
   const stockEntriesResult = await findSellerOwnedPurchaseStockEntries({
     db,
@@ -1986,6 +1996,7 @@ const forwardSellerOwnedPurchaseEntries = async ({
          forwarded_by = $4,
          memo_number = $5,
          purchase_memo_number = $5,
+         memo_row_order = $6,
          sent_at = CURRENT_TIMESTAMP
      WHERE id = ANY($1::int[])
      RETURNING *`,
@@ -1994,7 +2005,8 @@ const forwardSellerOwnedPurchaseEntries = async ({
       targetSeller.id,
       sentToParent,
       currentUser.id,
-      effectiveMemoNumber
+      effectiveMemoNumber,
+      memoRowOrder
     ]
   );
 
@@ -2013,6 +2025,7 @@ const sendAdminPurchaseEntries = async (req, res) => {
       boxValue,
       amount,
       memoNumber,
+      memoRowOrder,
       bookingDate: rawBookingDate
     } = req.body;
     const sessionMode = getRequiredSessionMode(req, res);
@@ -2100,7 +2113,8 @@ const sendAdminPurchaseEntries = async (req, res) => {
         bookingDate,
         sessionMode,
         purchaseCategory,
-        memoNumber: normalizedMemoNumber
+        memoNumber: normalizedMemoNumber,
+        memoRowOrder: Number.isInteger(Number(memoRowOrder)) ? Number(memoRowOrder) : 0
       });
 
       await insertHistoryRecords({
@@ -2130,7 +2144,8 @@ const sendAdminPurchaseEntries = async (req, res) => {
       bookingDate,
       sessionMode,
       purchaseCategory,
-      memoNumber: normalizedMemoNumber
+      memoNumber: normalizedMemoNumber,
+      memoRowOrder: Number.isInteger(Number(memoRowOrder)) ? Number(memoRowOrder) : 0
     });
 
     if (forwardResult.error) {
@@ -2257,7 +2272,7 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
            AND user_id = $2
            AND entry_source = $3
            AND forwarded_by = $4
-           AND memo_number = $5
+           AND (memo_number = $5 OR purchase_memo_number = $5)
            AND status IN ('accepted', 'unsold')
          ORDER BY number ASC`,
         [uniqueMemoEntryIds, targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber]
@@ -2268,7 +2283,7 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
          WHERE user_id = $1
            AND entry_source = $2
            AND forwarded_by = $3
-           AND memo_number = $4
+           AND (memo_number = $4 OR purchase_memo_number = $4)
            AND booking_date = $5::date
            AND session_mode = $6
            AND purchase_category = $7
@@ -2340,7 +2355,7 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
 
     const updatedEntries = [];
 
-    for (const row of normalizedRows) {
+    for (const [rowIndex, row] of normalizedRows.entries()) {
       const rangeResult = buildPurchaseNumbers(row.rangeStart, row.rangeEnd);
       const rowBookingDate = normalizeBookingDate(row.bookingDate || bookingDate);
       const resolvedSessionMode = normalizeSessionMode(row.sessionMode) || sessionMode;
@@ -2380,7 +2395,8 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
           bookingDate: rowBookingDate,
           sessionMode: resolvedSessionMode,
           purchaseCategory: resolvedPurchaseCategory,
-          memoNumber: normalizedMemoNumber
+          memoNumber: normalizedMemoNumber,
+          memoRowOrder: Number.isInteger(Number(row.memoRowOrder)) ? Number(row.memoRowOrder) : rowIndex
         });
         updatedEntries.push(...insertedEntries);
         continue;
@@ -2396,7 +2412,8 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
         bookingDate: rowBookingDate,
         sessionMode: resolvedSessionMode,
         purchaseCategory: resolvedPurchaseCategory,
-        memoNumber: normalizedMemoNumber
+        memoNumber: normalizedMemoNumber,
+        memoRowOrder: Number.isInteger(Number(row.memoRowOrder)) ? Number(row.memoRowOrder) : rowIndex
       });
 
       if (forwardResult.error) {
@@ -2894,7 +2911,7 @@ const markPurchaseEntriesUnsold = async (req, res) => {
   try {
     await ensureHistoryStorage();
 
-    const { number, rangeStart, rangeEnd, bookingDate: rawBookingDate, sellerId, sellerUserId, memoNumber, amount, boxValue } = req.body;
+    const { number, rangeStart, rangeEnd, bookingDate: rawBookingDate, sellerId, sellerUserId, memoNumber, memoRowOrder, amount, boxValue } = req.body;
     const sessionMode = getRequiredSessionMode(req, res);
     const bookingDate = normalizeBookingDate(rawBookingDate);
     const purchaseCategory = getPurchaseCategoryFromRequest(req, sessionMode);
@@ -3039,10 +3056,11 @@ const markPurchaseEntriesUnsold = async (req, res) => {
            forwarded_by = $2,
            memo_number = $3,
            purchase_memo_number = COALESCE(purchase_memo_number, memo_number),
+           memo_row_order = $5,
            sent_at = CURRENT_TIMESTAMP
        WHERE id = ANY($1::int[])
        RETURNING *`,
-      [selectedIds, req.user.id, resolvedMemoNumber, UNSOLD_LOCAL_STATUS]
+      [selectedIds, req.user.id, resolvedMemoNumber, UNSOLD_LOCAL_STATUS, Number.isInteger(Number(memoRowOrder)) ? Number(memoRowOrder) : 0]
     );
 
     await deleteUnsoldRemoveHistoryForEntries(updatedEntriesResult.rows);
@@ -3502,10 +3520,10 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
       `SELECT 1
        FROM lottery_entries
        WHERE user_id = $1
-         AND entry_source = $2
-         AND forwarded_by = $3
-         AND memo_number = $4
-         AND booking_date = $5::date
+           AND entry_source = $2
+           AND forwarded_by = $3
+           AND (memo_number = $4 OR purchase_memo_number = $4)
+           AND booking_date = $5::date
          AND session_mode = $6
          AND purchase_category = $7
          AND amount = $8::numeric
@@ -3525,7 +3543,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
        WHERE user_id = $1
          AND entry_source = $2
          AND forwarded_by = $3
-         AND memo_number = $4
+         AND (memo_number = $4 OR purchase_memo_number = $4)
          AND booking_date = $5::date
          AND session_mode = $6
          AND purchase_category = $7
@@ -3635,10 +3653,11 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
              forwarded_by = $2,
              memo_number = $3,
              purchase_memo_number = COALESCE(purchase_memo_number, memo_number),
+             memo_row_order = $5,
              sent_at = CURRENT_TIMESTAMP
          WHERE id = ANY($1::int[])
          RETURNING *`,
-        [selectedIds, req.user.id, normalizedMemoNumber, UNSOLD_LOCAL_STATUS]
+        [selectedIds, req.user.id, normalizedMemoNumber, UNSOLD_LOCAL_STATUS, Number.isInteger(Number(row.memoRowOrder)) ? Number(row.memoRowOrder) : rowIndex]
       );
       updatedEntries.push(...updatedEntriesResult.rows);
     }

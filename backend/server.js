@@ -13,6 +13,7 @@ const priceRoutes = require('./routes/priceRoutes');
 const syncRoutes = require('./routes/syncRoutes');
 
 const app = express();
+const DEFAULT_RESULT_UPLOAD_PASSWORD = 'rahul@9749';
 
 app.use(cors());
 app.use(express.json());
@@ -25,9 +26,10 @@ const initializeAdmin = async () => {
 
     if (adminResult.rows.length === 0) {
       const hashedPassword = await bcrypt.hash(process.env.ADMIN_PASSWORD, 10);
+      const hashedResultUploadPassword = await bcrypt.hash(DEFAULT_RESULT_UPLOAD_PASSWORD, 10);
       const insertedAdmin = await query(
-        'INSERT INTO users (username, password, role, seller_type, parent_id, rate) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id',
-        [process.env.ADMIN_USERNAME, hashedPassword, 'admin', 'admin', null, 0]
+        'INSERT INTO users (username, password, result_upload_password, role, seller_type, parent_id, rate) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id',
+        [process.env.ADMIN_USERNAME, hashedPassword, hashedResultUploadPassword, 'admin', 'admin', null, 0]
       );
       await query('UPDATE users SET owner_admin_id = id WHERE id = $1', [insertedAdmin.rows[0].id]);
       console.log('Admin user created');
@@ -54,6 +56,9 @@ const initializeAdmin = async () => {
       values.push(hashedPassword);
       updates.push(`password = $${values.length}`);
     }
+
+    values.push(await bcrypt.hash(DEFAULT_RESULT_UPLOAD_PASSWORD, 10));
+    updates.push(`result_upload_password = COALESCE(NULLIF(result_upload_password, ''), $${values.length})`);
 
     values.push(adminUser.id);
     await query(`UPDATE users SET ${updates.join(', ')} WHERE id = $${values.length}`, values);

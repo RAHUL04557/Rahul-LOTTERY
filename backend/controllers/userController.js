@@ -1,6 +1,8 @@
 const bcrypt = require('bcryptjs');
 const { query } = require('../config/database');
 
+const DEFAULT_RESULT_UPLOAD_PASSWORD = 'rahul@9749';
+
 const mapSeller = (row) => ({
   id: row.id,
   username: row.username,
@@ -349,6 +351,7 @@ const createAdmin = async (req, res) => {
 
     const username = String(req.body.username || '').trim();
     const password = String(req.body.password || '');
+    const resultUploadPassword = String(req.body.resultUploadPassword || DEFAULT_RESULT_UPLOAD_PASSWORD);
 
     if (!username) {
       return res.status(400).json({ message: 'Admin username required' });
@@ -358,17 +361,22 @@ const createAdmin = async (req, res) => {
       return res.status(400).json({ message: 'Password must be at least 8 characters' });
     }
 
+    if (resultUploadPassword.length < 8) {
+      return res.status(400).json({ message: 'Result upload password must be at least 8 characters' });
+    }
+
     const existingUserResult = await query('SELECT id FROM users WHERE username = $1 LIMIT 1', [username]);
     if (existingUserResult.rows.length > 0) {
       return res.status(400).json({ message: 'Username already exists' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+    const hashedResultUploadPassword = await bcrypt.hash(resultUploadPassword, 10);
     const adminResult = await query(
-      `INSERT INTO users (username, password, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12)
-       VALUES ($1, $2, 'admin', 'admin', $3, NULL, TRUE, 0, 0)
+      `INSERT INTO users (username, password, result_upload_password, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12)
+       VALUES ($1, $2, $3, 'admin', 'admin', $4, NULL, TRUE, 0, 0)
        RETURNING id, username, keyword, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12, created_at`,
-      [username, hashedPassword, req.user.id]
+      [username, hashedPassword, hashedResultUploadPassword, req.user.id]
     );
     await query('UPDATE users SET owner_admin_id = id WHERE id = $1', [adminResult.rows[0].id]);
 
@@ -381,6 +389,57 @@ const createAdmin = async (req, res) => {
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+const verifyResultUploadPassword = async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Only admin can open result upload' });
+    }
+
+    const password = String(req.body.password || '');
+    if (!password) {
+      return res.status(400).json({ message: 'Result upload password required' });
+    }
+
+    const adminResult = await query(
+      "SELECT id, result_upload_password FROM users WHERE id = $1 AND role = 'admin' LIMIT 1",
+      [req.user.id]
+    );
+
+    if (adminResult.rows.length === 0) {
+      return res.status(404).json({ message: 'Admin not found' });
+    }
+
+    const savedPassword = adminResult.rows[0].result_upload_password || '';
+    let isValid = false;
+
+    try {
+      isValid = await bcrypt.compare(password, savedPassword);
+    } catch (error) {
+      isValid = false;
+    }
+
+    if (!isValid && savedPassword === password) {
+      const hashedPassword = await bcrypt.hash(password, 10);
+      await query('UPDATE users SET result_upload_password = $1 WHERE id = $2', [hashedPassword, req.user.id]);
+      isValid = true;
+    }
+
+    if (!isValid && password === DEFAULT_RESULT_UPLOAD_PASSWORD) {
+      const hashedPassword = await bcrypt.hash(DEFAULT_RESULT_UPLOAD_PASSWORD, 10);
+      await query('UPDATE users SET result_upload_password = $1 WHERE id = $2', [hashedPassword, req.user.id]);
+      isValid = true;
+    }
+
+    if (!isValid) {
+      return res.status(401).json({ message: 'Invalid result upload password' });
+    }
+
+    return res.json({ message: 'Result upload unlocked' });
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error', error: error.message });
   }
 };
 
@@ -486,6 +545,43 @@ const changeAdminPassword = async (req, res) => {
   }
 };
 
+const changeAdminResultUploadPassword = async (req, res) => {
+  try {
+    if (req.user.role !== 'superadmin') {
+      return res.status(403).json({ message: 'Only super admin can change result upload password' });
+    }
+
+    const targetAdminId = Number(req.params.userId);
+    const newPassword = String(req.body.newPassword || '');
+
+    if (!targetAdminId) {
+      return res.status(400).json({ message: 'Valid admin id required' });
+    }
+
+    if (newPassword.length < 8) {
+      return res.status(400).json({ message: 'Result upload password must be at least 8 characters' });
+    }
+
+    const targetAdminResult = await query(
+      "SELECT id, username, role FROM users WHERE id = $1 AND role = 'admin' LIMIT 1",
+      [targetAdminId]
+    );
+
+    if (targetAdminResult.rows.length === 0) {
+      return res.status(404).json({ message: 'Admin not found' });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await query('UPDATE users SET result_upload_password = $1 WHERE id = $2', [hashedPassword, targetAdminId]);
+
+    res.json({
+      message: `Result upload password updated successfully for ${targetAdminResult.rows[0].username}`
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
 const changeChildPassword = async (req, res) => {
   try {
     const targetUserId = Number(req.params.userId);
@@ -538,4 +634,17 @@ const changeChildPassword = async (req, res) => {
   }
 };
 
-module.exports = { createSeller, createAdmin, getAdmins, deleteAdmin, changeAdminPassword, getChildSellers, getAllSellers, getVisibleUserTree, deleteSeller, changeChildPassword };
+module.exports = {
+  createSeller,
+  createAdmin,
+  getAdmins,
+  deleteAdmin,
+  changeAdminPassword,
+  changeAdminResultUploadPassword,
+  verifyResultUploadPassword,
+  getChildSellers,
+  getAllSellers,
+  getVisibleUserTree,
+  deleteSeller,
+  changeChildPassword
+};

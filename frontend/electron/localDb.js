@@ -61,6 +61,7 @@ const initLocalDb = () => {
       status TEXT NOT NULL,
       memo_number INTEGER,
       purchase_memo_number INTEGER,
+      memo_row_order INTEGER,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       sync_status TEXT NOT NULL DEFAULT 'synced'
@@ -185,6 +186,7 @@ const initLocalDb = () => {
   ensureColumn(db, 'local_purchase_entries', 'series', 'TEXT');
   ensureColumn(db, 'local_purchase_entries', 'unique_code', 'TEXT');
   ensureColumn(db, 'local_purchase_entries', 'entry_source', "TEXT NOT NULL DEFAULT 'purchase'");
+  ensureColumn(db, 'local_purchase_entries', 'memo_row_order', 'INTEGER');
 
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_local_purchase_server_id
@@ -270,6 +272,7 @@ const normalizePurchaseEntry = (entry) => {
     purchaseMemoNumber: entry?.purchaseMemoNumber || entry?.purchase_memo_number
       ? Number(entry.purchaseMemoNumber || entry.purchase_memo_number)
       : null,
+    memoRowOrder: entry?.memoRowOrder ?? entry?.memo_row_order ?? null,
     entrySource: String(entry?.entrySource || entry?.entry_source || 'purchase'),
     createdAt: entry?.createdAt || entry?.created_at || now,
     updatedAt: entry?.updatedAt || entry?.updated_at || now
@@ -293,6 +296,7 @@ const mapLocalPurchaseEntry = (row) => ({
   status: row.status,
   memoNumber: row.memo_number,
   purchaseMemoNumber: row.purchase_memo_number || row.memo_number,
+  memoRowOrder: row.memo_row_order,
   entrySource: row.entry_source || 'purchase',
   createdAt: row.created_at,
   sentAt: row.updated_at,
@@ -1003,13 +1007,13 @@ const setupLocalDbIpc = (ipcMain) => {
       INSERT INTO local_purchase_entries (
         local_id, server_id, user_id, owner_user_id, forwarded_by, sent_to_parent,
         series, number, box_value, unique_code, amount, booking_date, session_mode,
-        purchase_category, status, memo_number, purchase_memo_number, entry_source,
+        purchase_category, status, memo_number, purchase_memo_number, memo_row_order, entry_source,
         created_at, updated_at, sync_status
       )
       VALUES (
         @localId, @serverId, @userId, @ownerUserId, @forwardedBy, @sentToParent,
         @series, @number, @boxValue, @uniqueCode, @amount, @bookingDate, @sessionMode,
-        @purchaseCategory, @status, @memoNumber, @purchaseMemoNumber, @entrySource,
+        @purchaseCategory, @status, @memoNumber, @purchaseMemoNumber, @memoRowOrder, @entrySource,
         @createdAt, @updatedAt, 'synced'
       )
       ON CONFLICT(local_id) DO UPDATE SET
@@ -1029,6 +1033,7 @@ const setupLocalDbIpc = (ipcMain) => {
         status = excluded.status,
         memo_number = excluded.memo_number,
         purchase_memo_number = excluded.purchase_memo_number,
+        memo_row_order = excluded.memo_row_order,
         entry_source = excluded.entry_source,
         updated_at = excluded.updated_at,
         sync_status = excluded.sync_status
@@ -1322,6 +1327,7 @@ const setupLocalDbIpc = (ipcMain) => {
           SET status = 'unsold_saved',
               memo_number = COALESCE(?, memo_number),
               purchase_memo_number = COALESCE(?, purchase_memo_number, memo_number),
+              memo_row_order = COALESCE(?, memo_row_order),
               updated_at = ?,
               sync_status = 'pending'
           WHERE ${conditions.join(' AND ')}
@@ -1330,6 +1336,7 @@ const setupLocalDbIpc = (ipcMain) => {
         .run(
           payload.memoNumber ? Number(payload.memoNumber) : null,
           payload.memoNumber ? Number(payload.memoNumber) : null,
+          payload.memoRowOrder !== undefined && payload.memoRowOrder !== null ? Number(payload.memoRowOrder) : null,
           now,
           ...params
         );
@@ -1377,13 +1384,13 @@ const setupLocalDbIpc = (ipcMain) => {
           INSERT INTO local_purchase_entries (
             local_id, server_id, user_id, owner_user_id, forwarded_by, sent_to_parent,
             series, number, box_value, unique_code, amount, booking_date, session_mode,
-            purchase_category, status, memo_number, purchase_memo_number, entry_source,
+            purchase_category, status, memo_number, purchase_memo_number, memo_row_order, entry_source,
             created_at, updated_at, sync_status
           )
           VALUES (
             @localId, NULL, @userId, @ownerUserId, @forwardedBy, @sentToParent,
             NULL, @number, @boxValue, NULL, @amount, @bookingDate, @sessionMode,
-            @purchaseCategory, 'accepted', @memoNumber, @memoNumber, 'purchase',
+            @purchaseCategory, 'accepted', @memoNumber, @memoNumber, @memoRowOrder, 'purchase',
             @createdAt, @updatedAt, 'pending'
           )
           ON CONFLICT(local_id) DO UPDATE SET
@@ -1398,6 +1405,7 @@ const setupLocalDbIpc = (ipcMain) => {
             status = excluded.status,
             memo_number = excluded.memo_number,
             purchase_memo_number = excluded.purchase_memo_number,
+            memo_row_order = excluded.memo_row_order,
             updated_at = excluded.updated_at,
             sync_status = excluded.sync_status
         `);
@@ -1417,6 +1425,7 @@ const setupLocalDbIpc = (ipcMain) => {
               sessionMode,
               purchaseCategory,
               memoNumber,
+              memoRowOrder: payload.memoRowOrder ?? 0,
               createdAt: now,
               updatedAt: now
             });
@@ -1424,6 +1433,108 @@ const setupLocalDbIpc = (ipcMain) => {
         });
 
         writePurchaseRows(purchaseNumbers);
+      }
+    }
+
+    if (operationType === 'replace_purchase_send_memo') {
+      const currentUser = getLocalUsers().find((user) => Number(user.id) === Number(userId)) || {};
+      const targetUserId = Number(payload.sellerId || payload.sellerUserId || 0);
+      const memoNumber = Number(payload.deletedMemoNumber || payload.memoNumber || 0);
+      const bookingDate = toLocalDate(payload.bookingDate);
+      const sessionMode = String(payload.sessionMode || '');
+      const purchaseCategory = String(payload.purchaseCategory || '');
+      const amount = String(payload.amount || '');
+      const isAdmin = String(currentUser.role || '').toLowerCase() === 'admin';
+
+      if (targetUserId && memoNumber && bookingDate && sessionMode && purchaseCategory && amount) {
+        const whereParams = [
+          targetUserId,
+          Number(userId || 0),
+          memoNumber,
+          memoNumber,
+          bookingDate,
+          sessionMode,
+          purchaseCategory,
+          amount
+        ];
+        const whereClause = `
+          user_id = ?
+          AND entry_source = 'purchase'
+          AND forwarded_by = ?
+          AND (memo_number = ? OR purchase_memo_number = ?)
+          AND booking_date = ?
+          AND session_mode = ?
+          AND purchase_category = ?
+          AND amount = ?
+          AND LOWER(TRIM(status)) IN ('accepted', 'unsold', 'unsold_saved')
+        `;
+
+        if (isAdmin) {
+          initLocalDb()
+            .prepare(`DELETE FROM local_purchase_entries WHERE ${whereClause}`)
+            .run(targetUserId, Number(userId || 0), memoNumber, memoNumber, bookingDate, sessionMode, purchaseCategory, amount);
+        } else {
+          initLocalDb()
+            .prepare(`
+              UPDATE local_purchase_entries
+              SET user_id = ?,
+                  sent_to_parent = NULL,
+                  forwarded_by = ?,
+                  memo_number = NULL,
+                  purchase_memo_number = NULL,
+                  updated_at = ?,
+                  sync_status = ?
+              WHERE ${whereClause}
+            `)
+            .run(
+              Number(userId || 0),
+              Number(userId || 0),
+              now,
+              payload.serverSynced ? 'synced' : 'pending',
+              ...whereParams
+            );
+        }
+      }
+    }
+
+    if (operationType === 'replace_unsold_memo') {
+      const targetUserId = Number(payload.sellerId || payload.sellerUserId || userId || 0);
+      const memoNumber = Number(payload.deletedMemoNumber || payload.memoNumber || 0);
+      const bookingDate = toLocalDate(payload.bookingDate);
+      const sessionMode = String(payload.sessionMode || '');
+      const purchaseCategory = String(payload.purchaseCategory || '');
+      const amount = String(payload.amount || '');
+
+      if (targetUserId && memoNumber && bookingDate && sessionMode && purchaseCategory && amount) {
+        initLocalDb()
+          .prepare(`
+            UPDATE local_purchase_entries
+            SET status = 'accepted',
+                memo_number = COALESCE(purchase_memo_number, memo_number),
+                updated_at = ?,
+                sync_status = ?
+            WHERE user_id = ?
+              AND entry_source = 'purchase'
+              AND forwarded_by = ?
+              AND (memo_number = ? OR purchase_memo_number = ?)
+              AND booking_date = ?
+              AND session_mode = ?
+              AND purchase_category = ?
+              AND amount = ?
+              AND LOWER(TRIM(status)) IN ('unsold_saved', 'unsold')
+          `)
+          .run(
+            now,
+            payload.serverSynced ? 'synced' : 'pending',
+            targetUserId,
+            Number(userId || 0),
+            memoNumber,
+            memoNumber,
+            bookingDate,
+            sessionMode,
+            purchaseCategory,
+            amount
+          );
       }
     }
 

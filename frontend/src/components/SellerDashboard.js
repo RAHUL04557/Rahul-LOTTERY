@@ -65,6 +65,7 @@ const mapApiEntry = (entry) => ({
   price: Number(entry.boxValue || 0) * Number(entry.amount || 0),
   memoNumber: entry.memoNumber ?? entry.memo_number ?? null,
   purchaseMemoNumber: entry.purchaseMemoNumber ?? entry.purchase_memo_number ?? entry.memoNumber ?? entry.memo_number ?? null,
+  memoRowOrder: entry.memoRowOrder ?? entry.memo_row_order ?? null,
   bookingDate: entry.bookingDate || entry.booking_date || null,
   sessionMode: entry.sessionMode,
   purchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M'),
@@ -556,32 +557,56 @@ const buildPurchaseMemoSummaries = (entries = []) => {
 const buildCurrentMemoSummaries = (entries = []) => {
   const normalizedEntries = entries.map((entry) => ({
     ...entry,
-    purchaseMemoNumber: entry.memoNumber ?? entry.memo_number ?? null
+    purchaseMemoNumber: entry.purchaseMemoNumber ?? entry.purchase_memo_number ?? entry.memoNumber ?? entry.memo_number ?? null
   }));
 
   return buildPurchaseMemoSummaries(normalizedEntries);
 };
 
 const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, options = {}) => (
-  groupConsecutiveNumberRows(
-    sortRowsForConsecutiveNumbers(
-      [...entries],
-      (entry) => [
+  (entries.some((entry) => entry.memoRowOrder !== null && entry.memoRowOrder !== undefined)
+    ? Array.from(sortRowsForConsecutiveNumbers([...entries], (entry) => [
+      entry.memoRowOrder ?? 999999,
+      entry.bookingDate,
+      entry.sessionMode,
+      entry.purchaseCategory,
+      entry.amount,
+      entry.sem,
+      entry.memoRowOrder !== null && entry.memoRowOrder !== undefined ? '' : (entry.createdAt || entry.sentAt || '')
+    ]).reduce((groupMap, entry) => {
+      const key = [
+        entry.memoRowOrder ?? 'old',
         entry.bookingDate,
         entry.sessionMode,
         entry.purchaseCategory,
         entry.amount,
         entry.sem
-      ]
-    ),
-    (entry) => [
-      entry.bookingDate,
-      entry.sessionMode,
-      entry.purchaseCategory,
-      entry.amount,
-      entry.sem
-    ].join('|')
-  ).map((group, index) => {
+      ].join('|');
+      if (!groupMap.has(key)) groupMap.set(key, []);
+      groupMap.get(key).push(entry);
+      return groupMap;
+    }, new Map()).values()).map((rows) => ({ rows, firstRow: rows[0], lastRow: rows[rows.length - 1] }))
+    : groupConsecutiveNumberRows(
+      sortRowsForConsecutiveNumbers(
+        [...entries],
+        (entry) => [
+          entry.bookingDate,
+          entry.sessionMode,
+          entry.purchaseCategory,
+          entry.amount,
+          entry.sem,
+          entry.createdAt || entry.sentAt || ''
+        ]
+      ),
+      (entry) => [
+        entry.bookingDate,
+        entry.sessionMode,
+        entry.purchaseCategory,
+        entry.amount,
+        entry.sem,
+        entry.createdAt || entry.sentAt || ''
+      ].join('|')
+    )).map((group, index) => {
     const entry = group.firstRow || {};
     const count = group.rows.length;
     const semValue = Number(entry.sem || 0);
@@ -611,6 +636,7 @@ const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, option
       isExistingUnsoldMemoRow: Boolean(options.existingUnsoldMemo),
       isExistingUnsoldRemoveMemoRow: Boolean(options.existingUnsoldRemoveMemo),
       isEditedUnsoldRemoveRow: false,
+      memoRowOrder: entry.memoRowOrder ?? index,
       entryIds: group.rows.map((row) => row.id).filter(Boolean)
     };
   })
@@ -3011,7 +3037,7 @@ const SellerDashboard = ({
           sessionMode,
           amount,
           purchaseCategory: activePurchaseCategory,
-          rows: nextRows.map((row) => ({
+          rows: nextRows.map((row, index) => ({
             rangeStart: row.numberStart || row.from,
             rangeEnd: row.numberEnd || row.to,
             boxValue: row.semValue,
@@ -3019,7 +3045,8 @@ const SellerDashboard = ({
             bookingDate: row.drawDate || bookingDate,
             sessionMode: row.resolvedSessionMode || sessionMode,
             purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
-            entryIds: row.entryIds || []
+            entryIds: row.entryIds || [],
+            memoRowOrder: row.memoRowOrder ?? index
           }))
         });
 
@@ -3131,7 +3158,7 @@ const SellerDashboard = ({
           sessionMode,
           amount,
           purchaseCategory: activePurchaseCategory,
-          rows: rowsToSave.map((row) => ({
+          rows: rowsToSave.map((row, index) => ({
             rangeStart: row.numberStart || row.from,
             rangeEnd: row.numberEnd || row.to,
             boxValue: row.semValue,
@@ -3139,11 +3166,12 @@ const SellerDashboard = ({
             bookingDate: row.drawDate || bookingDate,
             sessionMode: row.resolvedSessionMode || sessionMode,
             purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
-            entryIds: row.entryIds || []
+            entryIds: row.entryIds || [],
+            memoRowOrder: row.memoRowOrder ?? index
           }))
         });
       } else {
-        for (const row of rowsToSave) {
+        for (const [index, row] of rowsToSave.entries()) {
           await lotteryService.sendPurchase({
             sellerId: purchaseSendSellerId,
             series: '',
@@ -3154,7 +3182,8 @@ const SellerDashboard = ({
             memoNumber: effectiveMemoNumber,
             bookingDate: row.drawDate || bookingDate,
             sessionMode: row.resolvedSessionMode || sessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory
+            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+            memoRowOrder: row.memoRowOrder ?? index
           });
         }
       }
@@ -4008,18 +4037,19 @@ const SellerDashboard = ({
           sessionMode,
           amount,
           purchaseCategory: activePurchaseCategory,
-          rows: rowsToSave.map((row) => ({
+          rows: rowsToSave.map((row, index) => ({
             rangeStart: row.numberStart || row.from,
             rangeEnd: row.numberEnd || row.to,
             boxValue: row.semValue,
             amount: row.bookingAmount || amount,
             bookingDate: row.drawDate || bookingDate,
             sessionMode: row.resolvedSessionMode || sessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory
+            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+            memoRowOrder: row.memoRowOrder ?? index
           }))
         });
       } else {
-        for (const row of rowsToSave) {
+        for (const [index, row] of rowsToSave.entries()) {
           await lotteryService.markPurchaseUnsold({
             bookingDate: row.drawDate || bookingDate,
             sessionMode: row.resolvedSessionMode || sessionMode,
@@ -4029,7 +4059,8 @@ const SellerDashboard = ({
             amount: row.bookingAmount || amount,
             boxValue: row.semValue,
             rangeStart: row.numberStart || row.from,
-            rangeEnd: row.numberEnd || row.to
+            rangeEnd: row.numberEnd || row.to,
+            memoRowOrder: row.memoRowOrder ?? index
           });
         }
       }

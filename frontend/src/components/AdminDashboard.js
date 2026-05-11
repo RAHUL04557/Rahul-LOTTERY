@@ -412,9 +412,9 @@ const resolveRangeEndValue = (fromValue, toValue) => {
   return String(resolvedToNumber).padStart(5, '0');
 };
 
-const getRetroRangeMetrics = (codeValue, fallbackSessionMode, fromValue, toValue, fallbackPurchaseCategory = '') => {
+const getRetroRangeMetrics = (codeValue, fallbackSessionMode, fromValue, toValue, fallbackPurchaseCategory = '', referenceFromValue = '') => {
   const parsed = parseRetroCodeValue(codeValue, fallbackSessionMode, fallbackPurchaseCategory);
-  const fromNumber = normalizeNumericInput(fromValue);
+  const fromNumber = normalizeRangeStartInput(fromValue, referenceFromValue);
   const resolvedToNumber = resolveRangeEndValue(fromNumber, toValue || fromValue);
 
   if (parsed.error) {
@@ -632,28 +632,50 @@ const buildPurchaseMemoSummaries = (entries = []) => {
     }));
 };
 
-const buildAdminStockDraftRowsFromEntries = (entries = [], amountValue) => (
-  groupConsecutiveNumberRows(
-    sortRowsForConsecutiveNumbers(
-      [...entries],
+const buildAdminStockDraftRowsFromEntries = (entries = [], amountValue) => {
+  const sortedEntries = sortRowsForConsecutiveNumbers(
+    [...entries],
+    (entry) => [
+      entry.memoRowOrder ?? 999999,
+      entry.bookingDate,
+      entry.sessionMode,
+      entry.purchaseCategory,
+      entry.amount,
+      entry.sem,
+      entry.series || '',
+      entry.memoRowOrder !== null && entry.memoRowOrder !== undefined ? '' : (entry.createdAt || entry.sentAt || '')
+    ]
+  );
+  const groups = entries.some((entry) => entry.memoRowOrder !== null && entry.memoRowOrder !== undefined)
+    ? Array.from(sortedEntries.reduce((groupMap, entry) => {
+      const key = [
+        entry.memoRowOrder ?? 'old',
+        entry.bookingDate,
+        entry.sessionMode,
+        entry.purchaseCategory,
+        entry.amount,
+        entry.sem,
+        entry.series || '',
+        entry.memoRowOrder !== null && entry.memoRowOrder !== undefined ? '' : (entry.createdAt || entry.sentAt || '')
+      ].join('|');
+      if (!groupMap.has(key)) groupMap.set(key, []);
+      groupMap.get(key).push(entry);
+      return groupMap;
+    }, new Map()).values()).map((rows) => ({ rows, firstRow: rows[0], lastRow: rows[rows.length - 1] }))
+    : groupConsecutiveNumberRows(
+      sortedEntries,
       (entry) => [
         entry.bookingDate,
         entry.sessionMode,
         entry.purchaseCategory,
         entry.amount,
         entry.sem,
-        entry.series || ''
-      ]
-    ),
-    (entry) => [
-      entry.bookingDate,
-      entry.sessionMode,
-      entry.purchaseCategory,
-      entry.amount,
-      entry.sem,
-      entry.series || ''
-    ].join('|')
-  ).map((group, index) => {
+        entry.series || '',
+        entry.createdAt || entry.sentAt || ''
+      ].join('|')
+    );
+
+  return groups.map((group, index) => {
     const entry = group.firstRow || {};
     const count = group.rows.length;
     const semValue = Number(entry.sem || 0);
@@ -675,10 +697,11 @@ const buildAdminStockDraftRowsFromEntries = (entries = [], amountValue) => (
       semValue: String(entry.sem || ''),
       bookingAmount: String(entry.amount || amountValue || ''),
       resolvedSessionMode: entry.sessionMode || 'MORNING',
-      resolvedPurchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M')
+      resolvedPurchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M'),
+      memoRowOrder: entry.memoRowOrder ?? index
     };
-  })
-);
+  });
+};
 
 const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, options = {}) => (
   buildAdminStockDraftRowsFromEntries(entries, amountValue).map((row, index) => {
@@ -700,6 +723,13 @@ const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, option
           && String(entry.bookingDate || '') === String(row.drawDate || '')
           && String(entry.number || '') >= String(row.from || '')
           && String(entry.number || '') <= String(row.to || '')
+          && (
+            row.memoRowOrder === null
+            || row.memoRowOrder === undefined
+            || entry.memoRowOrder === null
+            || entry.memoRowOrder === undefined
+            || Number(entry.memoRowOrder) === Number(row.memoRowOrder)
+          )
         ))
         .map((entry) => entry.id)
     };
@@ -733,6 +763,8 @@ const mapApiEntry = (entry) => ({
   number: entry.number,
   price: Number(entry.boxValue || 0) * Number(entry.amount || 0),
   memoNumber: entry.memoNumber ?? entry.memo_number ?? null,
+  purchaseMemoNumber: entry.purchaseMemoNumber ?? entry.purchase_memo_number ?? entry.memoNumber ?? entry.memo_number ?? null,
+  memoRowOrder: entry.memoRowOrder ?? entry.memo_row_order ?? null,
   bookingDate: entry.bookingDate || entry.booking_date || null,
   sessionMode: entry.sessionMode,
   purchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M'),
@@ -959,7 +991,7 @@ const getOcrSection = (text, startPatterns = [], endPatterns = []) => {
 const buildCurrentMemoSummaries = (entries = []) => {
   const normalizedEntries = entries.map((entry) => ({
     ...entry,
-    purchaseMemoNumber: entry.memoNumber ?? entry.memo_number ?? null
+    purchaseMemoNumber: entry.purchaseMemoNumber ?? entry.purchase_memo_number ?? entry.memoNumber ?? entry.memo_number ?? null
   }));
 
   return buildPurchaseMemoSummaries(normalizedEntries);
@@ -1353,6 +1385,10 @@ const AdminDashboard = ({
   const [blockingWarning, setBlockingWarning] = useState(null);
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resultUploadPasswordPromptOpen, setResultUploadPasswordPromptOpen] = useState(false);
+  const [resultUploadPasswordInput, setResultUploadPasswordInput] = useState('');
+  const [resultUploadPasswordValue, setResultUploadPasswordValue] = useState('');
+  const [resultUploadPasswordLoading, setResultUploadPasswordLoading] = useState(false);
   const [deletingUserId, setDeletingUserId] = useState(null);
   const [traceNumber, setTraceNumber] = useState('');
   const [traceAmount, setTraceAmount] = useState(initialAmount || '7');
@@ -1637,6 +1673,13 @@ const AdminDashboard = ({
   }, [activeTab]);
 
   useEffect(() => {
+    if (initialActiveTab === 'upload-price') {
+      setResultUploadPasswordInput('');
+      setResultUploadPasswordPromptOpen(true);
+      setActiveTab('');
+      return;
+    }
+
     setActiveTab(initialActiveTab);
   }, [initialActiveTab]);
 
@@ -1970,12 +2013,14 @@ const AdminDashboard = ({
       return { error: codeCategoryError };
     }
 
+    const previousRow = adminStockDraftRows[Math.min(adminStockActiveRowIndex, adminStockDraftRows.length) - 1] || null;
     const { parsed, fromNumber, toNumber, quantity, error: rangeError } = getRetroRangeMetrics(
       adminStockCodeInput,
       adminStockSessionMode,
       adminStockFromInput,
       adminStockToInput,
-      adminStockPurchaseCategory
+      adminStockPurchaseCategory,
+      previousRow?.from
     );
 
     if (parsed.error) {
@@ -2808,12 +2853,14 @@ const AdminDashboard = ({
   };
 
   const buildPurchaseSendDraftRow = () => {
+    const previousRow = purchaseDraftRows[Math.min(purchaseActiveRowIndex, purchaseDraftRows.length) - 1] || null;
     const { parsed, fromNumber, toNumber, quantity, error: rangeError } = getRetroRangeMetrics(
       purchaseCodeInput,
       purchaseSessionMode,
       purchaseFromInput,
       purchaseToInput,
-      purchaseCategory
+      purchaseCategory,
+      previousRow?.from
     );
     const selectedSeller = directAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId));
 
@@ -3202,7 +3249,7 @@ const AdminDashboard = ({
       const currentMemoEntryIds = isEditingExistingPurchaseMemo
         ? [...purchaseEntries, ...unsoldPurchaseEntries]
           .filter((entry) => (
-            Number(entry.memoNumber || 0) === effectiveMemoNumber
+            Number(entry.purchaseMemoNumber || entry.memoNumber || 0) === effectiveMemoNumber
             && String(entry.userId || '') === String(purchaseSellerId || '')
           ))
           .map((entry) => entry.id)
@@ -3218,7 +3265,7 @@ const AdminDashboard = ({
           sessionMode: purchaseSessionMode,
           amount: purchaseAmount,
           purchaseCategory,
-          rows: rowsToSave.map((row) => ({
+          rows: rowsToSave.map((row, index) => ({
             rangeStart: row.from,
             rangeEnd: row.to,
             boxValue: row.semValue,
@@ -3226,12 +3273,13 @@ const AdminDashboard = ({
             bookingDate: row.drawDate || purchaseBookingDate,
             sessionMode: row.resolvedSessionMode,
             purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
-            entryIds: row.entryIds || []
+            entryIds: row.entryIds || [],
+            memoRowOrder: row.memoRowOrder ?? index
           }))
         });
         setSuccess(response.data.message || `Memo ${effectiveMemoNumber} updated successfully`);
       } else {
-        for (const row of rowsToSave) {
+        for (const [index, row] of rowsToSave.entries()) {
           await lotteryService.sendAdminPurchase({
             sellerId: purchaseSellerId,
             series: '',
@@ -3242,7 +3290,8 @@ const AdminDashboard = ({
             memoNumber: effectiveMemoNumber,
             bookingDate: row.drawDate || purchaseBookingDate,
             sessionMode: row.resolvedSessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory
+            purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
+            memoRowOrder: row.memoRowOrder ?? index
           });
         }
         setSuccess('Purchase saved successfully');
@@ -3676,18 +3725,19 @@ const AdminDashboard = ({
           sessionMode: purchaseSessionMode,
           amount: purchaseAmount,
           purchaseCategory,
-          rows: rowsToSave.map((row) => ({
+          rows: rowsToSave.map((row, index) => ({
             rangeStart: row.from,
             rangeEnd: row.to,
             boxValue: row.semValue,
             amount: row.bookingAmount || purchaseAmount,
             bookingDate: row.drawDate || purchaseBookingDate,
             sessionMode: row.resolvedSessionMode || purchaseSessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory
+            purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
+            memoRowOrder: row.memoRowOrder ?? index
           }))
         });
       } else {
-        for (const row of rowsToSave) {
+        for (const [index, row] of rowsToSave.entries()) {
           const payload = {
             sellerId: purchaseSellerId,
             bookingDate: row.drawDate || purchaseBookingDate,
@@ -3697,7 +3747,8 @@ const AdminDashboard = ({
             amount: row.bookingAmount || purchaseAmount,
             boxValue: row.semValue,
             rangeStart: row.from,
-            rangeEnd: row.to
+            rangeEnd: row.to,
+            memoRowOrder: row.memoRowOrder ?? index
           };
 
           if (mode === 'remove') {
@@ -4109,7 +4160,7 @@ const AdminDashboard = ({
     setSuccess('');
 
     try {
-      await priceService.updatePrizeResult(entry.id, sanitizedValue);
+      await priceService.updatePrizeResult(entry.id, sanitizedValue, resultUploadPasswordValue);
       setSuccess(`${sanitizedValue} updated in ${prizeConfig.title}`);
       setEditingUploadedResultId(null);
       setEditingUploadedValue('');
@@ -4132,7 +4183,7 @@ const AdminDashboard = ({
     setSuccess('');
 
     try {
-      await priceService.deletePrizeResult(entry.id);
+      await priceService.deletePrizeResult(entry.id, resultUploadPasswordValue);
       setSuccess(`${entry.winningNumber} deleted from uploaded result`);
       if (editingUploadedResultId === entry.id) {
         setEditingUploadedResultId(null);
@@ -4166,7 +4217,8 @@ const AdminDashboard = ({
       const response = await priceService.deletePrizeResults({
         resultForDate: uploadResultDate,
         sessionMode: uploadSessionMode,
-        purchaseCategory: uploadPurchaseCategory
+        purchaseCategory: uploadPurchaseCategory,
+        resultUploadPassword: resultUploadPasswordValue
       });
       setSuccess(response.data?.message || 'All uploaded results deleted successfully');
       setEditingUploadedResultId(null);
@@ -4183,6 +4235,12 @@ const AdminDashboard = ({
     e.preventDefault();
     setError('');
     setSuccess('');
+
+    if (!resultUploadPasswordValue) {
+      setResultUploadPasswordPromptOpen(true);
+      setError('Result upload password required');
+      return;
+    }
 
     if (!isSelectedUploadSessionAllowed) {
       setError(uploadTimingMessage || 'Selected session upload is locked right now');
@@ -4208,7 +4266,8 @@ const AdminDashboard = ({
         entries: entriesToUpload,
         sessionMode: uploadSessionMode,
         purchaseCategory: uploadPurchaseCategory,
-        resultForDate: uploadResultDate
+        resultForDate: uploadResultDate,
+        resultUploadPassword: resultUploadPasswordValue
       });
       setSuccess('Prize results uploaded successfully');
       setPendingPrizeEntries(createPendingPrizeEntries());
@@ -4302,6 +4361,11 @@ const AdminDashboard = ({
     if (activeTab === tabName) {
       resetAdminMemoOptionState(tabName);
       resetDateFieldsToToday();
+      if (tabName === 'upload-price') {
+        setResultUploadPasswordValue('');
+        setResultUploadPasswordInput('');
+        setResultUploadPasswordPromptOpen(false);
+      }
       setActiveTab('');
       window.history.back();
       return;
@@ -4309,6 +4373,12 @@ const AdminDashboard = ({
 
     if (activeTab && activeTab !== tabName) {
       resetAdminMemoOptionState(activeTab);
+    }
+
+    if (tabName === 'upload-price') {
+      setResultUploadPasswordInput('');
+      setResultUploadPasswordPromptOpen(true);
+      return;
     }
 
     window.history.pushState({ adminTab: tabName }, '');
@@ -4351,12 +4421,47 @@ const AdminDashboard = ({
     setActiveTab(tabName);
   };
 
+  const unlockResultUpload = async (event) => {
+    event.preventDefault();
+    setError('');
+    setSuccess('');
+
+    if (!resultUploadPasswordInput) {
+      setError('Result upload password required');
+      return;
+    }
+
+    setResultUploadPasswordLoading(true);
+    try {
+      await userService.verifyResultUploadPassword(resultUploadPasswordInput);
+      setResultUploadPasswordValue(resultUploadPasswordInput);
+      setResultUploadPasswordInput('');
+      setResultUploadPasswordPromptOpen(false);
+      window.history.pushState({ adminTab: 'upload-price' }, '');
+      setActiveTab('upload-price');
+    } catch (err) {
+      setError(err.response?.data?.message || 'Result upload password galat hai');
+    } finally {
+      setResultUploadPasswordLoading(false);
+    }
+  };
+
+  const closeResultUploadPasswordPrompt = () => {
+    setResultUploadPasswordPromptOpen(false);
+    setResultUploadPasswordInput('');
+  };
+
   const handleTabBack = () => {
     setError('');
     setSuccess('');
     if (activeTab) {
       resetAdminMemoOptionState(activeTab);
       resetDateFieldsToToday();
+      if (activeTab === 'upload-price') {
+        setResultUploadPasswordValue('');
+        setResultUploadPasswordInput('');
+        setResultUploadPasswordPromptOpen(false);
+      }
       setActiveTab('');
       window.history.back();
       return;
@@ -4988,12 +5093,14 @@ const AdminDashboard = ({
   const adminStockVisibleQuantity = adminStockDraftRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
   const adminStockVisibleAmount = adminStockDraftRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
   const adminStockGridRows = createRetroGridRows(adminStockDraftRows);
+  const adminStockPreviousRow = adminStockDraftRows[Math.min(adminStockActiveRowIndex, adminStockDraftRows.length) - 1] || null;
   const adminStockMetrics = getRetroRangeMetrics(
     adminStockCodeInput,
     adminStockSessionMode,
     adminStockFromInput,
     adminStockToInput,
-    adminStockPurchaseCategory
+    adminStockPurchaseCategory,
+    adminStockPreviousRow?.from
   );
   const adminStockEditableRow = (
     <tr key="admin-stock-entry">
@@ -5252,12 +5359,14 @@ const AdminDashboard = ({
   const adminSendVisibleAmount = activePurchaseSendRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
   const adminPurchaseGridRows = createRetroGridRows(activePurchaseSendRows, { drawDate: purchaseBookingDate });
   const selectedAdminSendSeller = activeAmountAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId));
+  const purchasePreviousRow = purchaseDraftRows[Math.min(purchaseActiveRowIndex, purchaseDraftRows.length) - 1] || null;
   const purchaseMetrics = getRetroRangeMetrics(
     purchaseCodeInput,
     purchaseSessionMode,
     purchaseFromInput,
     purchaseToInput,
-    purchaseCategory
+    purchaseCategory,
+    purchasePreviousRow?.from
   );
   const adminPurchaseSendDateEditable = activeTab === 'purchase-send';
   const adminPurchaseEditableRow = (
@@ -5456,9 +5565,7 @@ const AdminDashboard = ({
                 return;
               }
               const previousRow = purchaseDraftRows[Math.min(purchaseActiveRowIndex, purchaseDraftRows.length) - 1] || null;
-              const normalized = activeTab === 'unsold' || activeTab === 'unsold-remove'
-                ? normalizeRangeStartInput(purchaseFromInput, previousRow?.from)
-                : normalizeNumericInput(purchaseFromInput);
+              const normalized = normalizeRangeStartInput(purchaseFromInput, previousRow?.from);
               if (!normalized || normalized.length < 5) {
                 openBlockingWarning('From is empty ya 5 digit nahi hai', [], 'Warning', () => {
                   window.requestAnimationFrame(() => adminSendFromInputRef.current?.focus());
@@ -6248,6 +6355,40 @@ const AdminDashboard = ({
         onConfirm={confirmSaveRequest}
         onCancel={cancelSaveConfirmation}
       />
+      {resultUploadPasswordPromptOpen && (
+        <div className="settings-modal-overlay" onClick={closeResultUploadPasswordPrompt}>
+          <div className="settings-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="settings-modal-header">
+              <div>
+                <h3>Result Upload Password</h3>
+                <p>Upload Result open karne ke liye password daalo.</p>
+              </div>
+              <button type="button" className="settings-close-btn" onClick={closeResultUploadPasswordPrompt} aria-label="Close result upload password">
+                x
+              </button>
+            </div>
+            <form onSubmit={unlockResultUpload} className="settings-form">
+              <div className="form-group">
+                <label>Password:</label>
+                <input
+                  type="password"
+                  value={resultUploadPasswordInput}
+                  onChange={(event) => setResultUploadPasswordInput(event.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div className="settings-modal-actions">
+                <button type="button" className="settings-cancel-btn" onClick={closeResultUploadPasswordPrompt}>
+                  Cancel
+                </button>
+                <button type="submit" disabled={resultUploadPasswordLoading}>
+                  {resultUploadPasswordLoading ? 'Checking...' : 'Open'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
       {pieceSummaryOpen && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
           <div style={{ background: '#fff', width: 'min(720px, 100%)', borderRadius: '8px', padding: '20px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
