@@ -632,6 +632,14 @@ const buildPurchaseMemoSummaries = (entries = []) => {
     }));
 };
 
+const getPurchaseEntryMemoNumber = (entry = {}) => Number(
+  entry.purchaseMemoNumber
+  || entry.purchase_memo_number
+  || entry.memoNumber
+  || entry.memo_number
+  || 0
+);
+
 const buildAdminStockDraftRowsFromEntries = (entries = [], amountValue, options = {}) => {
   const sortedEntries = sortRowsForConsecutiveNumbers(
     [...entries],
@@ -2774,7 +2782,7 @@ const AdminDashboard = ({
       resetPurchaseSendEntryInputs();
     } else {
       const selectedEntries = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
-        Number(entry.memoNumber) === Number(option.memoNumber)
+        getPurchaseEntryMemoNumber(entry) === Number(option.memoNumber)
       ));
       const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, purchaseAmount);
       setPurchaseDraftRows(draftRows);
@@ -3034,7 +3042,7 @@ const AdminDashboard = ({
     const conflictingPurchaseEntries = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
       !(
         isEditingExistingPurchaseMemo
-        && Number(entry.memoNumber || 0) === Number(purchaseMemoNumber || 0)
+        && getPurchaseEntryMemoNumber(entry) === Number(purchaseMemoNumber || 0)
         && String(entry.userId || '') === String(purchaseSellerId || '')
       )
       && String(entry.sem || '') === String(result.row.semValue || '')
@@ -3110,7 +3118,7 @@ const AdminDashboard = ({
     const conflictingPurchaseEntries = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
       !(
         isEditingExistingPurchaseMemo
-        && Number(entry.memoNumber || 0) === Number(purchaseMemoNumber || 0)
+        && getPurchaseEntryMemoNumber(entry) === Number(purchaseMemoNumber || 0)
         && String(entry.userId || '') === String(purchaseSellerId || '')
       )
       && String(entry.sem || '') === String(result.row.semValue || '')
@@ -3140,7 +3148,7 @@ const AdminDashboard = ({
       const serverConflicts = (serverEntriesResponse.data || []).filter((entry) => (
         !(
           isEditingExistingPurchaseMemo
-          && Number(entry.memoNumber || entry.memo_number || 0) === Number(purchaseMemoNumber || 0)
+          && getPurchaseEntryMemoNumber(entry) === Number(purchaseMemoNumber || 0)
           && String(entry.userId || entry.user_id || '') === String(purchaseSellerId || '')
         )
         && numberFallsWithinRange(entry.number, result.row.from, result.row.to)
@@ -3323,7 +3331,7 @@ const AdminDashboard = ({
       const currentMemoEntryIds = isEditingExistingPurchaseMemo
         ? [...purchaseEntries, ...unsoldPurchaseEntries]
           .filter((entry) => (
-            Number(entry.purchaseMemoNumber || entry.memoNumber || 0) === effectiveMemoNumber
+            getPurchaseEntryMemoNumber(entry) === effectiveMemoNumber
             && String(entry.userId || '') === String(purchaseSellerId || '')
           ))
           .map((entry) => entry.id)
