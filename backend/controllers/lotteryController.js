@@ -679,7 +679,6 @@ const repairMissingPurchaseMemoNumbers = async (db = { query }) => {
         ), 0) + 1 AS memo_number
       FROM lottery_entries le
       WHERE le.entry_source = 'purchase'
-        AND le.forwarded_by IS NOT NULL
         AND LOWER(TRIM(le.status)) IN ('accepted', 'unsold')
         AND COALESCE(le.purchase_memo_number, le.memo_number) IS NULL
       GROUP BY le.user_id, le.forwarded_by, le.booking_date, le.session_mode, le.purchase_category, le.amount, le.entry_source
@@ -689,7 +688,7 @@ const repairMissingPurchaseMemoNumbers = async (db = { query }) => {
         purchase_memo_number = missing_groups.memo_number
     FROM missing_groups
     WHERE le.user_id = missing_groups.user_id
-      AND le.forwarded_by = missing_groups.forwarded_by
+      AND le.forwarded_by IS NOT DISTINCT FROM missing_groups.forwarded_by
       AND le.booking_date = missing_groups.booking_date
       AND le.session_mode = missing_groups.session_mode
       AND le.purchase_category = missing_groups.purchase_category
@@ -2777,6 +2776,13 @@ const getPurchaseEntries = async (req, res) => {
 
         params.push(adminScopedBranchIds);
         conditions.push(`le.user_id = ANY($${params.length}::int[])`);
+        params.push(req.user.id);
+        conditions.push(`(
+          le.forwarded_by IS NULL
+          OR le.forwarded_by = $${params.length}
+          OR le.sent_to_parent = $${params.length}
+          OR le.user_id = ANY($${params.length - 1}::int[])
+        )`);
       } else {
         params.push(req.user.id);
         conditions.push(`le.forwarded_by = $${params.length}`);
