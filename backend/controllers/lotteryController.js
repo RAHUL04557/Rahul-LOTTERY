@@ -2383,7 +2383,9 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
 
     await client.query('BEGIN');
 
-    const historyActionType = currentUserIsAdmin ? 'purchase_sent' : 'purchase_forwarded';
+    const historyActionTypes = currentUserIsAdmin
+      ? ['purchase_sent', 'purchase_memo_updated']
+      : ['purchase_forwarded', 'purchase_forward_memo_updated'];
     const shouldLookupMemoByEntryIds = normalizedRows.length > 0 && uniqueMemoEntryIds.length > 0;
     const existingMemoResult = shouldLookupMemoByEntryIds
       ? await client.query(
@@ -2395,11 +2397,11 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
            AND le.entry_source = $3
            AND h.actor_user_id = $4
            AND h.to_user_id = $5
-           AND h.action_type = $6
+           AND h.action_type = ANY($6::varchar[])
            AND COALESCE(h.memo_number, le.purchase_memo_number, le.memo_number) = $7
            AND LOWER(TRIM(le.status)) IN ('accepted', 'unsold')
          ORDER BY le.number ASC`,
-        [uniqueMemoEntryIds, targetBranchIds, PURCHASE_ENTRY_SOURCE, req.user.id, targetSeller.id, historyActionType, normalizedMemoNumber]
+        [uniqueMemoEntryIds, targetBranchIds, PURCHASE_ENTRY_SOURCE, req.user.id, targetSeller.id, historyActionTypes, normalizedMemoNumber]
       )
       : await client.query(
         `SELECT DISTINCT le.*
@@ -2407,7 +2409,7 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
          INNER JOIN lottery_entries le ON le.id = h.entry_id
          WHERE h.actor_user_id = $1
            AND h.to_user_id = $2
-           AND h.action_type = $3
+           AND h.action_type = ANY($3::varchar[])
            AND COALESCE(h.memo_number, le.purchase_memo_number, le.memo_number) = $4
            AND h.booking_date = $5::date
            AND h.session_mode = $6
@@ -2417,7 +2419,7 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
            AND le.entry_source = $10
            AND LOWER(TRIM(le.status)) IN ('accepted', 'unsold')
          ORDER BY le.number ASC`,
-        [req.user.id, targetSeller.id, historyActionType, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount, targetBranchIds, PURCHASE_ENTRY_SOURCE]
+        [req.user.id, targetSeller.id, historyActionTypes, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount, targetBranchIds, PURCHASE_ENTRY_SOURCE]
       );
 
     if (existingMemoResult.rows.length > 0) {
