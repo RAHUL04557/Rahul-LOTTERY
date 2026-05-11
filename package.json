@@ -1,6 +1,6 @@
 {
   "name": "lottery-booking",
-  "version": "2.1.5",
+  "version": "2.2.6",
   "private": true,
   "scripts": {
     "start": "npm --prefix frontend start",
