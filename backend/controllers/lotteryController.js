@@ -3581,7 +3581,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
     }
 
     const updatedEntries = [];
-    for (const row of normalizedRows) {
+    for (const [rowIndex, row] of normalizedRows.entries()) {
       const rangeResult = buildPurchaseNumbers(row.rangeStart, row.rangeEnd);
       const rowBookingDate = normalizeBookingDate(row.bookingDate || bookingDate);
       const resolvedSessionMode = normalizeSessionMode(row.sessionMode) || sessionMode;

@@ -632,7 +632,7 @@ const buildPurchaseMemoSummaries = (entries = []) => {
     }));
 };
 
-const buildAdminStockDraftRowsFromEntries = (entries = [], amountValue) => {
+const buildAdminStockDraftRowsFromEntries = (entries = [], amountValue, options = {}) => {
   const sortedEntries = sortRowsForConsecutiveNumbers(
     [...entries],
     (entry) => [
@@ -646,7 +646,7 @@ const buildAdminStockDraftRowsFromEntries = (entries = [], amountValue) => {
       entry.memoRowOrder !== null && entry.memoRowOrder !== undefined ? '' : (entry.createdAt || entry.sentAt || '')
     ]
   );
-  const groups = entries.some((entry) => entry.memoRowOrder !== null && entry.memoRowOrder !== undefined)
+  const groups = !options.ignoreMemoRowOrder && entries.some((entry) => entry.memoRowOrder !== null && entry.memoRowOrder !== undefined)
     ? Array.from(sortedEntries.reduce((groupMap, entry) => {
       const key = [
         entry.memoRowOrder ?? 'old',
@@ -704,7 +704,7 @@ const buildAdminStockDraftRowsFromEntries = (entries = [], amountValue) => {
 };
 
 const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, options = {}) => (
-  buildAdminStockDraftRowsFromEntries(entries, amountValue).map((row, index) => {
+  buildAdminStockDraftRowsFromEntries(entries, amountValue, options).map((row, index) => {
     const firstEntry = entries.find((entry) => String(entry.number || '') === String(row.from || '')) || entries[index] || {};
 
     return {
@@ -2794,7 +2794,10 @@ const AdminDashboard = ({
         const selectedEntries = unsoldPurchaseEntries.filter((entry) => (
           Number(entry.memoNumber) === Number(option.memoNumber)
         ));
-        const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, purchaseAmount, { existingUnsoldMemo: true });
+        const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, purchaseAmount, {
+          existingUnsoldMemo: true,
+          ignoreMemoRowOrder: true
+        });
         setPurchaseDraftRows(draftRows);
 
         if (draftRows.length > 0) {
