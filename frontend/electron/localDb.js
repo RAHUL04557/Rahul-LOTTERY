@@ -149,6 +149,23 @@ const initLocalDb = () => {
       updated_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS local_manual_unsold_entries (
+      local_id TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL,
+      actor_user_id INTEGER NOT NULL,
+      number TEXT NOT NULL,
+      box_value TEXT NOT NULL,
+      amount TEXT NOT NULL,
+      booking_date TEXT NOT NULL,
+      session_mode TEXT NOT NULL,
+      purchase_category TEXT NOT NULL,
+      memo_number INTEGER,
+      memo_row_order INTEGER,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      sync_status TEXT NOT NULL DEFAULT 'synced'
+    );
+
     CREATE TABLE IF NOT EXISTS sync_queue (
       local_id TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
@@ -195,6 +212,9 @@ const initLocalDb = () => {
 
     CREATE INDEX IF NOT EXISTS idx_local_purchase_entry_source
     ON local_purchase_entries (entry_source, booking_date, session_mode, purchase_category, amount);
+
+    CREATE INDEX IF NOT EXISTS idx_local_manual_unsold_lookup
+    ON local_manual_unsold_entries (actor_user_id, user_id, booking_date, session_mode, purchase_category, amount, box_value, number);
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_local_prize_server_id
     ON local_prize_results (server_id)
@@ -298,6 +318,30 @@ const mapLocalPurchaseEntry = (row) => ({
   purchaseMemoNumber: row.purchase_memo_number || row.memo_number,
   memoRowOrder: row.memo_row_order,
   entrySource: row.entry_source || 'purchase',
+  createdAt: row.created_at,
+  sentAt: row.updated_at,
+  syncStatus: row.sync_status
+});
+
+const mapLocalManualUnsoldEntry = (row) => ({
+  id: row.local_id,
+  localId: row.local_id,
+  userId: row.user_id,
+  forwardedBy: row.actor_user_id,
+  sentToParent: row.actor_user_id,
+  series: null,
+  number: row.number,
+  boxValue: row.box_value,
+  uniqueCode: null,
+  amount: Number(row.amount),
+  bookingDate: row.booking_date,
+  sessionMode: row.session_mode,
+  purchaseCategory: row.purchase_category,
+  status: 'unsold_saved',
+  memoNumber: row.memo_number,
+  purchaseMemoNumber: row.memo_number,
+  memoRowOrder: row.memo_row_order,
+  entrySource: 'purchase',
   createdAt: row.created_at,
   sentAt: row.updated_at,
   syncStatus: row.sync_status
@@ -846,6 +890,160 @@ const getPayloadNumbers = (payload) => {
     .filter(Boolean);
 };
 
+const saveManualUnsoldLocal = ({ payload = {}, userId, syncStatus = 'pending', replaceMemo = false }) => {
+  const actorUserId = Number(userId || 0);
+  const targetUserId = Number(payload.sellerId || payload.sellerUserId || userId || 0);
+  const bookingDate = toLocalDate(payload.bookingDate);
+  const sessionMode = String(payload.sessionMode || '');
+  const purchaseCategory = String(payload.purchaseCategory || '');
+  const amount = String(payload.amount || '');
+  const boxValue = String(payload.boxValue || '');
+  const memoNumber = payload.memoNumber ? Number(payload.memoNumber) : null;
+  const numbers = getPayloadNumbers(payload);
+  const now = new Date().toISOString();
+
+  if (!actorUserId || !targetUserId || actorUserId === targetUserId || !bookingDate || !sessionMode || !purchaseCategory || !amount || !boxValue || numbers.length === 0) {
+    return { saved: 0 };
+  }
+
+  const database = initLocalDb();
+  const deleteStatement = replaceMemo
+    ? database.prepare(`
+      DELETE FROM local_manual_unsold_entries
+      WHERE actor_user_id = @actorUserId
+        AND user_id = @targetUserId
+        AND booking_date = @bookingDate
+        AND session_mode = @sessionMode
+        AND purchase_category = @purchaseCategory
+        AND amount = @amount
+        AND memo_number = @memoNumber
+    `)
+    : database.prepare(`
+      DELETE FROM local_manual_unsold_entries
+      WHERE actor_user_id = @actorUserId
+        AND user_id = @targetUserId
+        AND booking_date = @bookingDate
+        AND session_mode = @sessionMode
+        AND purchase_category = @purchaseCategory
+        AND amount = @amount
+        AND box_value = @boxValue
+        AND number = @number
+    `);
+  const insertStatement = database.prepare(`
+    INSERT INTO local_manual_unsold_entries (
+      local_id, user_id, actor_user_id, number, box_value, amount,
+      booking_date, session_mode, purchase_category, memo_number, memo_row_order,
+      created_at, updated_at, sync_status
+    )
+    VALUES (
+      @localId, @targetUserId, @actorUserId, @number, @boxValue, @amount,
+      @bookingDate, @sessionMode, @purchaseCategory, @memoNumber, @memoRowOrder,
+      @createdAt, @updatedAt, @syncStatus
+    )
+    ON CONFLICT(local_id) DO UPDATE SET
+      memo_number = excluded.memo_number,
+      memo_row_order = excluded.memo_row_order,
+      updated_at = excluded.updated_at,
+      sync_status = excluded.sync_status
+  `);
+
+  const writeRows = database.transaction((rows) => {
+    if (replaceMemo && memoNumber) {
+      deleteStatement.run({
+        actorUserId,
+        targetUserId,
+        bookingDate,
+        sessionMode,
+        purchaseCategory,
+        amount,
+        memoNumber
+      });
+    }
+
+    rows.forEach((number, index) => {
+      if (!replaceMemo) {
+        deleteStatement.run({
+          actorUserId,
+          targetUserId,
+          bookingDate,
+          sessionMode,
+          purchaseCategory,
+          amount,
+          boxValue,
+          number
+        });
+      }
+
+      insertStatement.run({
+        localId: `manual-unsold-${actorUserId}-${targetUserId}-${bookingDate}-${sessionMode}-${purchaseCategory}-${amount}-${boxValue}-${number}`,
+        actorUserId,
+        targetUserId,
+        number,
+        boxValue,
+        amount,
+        bookingDate,
+        sessionMode,
+        purchaseCategory,
+        memoNumber,
+        memoRowOrder: payload.memoRowOrder ?? index,
+        createdAt: now,
+        updatedAt: now,
+        syncStatus
+      });
+    });
+  });
+
+  writeRows(numbers);
+  return { saved: numbers.length };
+};
+
+const removeManualUnsoldLocal = ({ payload = {}, userId }) => {
+  const actorUserId = Number(userId || 0);
+  const targetUserId = Number(payload.sellerId || payload.sellerUserId || userId || 0);
+  const bookingDate = toLocalDate(payload.bookingDate);
+  const sessionMode = String(payload.sessionMode || '');
+  const purchaseCategory = String(payload.purchaseCategory || '');
+  const amount = String(payload.amount || '');
+  const boxValue = String(payload.boxValue || '');
+  const memoNumber = payload.memoNumber ? Number(payload.memoNumber) : null;
+  const numbers = getPayloadNumbers(payload);
+
+  if (!actorUserId || !targetUserId || actorUserId === targetUserId || !bookingDate || !sessionMode || !purchaseCategory || numbers.length === 0) {
+    return { removed: 0 };
+  }
+
+  const params = [actorUserId, targetUserId, bookingDate, sessionMode, purchaseCategory, numbers];
+  const conditions = [
+    'actor_user_id = ?',
+    'user_id = ?',
+    'booking_date = ?',
+    'session_mode = ?',
+    'purchase_category = ?',
+    `number IN (${numbers.map(() => '?').join(', ')})`
+  ];
+  params.pop();
+  params.push(...numbers);
+
+  if (amount) {
+    params.push(amount);
+    conditions.push('amount = ?');
+  }
+  if (boxValue) {
+    params.push(boxValue);
+    conditions.push('box_value = ?');
+  }
+  if (memoNumber) {
+    params.push(memoNumber);
+    conditions.push('memo_number = ?');
+  }
+
+  const result = initLocalDb()
+    .prepare(`DELETE FROM local_manual_unsold_entries WHERE ${conditions.join(' AND ')}`)
+    .run(...params);
+
+  return { removed: result.changes || 0 };
+};
+
 const addCommonPurchaseFilters = (conditions, params, filters) => {
   if (filters.bookingDate) {
     params.push(toLocalDate(filters.bookingDate));
@@ -1102,7 +1300,54 @@ const setupLocalDbIpc = (ipcMain) => {
       `)
       .all(...params);
 
-    return rows.map(mapLocalPurchaseEntry);
+    const mappedRows = rows.map(mapLocalPurchaseEntry);
+    const currentUserId = Number(filters.currentUserId || 0);
+    const requestedStatus = String(filters.status || '').trim().toLowerCase();
+
+    if (currentUserId && (!requestedStatus || requestedStatus === 'unsold' || requestedStatus === 'unsold_accepted')) {
+      const manualParams = [currentUserId];
+      const manualConditions = ['actor_user_id = ?'];
+
+      if (filters.sellerId) {
+        manualParams.push(Number(filters.sellerId));
+        manualConditions.push('user_id = ?');
+      }
+      if (filters.bookingDate) {
+        manualParams.push(toLocalDate(filters.bookingDate));
+        manualConditions.push('booking_date = ?');
+      }
+      if (filters.sessionMode) {
+        manualParams.push(String(filters.sessionMode));
+        manualConditions.push('session_mode = ?');
+      }
+      if (filters.purchaseCategory) {
+        manualParams.push(String(filters.purchaseCategory));
+        manualConditions.push('purchase_category = ?');
+      }
+      if (filters.amount) {
+        manualParams.push(String(filters.amount));
+        manualConditions.push('amount = ?');
+      }
+      if (filters.boxValue) {
+        manualParams.push(String(filters.boxValue));
+        manualConditions.push('box_value = ?');
+      }
+
+      const manualRows = initLocalDb()
+        .prepare(`
+          SELECT *
+          FROM local_manual_unsold_entries
+          WHERE ${manualConditions.join(' AND ')}
+          ORDER BY booking_date DESC, created_at DESC, local_id DESC
+          LIMIT 20000
+        `)
+        .all(...manualParams)
+        .map(mapLocalManualUnsoldEntry);
+
+      return [...mappedRows, ...manualRows];
+    }
+
+    return mappedRows;
   });
 
   ipcMain.handle('local-db:upsert-prize-results', (_event, results = []) => {
@@ -1321,28 +1566,41 @@ const setupLocalDbIpc = (ipcMain) => {
     }
 
     if (operationType === 'unsold_save') {
-      initLocalDb()
-        .prepare(`
-          UPDATE local_purchase_entries
-          SET status = 'unsold_saved',
-              memo_number = COALESCE(?, memo_number),
-              purchase_memo_number = COALESCE(?, purchase_memo_number, memo_number),
-              memo_row_order = COALESCE(?, memo_row_order),
-              updated_at = ?,
-              sync_status = 'pending'
-          WHERE ${conditions.join(' AND ')}
-            AND LOWER(TRIM(status)) = 'accepted'
-        `)
-        .run(
-          payload.memoNumber ? Number(payload.memoNumber) : null,
-          payload.memoNumber ? Number(payload.memoNumber) : null,
-          payload.memoRowOrder !== undefined && payload.memoRowOrder !== null ? Number(payload.memoRowOrder) : null,
-          now,
-          ...params
-        );
+      if (Number(targetSellerId) === Number(userId)) {
+        initLocalDb()
+          .prepare(`
+            UPDATE local_purchase_entries
+            SET status = 'unsold_saved',
+                memo_number = COALESCE(?, memo_number),
+                purchase_memo_number = COALESCE(?, purchase_memo_number, memo_number),
+                memo_row_order = COALESCE(?, memo_row_order),
+                updated_at = ?,
+                sync_status = 'pending'
+            WHERE ${conditions.join(' AND ')}
+              AND LOWER(TRIM(status)) = 'accepted'
+          `)
+          .run(
+            payload.memoNumber ? Number(payload.memoNumber) : null,
+            payload.memoNumber ? Number(payload.memoNumber) : null,
+            payload.memoRowOrder !== undefined && payload.memoRowOrder !== null ? Number(payload.memoRowOrder) : null,
+            now,
+            ...params
+          );
+      } else {
+        saveManualUnsoldLocal({
+          payload,
+          userId,
+          syncStatus: payload.serverSynced ? 'synced' : 'pending'
+        });
+      }
     }
 
     if (operationType === 'unsold_remove') {
+      if (Number(targetSellerId) !== Number(userId)) {
+        removeManualUnsoldLocal({ payload, userId });
+        return { ok: true };
+      }
+
       initLocalDb()
         .prepare(`
           UPDATE local_purchase_entries
@@ -1506,6 +1764,40 @@ const setupLocalDbIpc = (ipcMain) => {
       const amount = String(payload.amount || '');
 
       if (targetUserId && memoNumber && bookingDate && sessionMode && purchaseCategory && amount) {
+        if (Number(targetUserId) !== Number(userId)) {
+          initLocalDb()
+            .prepare(`
+              DELETE FROM local_manual_unsold_entries
+              WHERE actor_user_id = ?
+                AND user_id = ?
+                AND memo_number = ?
+                AND booking_date = ?
+                AND session_mode = ?
+                AND purchase_category = ?
+                AND amount = ?
+            `)
+            .run(Number(userId || 0), targetUserId, memoNumber, bookingDate, sessionMode, purchaseCategory, amount);
+
+          (Array.isArray(payload.rows) ? payload.rows : []).forEach((row, index) => {
+            saveManualUnsoldLocal({
+              payload: {
+                ...payload,
+                rangeStart: row.rangeStart,
+                rangeEnd: row.rangeEnd,
+                boxValue: row.boxValue,
+                amount: row.amount || amount,
+                bookingDate: row.bookingDate || bookingDate,
+                sessionMode: row.sessionMode || sessionMode,
+                purchaseCategory: row.purchaseCategory || purchaseCategory,
+                memoRowOrder: row.memoRowOrder ?? index
+              },
+              userId,
+              syncStatus: payload.serverSynced ? 'synced' : 'pending'
+            });
+          });
+          return { ok: true };
+        }
+
         initLocalDb()
           .prepare(`
             UPDATE local_purchase_entries
@@ -1645,6 +1937,64 @@ const setupLocalDbIpc = (ipcMain) => {
         : row.range_to;
       groupedRows.set(key, current);
     });
+
+    if (currentUserId) {
+      const manualParams = [currentUserId];
+      const manualConditions = ['actor_user_id = ?'];
+
+      if (fromDate && toDate) {
+        manualParams.push(fromDate, toDate);
+        manualConditions.push('booking_date BETWEEN ? AND ?');
+      }
+      addCommonPurchaseFilters(manualConditions, manualParams, filters);
+
+      const manualRows = initLocalDb()
+        .prepare(`
+          SELECT
+            user_id,
+            session_mode,
+            purchase_category,
+            amount,
+            box_value,
+            SUM(CASE WHEN box_value GLOB '[0-9]*' THEN CAST(box_value AS REAL) ELSE 0 END) AS manual_unsold_piece,
+            COUNT(*) AS entry_count,
+            MIN(number) AS range_from,
+            MAX(number) AS range_to
+          FROM local_manual_unsold_entries
+          WHERE ${manualConditions.join(' AND ')}
+          GROUP BY user_id, session_mode, purchase_category, amount, box_value
+        `)
+        .all(...manualParams);
+
+      manualRows.forEach((row) => {
+        const groupUserId = getDirectChildRootId(row.user_id, currentUserId, usersById);
+
+        if (!groupUserId) {
+          return;
+        }
+
+        const key = [groupUserId, row.session_mode, row.purchase_category, row.amount, row.box_value].join('|');
+        const current = groupedRows.get(key) || {
+          ...row,
+          user_id: groupUserId,
+          total_piece: 0,
+          unsold_piece: 0,
+          entry_count: 0,
+          range_from: row.range_from,
+          range_to: row.range_to
+        };
+
+        current.unsold_piece += Number(row.manual_unsold_piece || 0);
+        current.entry_count += Number(row.entry_count || 0);
+        current.range_from = String(current.range_from || row.range_from) < String(row.range_from || current.range_from)
+          ? current.range_from
+          : row.range_from;
+        current.range_to = String(current.range_to || row.range_to) > String(row.range_to || current.range_to)
+          ? current.range_to
+          : row.range_to;
+        groupedRows.set(key, current);
+      });
+    }
 
     return [...groupedRows.values()].map((row) => {
       const user = usersById.get(Number(row.user_id)) || {};

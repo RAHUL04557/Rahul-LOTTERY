@@ -89,7 +89,7 @@ const requestWithOfflineQueue = async ({ method = 'POST', url, data, config = {}
 
     if (
       localDb?.applyOfflinePurchaseMutation
-      && ['replace_purchase_send_memo', 'replace_unsold_memo'].includes(operationType)
+      && ['replace_purchase_send_memo', 'replace_unsold_memo', 'unsold_save', 'unsold_remove'].includes(operationType)
     ) {
       await localDb.applyOfflinePurchaseMutation({
         operationType,
@@ -139,7 +139,11 @@ const getPurchasesFromLocalDb = async (params = {}) => {
     return null;
   }
 
-  const data = await localDb.listPurchases(params);
+  const currentUser = getCurrentUser();
+  const data = await localDb.listPurchases({
+    ...params,
+    currentUserId: currentUser?.id
+  });
   return { data };
 };
 
@@ -150,9 +154,10 @@ const cachePurchaseResponse = async (response) => {
     : Array.isArray(response?.data?.entries)
     ? response.data.entries
     : [];
+  const cacheableEntries = responseEntries.filter((entry) => Number.isFinite(Number(entry?.id)));
 
-  if (localDb?.upsertPurchases && responseEntries.length > 0) {
-    await localDb.upsertPurchases(responseEntries).catch((error) => {
+  if (localDb?.upsertPurchases && cacheableEntries.length > 0) {
+    await localDb.upsertPurchases(cacheableEntries).catch((error) => {
       console.warn('Local purchase cache update failed:', error.message);
     });
   }
