@@ -2677,19 +2677,34 @@ const SellerDashboard = ({
     ))
   );
 
+  const getActivePurchaseSendMemoNumber = () => Number(
+    purchaseSendMemoNumber
+    || retroDraftRows[0]?.memoNumber
+    || (!selectedPurchaseSendMemoOption?.isNew ? selectedPurchaseSendMemoOption?.memoNumber : 0)
+    || nextPurchaseSendMemoNumber
+    || 0
+  );
+
   const findLocalRetroDraftConflicts = async (row = {}) => {
     const drafts = await listDraftRows({
       role: 'seller',
       userId: user?.id,
       tab: 'purchase-send'
     });
-    const activeMemoNumber = Number(purchaseSendMemoNumber || retroDraftRows[0]?.memoNumber || nextPurchaseSendMemoNumber || 0);
+    const activeMemoNumber = getActivePurchaseSendMemoNumber();
 
     return drafts.flatMap((draft) => {
+      const draftRows = Array.isArray(draft.rows) ? draft.rows : [];
+      const draftMemoNumber = Number(draft.memoNumber || draftRows[0]?.memoNumber || 0);
+      const sameSeller = Number(draft.targetSellerId || 0) === Number(purchaseSendSellerId || 0);
+
       if (
         (
-          Number(draft.targetSellerId || 0) === Number(purchaseSendSellerId || 0)
-          && Number(draft.memoNumber || 0) === activeMemoNumber
+          sameSeller
+          && (
+            draftMemoNumber === activeMemoNumber
+            || draftMemoNumber === 0
+          )
         )
         || String(draft.bookingDate || '') !== String(row.drawDate || bookingDate || '')
         || String(draft.sessionMode || '') !== String(row.resolvedSessionMode || sessionMode || '')
@@ -2702,7 +2717,7 @@ const SellerDashboard = ({
       const party = retroPartyOptions.find((entry) => String(entry.id) === String(draft.targetSellerId))
         || activeAmountChildSellers.find((entry) => String(entry.id) === String(draft.targetSellerId));
 
-      return (Array.isArray(draft.rows) ? draft.rows : [])
+      return draftRows
         .filter((draftRow) => (
           String(draftRow.semValue || '') === String(row.semValue || '')
           && rangesOverlap(

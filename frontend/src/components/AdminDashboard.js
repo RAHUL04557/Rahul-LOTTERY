@@ -3096,8 +3096,16 @@ const AdminDashboard = ({
     return { rows: [...currentRows, result.row], consumedEditor: true };
   };
 
+  const getActivePurchaseSendMemoNumber = () => Number(
+    purchaseMemoNumber
+    || purchaseDraftRows[0]?.memoNumber
+    || (!selectedPurchaseMemoOption?.isNew ? selectedPurchaseMemoOption?.memoNumber : 0)
+    || nextPurchaseMemoNumber
+    || 0
+  );
+
   const currentPurchaseMemoEntryMatches = (entry = {}) => {
-    const activeMemoNumber = Number(purchaseMemoNumber || purchaseDraftRows[0]?.memoNumber || nextPurchaseMemoNumber || 0);
+    const activeMemoNumber = getActivePurchaseSendMemoNumber();
 
     if (!activeMemoNumber) {
       return false;
@@ -3117,13 +3125,20 @@ const AdminDashboard = ({
       userId: user?.id,
       tab: 'purchase-send'
     });
-    const activeMemoNumber = Number(purchaseMemoNumber || purchaseDraftRows[0]?.memoNumber || nextPurchaseMemoNumber || 0);
+    const activeMemoNumber = getActivePurchaseSendMemoNumber();
 
     return drafts.flatMap((draft) => {
+      const draftRows = Array.isArray(draft.rows) ? draft.rows : [];
+      const draftMemoNumber = Number(draft.memoNumber || draftRows[0]?.memoNumber || 0);
+      const sameSeller = Number(draft.targetSellerId || 0) === Number(purchaseSellerId || 0);
+
       if (
         (
-          Number(draft.targetSellerId || 0) === Number(purchaseSellerId || 0)
-          && Number(draft.memoNumber || 0) === activeMemoNumber
+          sameSeller
+          && (
+            draftMemoNumber === activeMemoNumber
+            || draftMemoNumber === 0
+          )
         )
         || String(draft.bookingDate || '') !== String(row.drawDate || purchaseBookingDate || '')
         || String(draft.sessionMode || '') !== String(row.resolvedSessionMode || purchaseSessionMode || '')
@@ -3135,7 +3150,7 @@ const AdminDashboard = ({
 
       const seller = directAdminSellers.find((entry) => String(entry.id) === String(draft.targetSellerId));
 
-      return (Array.isArray(draft.rows) ? draft.rows : [])
+      return draftRows
         .filter((draftRow) => (
           String(draftRow.semValue || '') === String(row.semValue || '')
           && rangesOverlap(
