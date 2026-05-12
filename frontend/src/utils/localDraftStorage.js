@@ -30,7 +30,7 @@ const getDraftTypeFromTab = (tab) => {
   return '';
 };
 
-const parseDraftKey = (key) => {
+export const parseDraftKey = (key) => {
   const parts = String(key || '').split(':');
   const [, role, userId, tab, targetSellerId, bookingDate, sessionMode, purchaseCategory, amount] = parts;
   const type = getDraftTypeFromTab(tab);
@@ -69,6 +69,48 @@ const loadDraftRowsFromLocalStorage = (key) => {
   } catch (error) {
     return [];
   }
+};
+
+const listDraftRowsFromLocalStorage = ({ role = '', userId = 0, tab = '' } = {}) => {
+  const storage = getStorage();
+  if (!storage) {
+    return [];
+  }
+
+  const drafts = [];
+
+  for (let index = 0; index < storage.length; index += 1) {
+    const draftKey = storage.key(index);
+    if (!draftKey || !draftKey.startsWith(`${DRAFT_PREFIX}:`)) {
+      continue;
+    }
+
+    const draftInfo = parseDraftKey(draftKey);
+    if (
+      (role && draftInfo.role !== role)
+      || (userId && Number(draftInfo.userId || 0) !== Number(userId || 0))
+      || (tab && draftInfo.tab !== tab)
+    ) {
+      continue;
+    }
+
+    try {
+      const parsedValue = JSON.parse(storage.getItem(draftKey) || '{}');
+      const rows = Array.isArray(parsedValue?.rows) ? parsedValue.rows : [];
+      if (rows.length > 0) {
+        drafts.push({
+          ...draftInfo,
+          draftKey,
+          rows,
+          savedAt: parsedValue.savedAt || ''
+        });
+      }
+    } catch (error) {
+      // Ignore malformed local draft rows.
+    }
+  }
+
+  return drafts;
 };
 
 const saveDraftRowsToLocalStorage = (key, rows = []) => {
@@ -171,4 +213,48 @@ export const clearDraftRows = async (key) => {
   }
 
   clearDraftRowsFromLocalStorage(key);
+};
+
+export const listDraftRows = async ({ role = '', userId = 0, tab = '' } = {}) => {
+  const localDrafts = listDraftRowsFromLocalStorage({ role, userId, tab });
+  const localDb = getLocalDb();
+  const type = getDraftTypeFromTab(tab);
+  const byKey = new Map(localDrafts.map((draft) => [draft.draftKey, draft]));
+
+  if (localDb?.listDrafts && type) {
+    try {
+      const dbDrafts = await localDb.listDrafts({
+        type,
+        userId
+      });
+
+      (Array.isArray(dbDrafts) ? dbDrafts : []).forEach((draft) => {
+        const draftKey = draft.draftKey || draft.draft_key;
+        const draftInfo = parseDraftKey(draftKey);
+        if (
+          (role && draftInfo.role !== role)
+          || (userId && Number(draftInfo.userId || 0) !== Number(userId || 0))
+          || (tab && draftInfo.tab !== tab)
+        ) {
+          return;
+        }
+
+        const rows = Array.isArray(draft.rows) ? draft.rows : [];
+        if (rows.length > 0) {
+          byKey.set(draftKey, {
+            ...draftInfo,
+            draftKey,
+            rows,
+            savedAt: draft.updatedAt || draft.updated_at || draft.savedAt || ''
+          });
+        }
+      });
+    } catch (error) {
+      // Local storage drafts are still returned when Electron local DB is unavailable.
+    }
+  }
+
+  return Array.from(byKey.values()).sort((left, right) => (
+    String(right.savedAt || '').localeCompare(String(left.savedAt || ''))
+  ));
 };

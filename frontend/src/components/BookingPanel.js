@@ -569,6 +569,7 @@ const BookingPanel = ({
   const [memoPopupOpen, setMemoPopupOpen] = useState(false);
   const [memoSelectionIndex, setMemoSelectionIndex] = useState(0);
   const [filterSellerId, setFilterSellerId] = useState('');
+  const [filterSellerIds, setFilterSellerIds] = useState([]);
   const [fromDate, setFromDate] = useState(getTodayDateValue());
   const [toDate, setToDate] = useState(getTodayDateValue());
   const [resultRows, setResultRows] = useState([]);
@@ -712,13 +713,29 @@ const BookingPanel = ({
     { id: '', username: 'All Sellers', keyword: 'ALL' },
     ...activeAmountSellers
   ], [activeAmountSellers]);
+  const billSelectedSellerIds = Array.isArray(filterSellerIds) ? filterSellerIds : [];
+  const toggleBillSellerFilter = (targetSellerId) => {
+    const normalizedSellerId = String(targetSellerId || '');
+    if (!normalizedSellerId) {
+      setFilterSellerIds([]);
+      return;
+    }
+
+    setFilterSellerIds((currentIds) => (
+      currentIds.includes(normalizedSellerId)
+        ? currentIds.filter((id) => id !== normalizedSellerId)
+        : [...currentIds, normalizedSellerId]
+    ));
+  };
   const currentSessionMode = getSessionMode(shift);
   const currentPurchaseCategory = getPurchaseCategory(shift);
   const bookingQuantity = getRangeCount(rangeStart, rangeEnd) * Number(activeSem || 0);
   const bookingAmount = bookingQuantity * Number(amount || 0);
 
   const scopedEntries = allEntries.filter((entry) => (
-    (!filterSellerId || String(entry.sellerId) === String(filterSellerId))
+    (mode === 'bill'
+      ? (billSelectedSellerIds.length === 0 || billSelectedSellerIds.includes(String(entry.sellerId)))
+      : (!filterSellerId || String(entry.sellerId) === String(filterSellerId)))
     && (!selectedEntryAmount || String(entry.amount) === String(selectedEntryAmount))
     && (!fromDate || normalizeDateValue(entry.bookingDate) >= normalizeDateValue(fromDate))
     && (!toDate || normalizeDateValue(entry.bookingDate) <= normalizeDateValue(toDate))
@@ -741,6 +758,7 @@ const BookingPanel = ({
     if (filterSellerId && !activeAmountSellers.some((seller) => String(seller.id) === String(filterSellerId))) {
       setFilterSellerId('');
     }
+    setFilterSellerIds((currentIds) => currentIds.filter((id) => activeAmountSellers.some((seller) => String(seller.id) === String(id))));
   }, [activeAmountSellers, filterSellerId, initialAmount, initialPurchaseCategory, initialSessionMode, sellerId]);
 
   const memoSummaries = useMemo(() => {
@@ -821,6 +839,7 @@ const BookingPanel = ({
       setSem(savedState.sem || '');
       setCodeInput(savedState.codeInput || '');
       setFilterSellerId(savedState.filterSellerId || '');
+      setFilterSellerIds(Array.isArray(savedState.filterSellerIds) ? savedState.filterSellerIds.map(String) : []);
       setResultRows(Array.isArray(savedState.resultRows) ? savedState.resultRows : []);
     } else {
       setSem('');
@@ -904,11 +923,12 @@ const BookingPanel = ({
       activeRowIndex,
       memoNumber,
       filterSellerId,
+      filterSellerIds,
       fromDate,
       toDate,
       resultRows
     });
-  }, [activeRowIndex, amount, bookingDate, codeInput, filterSellerId, fromDate, hydrated, memoNumber, rangeEnd, rangeStart, resultRows, sellerId, sem, shift, stateKey, toDate]);
+  }, [activeRowIndex, amount, bookingDate, codeInput, filterSellerId, filterSellerIds, fromDate, hydrated, memoNumber, rangeEnd, rangeStart, resultRows, sellerId, sem, shift, stateKey, toDate]);
 
   const persistEntries = (nextEntries) => {
     const normalizedEntries = normalizeStoredBookingEntries(nextEntries);
@@ -1507,7 +1527,12 @@ const BookingPanel = ({
         onError?.('No bill data found');
         return;
       }
-      const sellerName = activeAmountSellers.find((seller) => String(seller.id) === String(filterSellerId))?.username || '';
+      const selectedBillSellerNames = billSelectedSellerIds.length > 0
+        ? activeAmountSellers
+          .filter((seller) => billSelectedSellerIds.includes(String(seller.id)))
+          .map((seller) => seller.username)
+        : [];
+      const sellerName = selectedBillSellerNames.join(', ');
       const didOpen = openTransferBill(createBookingPrintableBill({
         rows: billRows,
         username: currentUser?.username || 'Admin',
@@ -1550,14 +1575,30 @@ const BookingPanel = ({
           </select>
           <label>{mode === 'bill' ? 'Select Seller:' : 'Seller:'}</label>
           {mode === 'bill' ? (
-            <select value={filterSellerId} onChange={(event) => setFilterSellerId(event.target.value)}>
-              <option value="">ALL All Direct Sellers</option>
-              {activeAmountSellers.map((seller) => (
-                <option key={seller.id || seller.username} value={seller.id}>
-                  {`${seller.keyword || ''} ${seller.username} [${seller.keyword || ''}]`.trim()}
-                </option>
-              ))}
-            </select>
+            <div className="bill-seller-picker">
+              <label className={`bill-seller-option all ${billSelectedSellerIds.length === 0 ? 'selected' : ''}`.trim()}>
+                <input
+                  type="checkbox"
+                  checked={billSelectedSellerIds.length === 0}
+                  onChange={() => setFilterSellerIds([])}
+                />
+                <span>ALL All Direct Sellers</span>
+              </label>
+              {activeAmountSellers.map((seller) => {
+                const sellerIdValue = String(seller.id || '');
+                const isSelected = billSelectedSellerIds.includes(sellerIdValue);
+                return (
+                  <label key={seller.id || seller.username} className={`bill-seller-option ${isSelected ? 'selected' : ''}`.trim()}>
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => toggleBillSellerFilter(sellerIdValue)}
+                    />
+                    <span>{`${seller.keyword || ''} ${seller.username} [${seller.keyword || ''}]`.trim()}</span>
+                  </label>
+                );
+              })}
+            </div>
           ) : (
             <SearchableSellerSelect
               options={sellerOptions}

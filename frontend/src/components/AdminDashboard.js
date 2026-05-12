@@ -14,7 +14,7 @@ import BookingPanel from './BookingPanel';
 import { buildBillAmountSummariesWithPrize, buildBillData, buildBillSummaryWithPrize, formatDisplayDate, formatDisplayDateTime, formatSignedRupees, getAllowedAmountsLabel, getNormalizedPrizeBaseAmount, getNormalizedPrizeCalculatedAmount, groupTransferHistoryByActor, openTransferBill, summarizeTransferHistory } from '../utils/transferBill';
 import { groupConsecutiveNumberRows, sortRowsForConsecutiveNumbers } from '../utils/numberRanges';
 import { useFunctionShortcuts } from '../utils/functionShortcuts';
-import { buildDraftStorageKey, clearDraftRows, loadDraftRows, saveDraftRows } from '../utils/localDraftStorage';
+import { buildDraftStorageKey, clearDraftRows, listDraftRows, loadDraftRows, saveDraftRows } from '../utils/localDraftStorage';
 import '../styles/AdminDashboard.css';
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -1385,7 +1385,7 @@ const AdminDashboard = ({
   const [historyFromDate, setHistoryFromDate] = useState(getTodayDateValue());
   const [historyToDate, setHistoryToDate] = useState(getTodayDateValue());
   const [historyShift, setHistoryShift] = useState(getInitialBillShift(initialSessionMode, initialPurchaseCategory));
-  const [historySellerFilter, setHistorySellerFilter] = useState('');
+  const [historySellerFilter, setHistorySellerFilter] = useState([]);
   const [historyAmountFilter, setHistoryAmountFilter] = useState(initialBillAmount || initialAmount || '7');
   const [historyPurchaseCategoryFilter, setHistoryPurchaseCategoryFilter] = useState(
     String(initialPurchaseCategory || '').trim().toUpperCase() || (initialSessionMode === 'NIGHT' ? 'E' : 'M')
@@ -1459,6 +1459,9 @@ const AdminDashboard = ({
   const [purchaseDraftRows, setPurchaseDraftRows] = useState([]);
   const [purchaseActiveRowIndex, setPurchaseActiveRowIndex] = useState(0);
   const [purchaseEditorVisible, setPurchaseEditorVisible] = useState(true);
+  const [sendPurchaseDrafts, setSendPurchaseDrafts] = useState([]);
+  const [sendPurchaseLoading, setSendPurchaseLoading] = useState(false);
+  const [sendPurchaseSendingKey, setSendPurchaseSendingKey] = useState('');
   const [purchaseMemoNumber, setPurchaseMemoNumber] = useState(null);
   const [purchaseRemoveMemoNumber, setPurchaseRemoveMemoNumber] = useState(null);
   const [purchaseMemoPopupOpen, setPurchaseMemoPopupOpen] = useState(false);
@@ -2857,7 +2860,7 @@ const AdminDashboard = ({
       if (activeTab === 'unsold-remove') {
         hydrateAdminUnsoldRemoveDraftRowsForMemo(option.memoNumber, adminUnsoldRemoveMemoEntries);
       } else {
-        const selectedEntries = unsoldPurchaseEntries.filter((entry) => (
+        const selectedEntries = adminOwnedUnsoldPurchaseEntries.filter((entry) => (
           Number(entry.memoNumber) === Number(option.memoNumber)
         ));
         const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, purchaseAmount, {
@@ -3349,91 +3352,19 @@ const AdminDashboard = ({
       }
 
       const effectiveMemoNumber = Number(purchaseMemoNumber || nextPurchaseMemoNumber);
-      const refreshBookingDate = rowsToSave[0]?.drawDate || purchaseBookingDate;
-      const selectedPurchaseSellerName = String(selectedPurchaseSeller?.username || '').trim().toLowerCase();
-      const currentMemoEntryIds = isEditingExistingPurchaseMemo
-        ? [...purchaseEntries, ...unsoldPurchaseEntries]
-          .filter((entry) => {
-            const entrySellerName = String(entry.displaySeller || entry.username || '').trim().toLowerCase();
-            return getPurchaseEntryMemoNumber(entry) === effectiveMemoNumber
-              && (
-                String(entry.userId || '') === String(purchaseSellerId || '')
-                || (selectedPurchaseSellerName && entrySellerName === selectedPurchaseSellerName)
-              );
-          })
-          .map((entry) => entry.id)
-          .filter(Boolean)
-        : [];
+      const rowsWithMemo = rowsToSave.map((row, index) => ({
+        ...row,
+        memoNumber: effectiveMemoNumber,
+        bookingAmount: row.bookingAmount || purchaseAmount,
+        resolvedSessionMode: row.resolvedSessionMode || purchaseSessionMode,
+        resolvedPurchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
+        memoRowOrder: row.memoRowOrder ?? index
+      }));
 
-      if (isEditingExistingPurchaseMemo) {
-        const response = await lotteryService.replacePurchaseSendMemo({
-          sellerId: purchaseSellerId,
-          memoNumber: effectiveMemoNumber,
-          entryIds: currentMemoEntryIds,
-          bookingDate: refreshBookingDate,
-          sessionMode: purchaseSessionMode,
-          amount: purchaseAmount,
-          purchaseCategory,
-          rows: rowsToSave.map((row, index) => ({
-            rangeStart: row.from,
-            rangeEnd: row.to,
-            boxValue: row.semValue,
-            amount: purchaseAmount,
-            bookingDate: row.drawDate || purchaseBookingDate,
-            sessionMode: row.resolvedSessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
-            entryIds: row.entryIds || [],
-            memoRowOrder: row.memoRowOrder ?? index
-          }))
-        });
-        setSuccess(response.data.message || `Memo ${effectiveMemoNumber} updated successfully`);
-      } else {
-        for (const [index, row] of rowsToSave.entries()) {
-          await lotteryService.sendAdminPurchase({
-            sellerId: purchaseSellerId,
-            series: '',
-            rangeStart: row.from,
-            rangeEnd: row.to,
-            boxValue: row.semValue,
-            amount: purchaseAmount,
-            memoNumber: effectiveMemoNumber,
-            bookingDate: row.drawDate || purchaseBookingDate,
-            sessionMode: row.resolvedSessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
-            memoRowOrder: row.memoRowOrder ?? index
-          });
-        }
-        setSuccess('Purchase saved successfully');
-      }
-
-      if (!isEditingExistingPurchaseMemo) {
-        setPurchaseMemoNumber(null);
-        setPurchaseMemoSelectionIndex(0);
-        clearDraftRows(adminLocalDraftKey);
-        setPurchaseDraftRows([]);
-        setPurchaseActiveRowIndex(0);
-        setPurchaseEditorVisible(true);
-        resetPurchaseSendEntryInputs();
-      } else if (rowsToSave.length > 0) {
-        setPurchaseMemoNumber(null);
-        setPurchaseMemoSelectionIndex(0);
-        clearDraftRows(adminLocalDraftKey);
-        setPurchaseDraftRows([]);
-        setPurchaseActiveRowIndex(0);
-        setPurchaseEditorVisible(true);
-        resetPurchaseSendEntryInputs();
-      } else if (rowsToSave.length === 0) {
-        setPurchaseMemoNumber(null);
-        setPurchaseMemoSelectionIndex(0);
-        clearDraftRows(adminLocalDraftKey);
-        setPurchaseDraftRows([]);
-        setPurchaseActiveRowIndex(0);
-        setPurchaseEditorVisible(true);
-        resetPurchaseSendEntryInputs();
-      }
+      await saveDraftRows(adminLocalDraftKey, rowsWithMemo);
+      setPurchaseDraftRows(rowsWithMemo);
+      setSuccess('Purchase local me save ho gaya. Send Purchase se bhejo.');
       setPurchaseMemoPopupOpen(false);
-      await loadPurchaseEntries(refreshBookingDate, purchaseSessionMode, purchaseSellerId);
-      focusAdminSendSellerSelect();
     } catch (err) {
       const rawErrorMessage = err.response?.data?.message || err.message || '';
       const normalizedErrorMessage = String(rawErrorMessage).toLowerCase();
@@ -4830,7 +4761,7 @@ const AdminDashboard = ({
         sessionMode: summarySessionValue,
         purchaseCategory: summaryCategoryValue,
         amount: summaryAmountValue
-      });
+      }, { skipLocalRead: true });
 
       const summaryRows = (response.data || []).map((row) => ({
         id: row.sellerId || row.seller_id,
@@ -4874,6 +4805,134 @@ const AdminDashboard = ({
 
   const stockTransferTargetOptions = activeAmountAdminSellers.filter((option) => option.id);
   const selectedPurchaseSeller = activeAmountAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId)) || null;
+  const getPurchaseDraftQuantity = (row = {}) => {
+    const fromNumber = normalizeNumericInput(row.numberStart || row.from);
+    const toNumber = resolveRangeEndValue(fromNumber, row.numberEnd || row.to || row.numberStart || row.from);
+    const semValue = Number(row.semValue || String(row.code || '').match(/\d+/)?.[0] || 0);
+    const start = Number(fromNumber);
+    const end = Number(toNumber);
+
+    if (fromNumber && toNumber && !Number.isNaN(start) && !Number.isNaN(end) && end >= start && semValue > 0) {
+      return ((end - start) + 1) * semValue;
+    }
+
+    return Number(row.quantity || 0);
+  };
+  const getPurchaseDraftAmount = (row = {}) => {
+    const quantity = getPurchaseDraftQuantity(row);
+    const rate = Number(row.bookingAmount || row.rate || row.amountRate || 0);
+    if (quantity > 0 && rate > 0) {
+      return quantity * rate;
+    }
+    return Number(row.amount || 0);
+  };
+  const enrichSendPurchaseDraft = (draft) => {
+    const seller = directAdminSellers.find((entry) => String(entry.id) === String(draft.targetSellerId));
+    const rows = Array.isArray(draft.rows) ? draft.rows : [];
+    return {
+      ...draft,
+      sellerName: seller?.username || rows[0]?.partyName || `Seller ${draft.targetSellerId}`,
+      keyword: seller?.keyword || '',
+      memoNumber: Number(rows[0]?.memoNumber || draft.memoNumber || 1),
+      pieceCount: rows.reduce((sum, row) => sum + getPurchaseDraftQuantity(row), 0),
+      amountTotal: rows.reduce((sum, row) => sum + getPurchaseDraftAmount(row), 0)
+    };
+  };
+  const loadSendPurchaseDrafts = async () => {
+    setSendPurchaseLoading(true);
+    try {
+      const drafts = await listDraftRows({
+        role: 'admin',
+        userId: user?.id,
+        tab: 'purchase-send'
+      });
+      setSendPurchaseDrafts(drafts.map(enrichSendPurchaseDraft));
+    } catch (error) {
+      setError(error.message || 'Send Purchase draft load nahi hua');
+    } finally {
+      setSendPurchaseLoading(false);
+    }
+  };
+  const sendPurchaseDraft = async (draft) => {
+    const rows = Array.isArray(draft?.rows) ? draft.rows : [];
+    if (!draft?.targetSellerId || rows.length === 0) {
+      setError('Send karne ke liye purchase draft nahi mila');
+      return;
+    }
+
+    setSendPurchaseSendingKey(draft.draftKey);
+    setError('');
+    setSuccess('');
+
+    try {
+      const memoNumber = Number(rows[0]?.memoNumber || draft.memoNumber || 1);
+      const entryIds = rows.flatMap((row) => Array.isArray(row.entryIds) ? row.entryIds : []).filter(Boolean);
+      const firstRowDate = rows[0]?.drawDate || draft.bookingDate || purchaseBookingDate;
+      const sessionValue = rows[0]?.resolvedSessionMode || draft.sessionMode || purchaseSessionMode;
+      const amountValue = rows[0]?.bookingAmount || draft.amount || purchaseAmount;
+      const categoryValue = rows[0]?.resolvedPurchaseCategory || draft.purchaseCategory || purchaseCategory;
+
+      if (entryIds.length > 0) {
+        await lotteryService.replacePurchaseSendMemo({
+          sellerId: draft.targetSellerId,
+          memoNumber,
+          entryIds,
+          bookingDate: firstRowDate,
+          sessionMode: sessionValue,
+          amount: amountValue,
+          purchaseCategory: categoryValue,
+          rows: rows.map((row, index) => ({
+            rangeStart: row.numberStart || row.from,
+            rangeEnd: row.numberEnd || row.to,
+            boxValue: row.semValue,
+            amount: row.bookingAmount || amountValue,
+            bookingDate: row.drawDate || firstRowDate,
+            sessionMode: row.resolvedSessionMode || sessionValue,
+            purchaseCategory: row.resolvedPurchaseCategory || categoryValue,
+            entryIds: row.entryIds || [],
+            memoRowOrder: row.memoRowOrder ?? index
+          }))
+        });
+      } else {
+        for (const [index, row] of rows.entries()) {
+          await lotteryService.sendAdminPurchase({
+            sellerId: draft.targetSellerId,
+            series: '',
+            rangeStart: row.numberStart || row.from,
+            rangeEnd: row.numberEnd || row.to,
+            boxValue: row.semValue,
+            amount: row.bookingAmount || amountValue,
+            memoNumber,
+            bookingDate: row.drawDate || firstRowDate,
+            sessionMode: row.resolvedSessionMode || sessionValue,
+            purchaseCategory: row.resolvedPurchaseCategory || categoryValue,
+            memoRowOrder: row.memoRowOrder ?? index
+          });
+        }
+      }
+
+      await clearDraftRows(draft.draftKey);
+      setSuccess(`${draft.sellerName || 'Seller'} ko purchase send ho gaya`);
+      await Promise.all([
+        loadSendPurchaseDrafts(),
+        loadPurchaseEntries(firstRowDate, sessionValue, draft.targetSellerId)
+      ]);
+    } catch (error) {
+      setError(error.response?.data?.message || error.message || 'Purchase send nahi hua');
+    } finally {
+      setSendPurchaseSendingKey('');
+    }
+  };
+  const sendAllPurchaseDrafts = async () => {
+    for (const draft of sendPurchaseDrafts) {
+      await sendPurchaseDraft(draft);
+    }
+  };
+  useEffect(() => {
+    if (activeTab === 'send-purchase') {
+      loadSendPurchaseDrafts();
+    }
+  }, [activeTab, user?.id, treeData]);
   const adminStockMemoSummaries = buildPurchaseMemoSummaries(adminStockEntries);
   const nextAdminStockMemoNumber = adminStockMemoSummaries.length > 0
     ? Math.max(...adminStockMemoSummaries.map((memo) => memo.memoNumber)) + 1
@@ -4932,7 +4991,12 @@ const AdminDashboard = ({
   )) || purchaseMemoOptions[0] || null;
   const isEditingExistingPurchaseMemo = purchaseMemoSummaries.some((memo) => Number(memo.memoNumber) === Number(purchaseMemoNumber));
   const highlightedPurchaseMemoOption = purchaseMemoOptions[purchaseMemoSelectionIndex] || selectedPurchaseMemoOption || null;
-  const adminUnsoldMemoSummaries = buildCurrentMemoSummaries(unsoldPurchaseEntries);
+  const adminOwnedUnsoldPurchaseEntries = unsoldPurchaseEntries.filter((entry) => (
+    String(entry.forwardedBy || '') === String(user?.id || '')
+    || String(entry.sentToParent || '') === String(user?.id || '')
+    || String(entry.id || '').startsWith('manual-unsold-')
+  ));
+  const adminUnsoldMemoSummaries = buildCurrentMemoSummaries(adminOwnedUnsoldPurchaseEntries);
   const nextAdminUnsoldMemoNumber = adminUnsoldMemoSummaries.length > 0
     ? Math.max(...adminUnsoldMemoSummaries.map((memo) => memo.memoNumber)) + 1
     : 1;
@@ -5001,6 +5065,34 @@ const AdminDashboard = ({
     || (activeTab === 'unsold-remove' ? selectedAdminUnsoldRemoveMemoOption : selectedAdminUnsoldMemoOption)
     || null;
   const allSellerNodes = flattenSellerNodes(treeData);
+  const eligibleBillSellerNameSet = new Set(
+    directAdminSellers
+      .filter((seller) => sellerSupportsAmount(seller, historyAmountFilter || initialAmount))
+      .map((seller) => seller.username)
+  );
+  const selectedBillSellerNamesRaw = Array.isArray(historySellerFilter)
+    ? historySellerFilter
+    : (historySellerFilter ? [historySellerFilter] : []);
+  const selectedBillSellerNames = selectedBillSellerNamesRaw.filter((sellerName) => (
+    eligibleBillSellerNameSet.size === 0 || eligibleBillSellerNameSet.has(sellerName)
+  ));
+  const selectedBillSellerLabel = selectedBillSellerNames.join(', ');
+  const toggleBillSellerFilter = (sellerName) => {
+    if (!sellerName) {
+      setHistorySellerFilter([]);
+      return;
+    }
+
+    setHistorySellerFilter((currentNames) => {
+      const currentSet = new Set(Array.isArray(currentNames) ? currentNames : []);
+      if (currentSet.has(sellerName)) {
+        currentSet.delete(sellerName);
+      } else {
+        currentSet.add(sellerName);
+      }
+      return Array.from(currentSet);
+    });
+  };
   const filteredBillPrizeResults = billPrizeResults.filter((record) => {
     const amountMatches = historyAmountFilter
       ? String(record.amount || '') === String(historyAmountFilter)
@@ -5012,13 +5104,15 @@ const AdminDashboard = ({
     return amountMatches && categoryMatches;
   });
   const adminCurrentBillRows = purchaseBillRows.filter((record) => (
-    !historySellerFilter || record.billRootUsername === historySellerFilter || record.sellerName === historySellerFilter
+    selectedBillSellerNames.length === 0
+    || selectedBillSellerNames.includes(record.billRootUsername)
+    || selectedBillSellerNames.includes(record.sellerName)
   ));
   const billData = buildBillData({
     records: [],
     prizeRecords: filteredBillPrizeResults,
     treeData,
-    selectedSellerUsername: historySellerFilter
+    selectedSellerUsernames: selectedBillSellerNames
   });
   const billTransferHistory = adminCurrentBillRows;
   const transferHistoryByActor = groupTransferHistoryByActor(transferHistory);
@@ -6227,7 +6321,7 @@ const AdminDashboard = ({
     const cachedBill = await billCacheService.loadGeneratedBill({
       filters: {
         ...getBillFilters(),
-        seller: historySellerFilter
+        seller: selectedBillSellerNames.join('|')
       }
     });
     const bill = cachedBill?.bill;
@@ -6274,7 +6368,7 @@ const AdminDashboard = ({
       totals: adminVisibleBillTotals,
       username: user.username,
       periodLabel: historyPeriodLabel,
-      shiftLabel: `${historyShift === 'ALL' ? 'ALL' : (historyShift || 'All')} | Amount ${historyAmountFilter || '7'}${historySellerFilter ? ` | Seller: ${historySellerFilter}` : ''}`,
+      shiftLabel: `${historyShift === 'ALL' ? 'ALL' : (historyShift || 'All')} | Amount ${historyAmountFilter || '7'}${selectedBillSellerLabel ? ` | Seller: ${selectedBillSellerLabel}` : ''}`,
       title: 'Generate Bill'
     };
     const didOpen = openTransferBill(generatedBill);
@@ -6287,7 +6381,7 @@ const AdminDashboard = ({
     await billCacheService.saveGeneratedBill({
       filters: {
         ...getBillFilters(),
-        seller: historySellerFilter
+        seller: selectedBillSellerNames.join('|')
       },
       bill: generatedBill
     }).catch((error) => {
@@ -6445,7 +6539,8 @@ const AdminDashboard = ({
     { tab: 'upload-price', label: 'Upload Result' },
     { tab: 'tree', label: 'Tree' },
     { tab: 'add-seller', label: 'Add New Seller' },
-    { tab: 'purchase-send', label: 'Purchase Send' },
+    { tab: 'purchase-send', label: 'Purchase' },
+    { tab: 'send-purchase', label: 'Send Purchase' },
     { tab: 'unsold', label: 'Unsold' },
     { tab: 'unsold-remove', label: 'Unsold Remove' },
     { tab: 'accept-entries', label: 'Accept Entries' },
@@ -7180,7 +7275,7 @@ const AdminDashboard = ({
               className={`accordion-header ${activeTab === 'purchase-send' ? 'active' : ''}`}
               onClick={() => handleTabToggle('purchase-send')}
             >
-              Purchase Send
+              Purchase
             </button>
           </div>
         )}
@@ -7188,12 +7283,12 @@ const AdminDashboard = ({
         {activeTab === 'purchase-send' && (
           <div className="accordion-item">
             <button className="accordion-header active" onClick={requestExitConfirmation}>
-              Purchase Send
+              Purchase
             </button>
             <div className="accordion-content">
               <RetroPurchasePanel
                 screenCode="RAHUL"
-                panelTitle="Purchase Send"
+                panelTitle="Purchase"
                 screenTitle={entryCompanyLabel || 'ADMIN PURCHASE SEND'}
                 headerTimestamp={adminPurchaseTimestamp}
                 memoNumber={selectedPurchaseMemoOption ? String(selectedPurchaseMemoOption.memoNumber) : '1'}
@@ -7278,6 +7373,84 @@ const AdminDashboard = ({
                 blockingWarning={activeTab === 'purchase-send' ? blockingWarning : null}
                 onBlockingWarningClose={clearBlockingWarning}
               />
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'send-purchase' && (
+          <div className="accordion-item">
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
+              Send Purchase
+            </button>
+            <div className="accordion-content">
+              <div className="send-purchase-header">
+                <div>
+                  <h2>Send Purchase</h2>
+                  <p>Purchase me saved local drafts yahan se seller/stockist/sub-stockist ko bhejo.</p>
+                </div>
+                <div className="send-purchase-actions">
+                  <button type="button" className="btn-secondary" onClick={loadSendPurchaseDrafts} disabled={sendPurchaseLoading || Boolean(sendPurchaseSendingKey)}>
+                    Refresh
+                  </button>
+                  <button type="button" className="btn-primary" onClick={sendAllPurchaseDrafts} disabled={sendPurchaseDrafts.length === 0 || Boolean(sendPurchaseSendingKey)}>
+                    Send All
+                  </button>
+                </div>
+              </div>
+
+              <div className="send-purchase-table-wrap">
+                <table className="send-purchase-table">
+                  <thead>
+                    <tr>
+                      <th>Seller</th>
+                      <th>Memo</th>
+                      <th>Date</th>
+                      <th>Shift</th>
+                      <th>Amount</th>
+                      <th>Rows</th>
+                      <th>Piece</th>
+                      <th>Total</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sendPurchaseLoading && (
+                      <tr>
+                        <td colSpan="9">Loading...</td>
+                      </tr>
+                    )}
+                    {!sendPurchaseLoading && sendPurchaseDrafts.length === 0 && (
+                      <tr>
+                        <td colSpan="9">Send karne ke liye koi local purchase draft nahi hai</td>
+                      </tr>
+                    )}
+                    {!sendPurchaseLoading && sendPurchaseDrafts.map((draft) => (
+                      <tr key={draft.draftKey}>
+                        <td>
+                          <strong>{draft.keyword ? `${draft.keyword} ` : ''}{draft.sellerName}</strong>
+                        </td>
+                        <td>{draft.memoNumber}</td>
+                        <td>{formatRetroDisplayDate(draft.bookingDate)}</td>
+                        <td>{draft.sessionMode}</td>
+                        <td>{draft.amount}</td>
+                        <td>{draft.rows.length}</td>
+                        <td>{draft.pieceCount}</td>
+                        <td>{draft.amountTotal.toFixed(2)}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn-primary compact"
+                            onClick={() => sendPurchaseDraft(draft)}
+                            disabled={Boolean(sendPurchaseSendingKey)}
+                          >
+                            {sendPurchaseSendingKey === draft.draftKey ? 'Sending...' : 'Send'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}
@@ -7909,17 +8082,29 @@ const AdminDashboard = ({
 
                 <label style={{ marginTop: '12px', display: 'block' }}>Select Seller:</label>
                 <div style={{ marginTop: '8px' }}>
-                  <select
-                    value={historySellerFilter}
-                    onChange={(event) => setHistorySellerFilter(event.target.value)}
-                  >
-                    <option value="">ALL All Direct Sellers</option>
-                    {directAdminSellers.filter((seller) => sellerSupportsAmount(seller, historyAmountFilter || initialAmount)).map((seller) => (
-                      <option key={seller.id || seller.username} value={seller.username}>
-                        {`${getSellerKeyword(seller)} ${seller.username} [${getSellerKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="bill-seller-picker">
+                    <label className={`bill-seller-option all ${selectedBillSellerNames.length === 0 ? 'selected' : ''}`.trim()}>
+                      <input
+                        type="checkbox"
+                        checked={selectedBillSellerNames.length === 0}
+                        onChange={() => setHistorySellerFilter([])}
+                      />
+                      <span>ALL All Direct Sellers</span>
+                    </label>
+                    {directAdminSellers.filter((seller) => sellerSupportsAmount(seller, historyAmountFilter || initialAmount)).map((seller) => {
+                      const isSelected = selectedBillSellerNames.includes(seller.username);
+                      return (
+                        <label key={seller.id || seller.username} className={`bill-seller-option ${isSelected ? 'selected' : ''}`.trim()}>
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleBillSellerFilter(seller.username)}
+                          />
+                          <span>{`${getSellerKeyword(seller)} ${seller.username} [${getSellerKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' }}>
@@ -8318,7 +8503,7 @@ const AddSellerForm = ({ currentUser, selectedAmount = '', onSuccess, onError })
           </div>
         ) : (
           <p style={{ marginTop: '0', color: '#666', fontSize: '14px' }}>
-            Seller ka koi login ID nahi banega. Yeh naam Purchase Send, Unsold aur F10 summary me direct use hoga.
+            Seller ka koi login ID nahi banega. Yeh naam Purchase, Unsold aur F10 summary me direct use hoga.
           </p>
         )}
         {showRateAmount6 && (

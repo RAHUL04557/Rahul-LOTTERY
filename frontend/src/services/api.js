@@ -230,6 +230,73 @@ const mergeLocalVisibleUsers = async (users = []) => {
   }
 };
 
+const purgeDeletedUsersFromLocalStorage = (userIds = []) => {
+  if (typeof window === 'undefined' || !window.localStorage) {
+    return;
+  }
+
+  const deletedIdSet = new Set(userIds.map((userId) => String(userId)));
+  if (deletedIdSet.size === 0) {
+    return;
+  }
+
+  try {
+    const visibleUsers = JSON.parse(localStorage.getItem('lottery.visibleUsers') || '[]');
+    if (Array.isArray(visibleUsers)) {
+      localStorage.setItem(
+        'lottery.visibleUsers',
+        JSON.stringify(visibleUsers.filter((user) => !deletedIdSet.has(String(user?.id))))
+      );
+    }
+  } catch (error) {
+    // Ignore malformed legacy visible-user cache.
+  }
+
+  Object.keys(localStorage).forEach((key) => {
+    if (!key.startsWith('lottery.localDraft:')) {
+      return;
+    }
+
+    const parts = key.split(':');
+    const draftUserId = parts[2];
+    const targetSellerId = parts[4];
+    if (deletedIdSet.has(String(draftUserId)) || deletedIdSet.has(String(targetSellerId))) {
+      localStorage.removeItem(key);
+    }
+  });
+};
+
+const purgeDeletedUsersLocally = async (userIds = []) => {
+  const ids = [...new Set((Array.isArray(userIds) ? userIds : [])
+    .map((userId) => Number(userId))
+    .filter((userId) => Number.isInteger(userId) && userId > 0))];
+
+  if (ids.length === 0) {
+    return;
+  }
+
+  purgeDeletedUsersFromLocalStorage(ids);
+
+  const localDb = getLocalDb();
+  if (localDb?.purgeUsers) {
+    await localDb.purgeUsers({ userIds: ids }).catch((error) => {
+      console.warn('Local deleted user cleanup failed:', error.message);
+    });
+  }
+
+  if (localDb?.getMetadata && localDb?.setMetadata) {
+    const existingUsers = await localDb.getMetadata('visibleUsers').catch(() => []);
+    if (Array.isArray(existingUsers)) {
+      await localDb.setMetadata(
+        'visibleUsers',
+        existingUsers.filter((user) => !ids.includes(Number(user?.id)))
+      ).catch((error) => {
+        console.warn('Local visible user cleanup failed:', error.message);
+      });
+    }
+  }
+};
+
 const getLocalUserTree = async () => {
   const localDb = getLocalDb();
   const currentUser = getCurrentUser();
@@ -398,7 +465,14 @@ export const userService = {
     data: { username, password, resultUploadPassword }
   }, 'create_admin'),
   getAdmins: () => api.get('/users/admins'),
-  deleteAdmin: (userId) => api.delete(`/users/admins/${userId}`),
+  deleteAdmin: async (userId) => {
+    const response = await api.delete(`/users/admins/${userId}`);
+    const deletedUserIds = Array.isArray(response.data?.deletedUserIds) && response.data.deletedUserIds.length > 0
+      ? response.data.deletedUserIds
+      : [userId];
+    await purgeDeletedUsersLocally(deletedUserIds);
+    return response;
+  },
   changeAdminPassword: (userId, newPassword) => api.patch(`/users/admins/${userId}/password`, { newPassword }),
   changeAdminResultUploadPassword: (userId, newPassword) => api.patch(`/users/admins/${userId}/result-upload-password`, { newPassword }),
   verifyResultUploadPassword: (password) => api.post('/users/result-upload-password/verify', { password }),
@@ -609,17 +683,20 @@ export const lotteryService = {
       ...(amount && { amount })
     };
 
-    try {
-      const localResult = await getLocalPurchasePieceSummary(params);
-      if (localResult) {
-        return localResult;
+    if (!requestOptions.skipLocalRead) {
+      try {
+        const localResult = await getLocalPurchasePieceSummary(params);
+        if (localResult) {
+          return localResult;
+        }
+      } catch (error) {
+        console.warn('Local piece summary failed, falling back to server:', error.message);
       }
-    } catch (error) {
-      console.warn('Local piece summary failed, falling back to server:', error.message);
     }
 
+    const { skipLocalRead, ...apiRequestOptions } = requestOptions;
     return api.get('/lottery/purchases/piece-summary', {
-      ...requestOptions,
+      ...apiRequestOptions,
       params
     });
   },

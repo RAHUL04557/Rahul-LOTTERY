@@ -1,0 +1,29 @@
+directories:
+  output: release
+  buildResources: build
+extends: null
+appId: com.lottery.booking
+productName: Lottery Booking
+asar: true
+files:
+  - filter:
+      - build/**/*
+      - electron/**/*
+      - package.json
+artifactName: Lottery-Booking-Setup-${version}.${ext}
+publish:
+  - provider: github
+    owner: RAHUL04557
+    repo: Rahul-LOTTERY
+win:
+  signAndEditExecutable: false
+  target:
+    - nsis
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  runAfterFinish: true
+electronVersion: 41.5.0

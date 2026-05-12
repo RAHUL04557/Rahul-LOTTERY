@@ -10,7 +10,7 @@ import SearchableSellerSelect from './SearchableSellerSelect';
 import { buildBillAmountSummariesWithPrize, buildBillData, buildBillSummaryWithPrize, formatDisplayDate, formatDisplayDateTime, formatSignedRupees, getAllowedAmountsLabel, groupTransferHistoryByActor, openTransferBill } from '../utils/transferBill';
 import { groupConsecutiveNumberRows, sortRowsForConsecutiveNumbers } from '../utils/numberRanges';
 import { useFunctionShortcuts } from '../utils/functionShortcuts';
-import { buildDraftStorageKey, clearDraftRows, loadDraftRows, saveDraftRows } from '../utils/localDraftStorage';
+import { buildDraftStorageKey, clearDraftRows, listDraftRows, loadDraftRows, saveDraftRows } from '../utils/localDraftStorage';
 import '../styles/SellerDashboard.css';
 
 const getTodayDateValue = () => {
@@ -495,6 +495,7 @@ const parseRetroCodeValue = (value, fallbackSessionMode, fallbackPurchaseCategor
 };
 
 const createRetroGridRows = (rows = []) => rows.map((row, index) => ({
+  ...row,
   id: row.id || `retro-row-${index}`,
   serial: index + 1,
   code: row.code || '',
@@ -505,13 +506,125 @@ const createRetroGridRows = (rows = []) => rows.map((row, index) => ({
   series: row.series || '',
   from: row.from || '',
   to: row.to || '',
-  quantity: row.quantity || '',
+  quantity: getRetroRowQuantity(row) || '',
   rate: row.rate || '',
-  amount: row.amount || ''
+  amount: getRetroRowAmount(row) || ''
 }));
+
+const getRetroRangeCount = (row = {}) => {
+  const fromNumber = sanitizeFiveDigitInput(row.numberStart || row.from);
+  const toNumber = sanitizeFiveDigitInput(row.numberEnd || row.to || row.numberStart || row.from);
+
+  if (fromNumber.length !== 5 || toNumber.length !== 5) {
+    return 0;
+  }
+
+  const startValue = Number(fromNumber);
+  const endValue = Number(toNumber);
+
+  if (Number.isNaN(startValue) || Number.isNaN(endValue) || endValue < startValue) {
+    return 0;
+  }
+
+  return (endValue - startValue) + 1;
+};
+
+const getRetroRowQuantity = (row = {}) => {
+  const rangeCount = getRetroRangeCount(row);
+  const semValue = Number(row.semValue || String(row.code || '').match(/\d+/)?.[0] || 0);
+
+  if (rangeCount > 0 && semValue > 0) {
+    return semValue * rangeCount;
+  }
+
+  return Number(row.quantity || 0);
+};
+
+const getRetroRowAmount = (row = {}) => {
+  const quantity = getRetroRowQuantity(row);
+  const rate = Number(row.rate || row.bookingAmount || 0);
+
+  if (quantity > 0 && rate > 0) {
+    return (quantity * rate).toFixed(2);
+  }
+
+  return row.amount || '';
+};
+
+const buildPurchaseDraftServerKey = ({
+  bookingDate,
+  sessionMode,
+  purchaseCategory,
+  amount,
+  semValue,
+  number
+}) => [
+  getDateOnlyValue(bookingDate || ''),
+  String(sessionMode || ''),
+  String(purchaseCategory || ''),
+  String(amount || ''),
+  String(semValue || ''),
+  String(number || '').padStart(5, '0')
+].join('|');
+
+const expandPurchaseDraftRowKeys = (row = {}) => {
+  const fromNumber = sanitizeFiveDigitInput(row.numberStart || row.from);
+  const toNumber = sanitizeFiveDigitInput(row.numberEnd || row.to || row.numberStart || row.from);
+  const startValue = Number(fromNumber);
+  const endValue = Number(toNumber);
+
+  if (
+    fromNumber.length !== 5
+    || toNumber.length !== 5
+    || Number.isNaN(startValue)
+    || Number.isNaN(endValue)
+    || endValue < startValue
+  ) {
+    return [];
+  }
+
+  return Array.from({ length: (endValue - startValue) + 1 }, (_, index) => buildPurchaseDraftServerKey({
+    bookingDate: row.drawDate,
+    sessionMode: row.resolvedSessionMode,
+    purchaseCategory: row.resolvedPurchaseCategory,
+    amount: row.bookingAmount,
+    semValue: row.semValue,
+    number: String(startValue + index).padStart(5, '0')
+  }));
+};
+
+const removeServerMatchedPurchaseDraftRows = (draftRows = [], serverEntries = []) => {
+  if (!Array.isArray(draftRows) || draftRows.length === 0 || !Array.isArray(serverEntries) || serverEntries.length === 0) {
+    return { rows: draftRows, removedCount: 0 };
+  }
+
+  const serverKeys = new Set(serverEntries.map((entry) => buildPurchaseDraftServerKey({
+    bookingDate: entry.bookingDate,
+    sessionMode: entry.sessionMode,
+    purchaseCategory: entry.purchaseCategory,
+    amount: entry.amount,
+    semValue: entry.sem || entry.boxValue,
+    number: entry.number
+  })));
+
+  let removedCount = 0;
+  const rows = draftRows.filter((row) => {
+    const rowKeys = expandPurchaseDraftRowKeys(row);
+    const isAlreadyOnServer = rowKeys.length > 0 && rowKeys.some((key) => serverKeys.has(key));
+    if (isAlreadyOnServer) {
+      removedCount += 1;
+      return false;
+    }
+
+    return true;
+  });
+
+  return { rows, removedCount };
+};
 
 const buildPurchaseMemoSummaries = (entries = []) => {
   const memoMap = new Map();
+  const seenEntryKeys = new Set();
 
   entries.forEach((entry) => {
     const memoNumber = Number(entry.purchaseMemoNumber || entry.memoNumber || 0);
@@ -519,6 +632,20 @@ const buildPurchaseMemoSummaries = (entries = []) => {
     if (!Number.isInteger(memoNumber) || memoNumber <= 0) {
       return;
     }
+
+    const entryNumberKey = [
+      memoNumber,
+      entry.bookingDate || entry.booking_date || '',
+      entry.sessionMode || entry.session_mode || '',
+      entry.purchaseCategory || entry.purchase_category || '',
+      entry.amount || '',
+      entry.sem || entry.boxValue || '',
+      String(entry.number || '').padStart(5, '0')
+    ].join('|');
+    if (seenEntryKeys.has(entryNumberKey)) {
+      return;
+    }
+    seenEntryKeys.add(entryNumberKey);
 
     const sentAtKey = entry.sentAt || entry.createdAt || `${entry.bookingDate || ''}-${memoNumber}`;
     const memoEntry = memoMap.get(memoNumber) || {
@@ -857,7 +984,7 @@ const SellerDashboard = ({
   const [historyFromDate, setHistoryFromDate] = useState(getTodayDateValue());
   const [historyToDate, setHistoryToDate] = useState(getTodayDateValue());
   const [historyShift, setHistoryShift] = useState(getInitialBillShift(sessionMode, purchaseCategory));
-  const [historySellerFilter, setHistorySellerFilter] = useState('');
+  const [historySellerFilter, setHistorySellerFilter] = useState([]);
   const [historyAmountFilter, setHistoryAmountFilter] = useState(initialBillAmount || initialAmount || '7');
   const [historyPurchaseCategoryFilter, setHistoryPurchaseCategoryFilter] = useState(
     String(purchaseCategory || '').trim().toUpperCase() || (sessionMode === 'NIGHT' ? 'E' : 'M')
@@ -948,6 +1075,9 @@ const SellerDashboard = ({
   const [retroActiveRowIndex, setRetroActiveRowIndex] = useState(0);
   const [retroEditorVisible, setRetroEditorVisible] = useState(true);
   const [retroSaving, setRetroSaving] = useState(false);
+  const [sendPurchaseDrafts, setSendPurchaseDrafts] = useState([]);
+  const [sendPurchaseLoading, setSendPurchaseLoading] = useState(false);
+  const [sendPurchaseSendingKey, setSendPurchaseSendingKey] = useState('');
   const [purchaseSendMemoNumber, setPurchaseSendMemoNumber] = useState(null);
   const [purchaseSendMemoPopupOpen, setPurchaseSendMemoPopupOpen] = useState(false);
   const [purchaseSendMemoSelectionIndex, setPurchaseSendMemoSelectionIndex] = useState(0);
@@ -1209,6 +1339,118 @@ const SellerDashboard = ({
     || retroPartyOptions.find((party) => party.username === selectedPartyName)
     || retroPartyOptions[0]
     || null;
+  const enrichSendPurchaseDraft = (draft) => {
+    const party = retroPartyOptions.find((entry) => String(entry.id) === String(draft.targetSellerId))
+      || activeAmountChildSellers.find((entry) => String(entry.id) === String(draft.targetSellerId));
+    const rows = Array.isArray(draft.rows) ? draft.rows : [];
+    return {
+      ...draft,
+      sellerName: party?.username || rows[0]?.partyName || `Seller ${draft.targetSellerId}`,
+      keyword: party?.keyword || '',
+      memoNumber: Number(rows[0]?.memoNumber || draft.memoNumber || 1),
+      pieceCount: rows.reduce((sum, row) => sum + getRetroRowQuantity(row), 0),
+      amountTotal: rows.reduce((sum, row) => sum + Number(getRetroRowAmount(row) || 0), 0)
+    };
+  };
+  const loadSendPurchaseDrafts = async () => {
+    setSendPurchaseLoading(true);
+    try {
+      const drafts = await listDraftRows({
+        role: 'seller',
+        userId: user?.id,
+        tab: 'purchase-send'
+      });
+      setSendPurchaseDrafts(drafts.map(enrichSendPurchaseDraft));
+    } catch (error) {
+      setBookingError(error.message || 'Send Purchase draft load nahi hua');
+    } finally {
+      setSendPurchaseLoading(false);
+    }
+  };
+  const sendPurchaseDraft = async (draft) => {
+    const rows = Array.isArray(draft?.rows) ? draft.rows : [];
+    if (!draft?.targetSellerId || rows.length === 0) {
+      setBookingError('Send karne ke liye purchase draft nahi mila');
+      return;
+    }
+
+    setSendPurchaseSendingKey(draft.draftKey);
+    setError('');
+    setBookingError('');
+    setSuccess('');
+
+    try {
+      const memoNumber = Number(rows[0]?.memoNumber || draft.memoNumber || 1);
+      const entryIds = rows.flatMap((row) => Array.isArray(row.entryIds) ? row.entryIds : []).filter(Boolean);
+      const firstRowDate = rows[0]?.drawDate || draft.bookingDate || bookingDate;
+      const sessionValue = rows[0]?.resolvedSessionMode || draft.sessionMode || sessionMode;
+      const amountValue = rows[0]?.bookingAmount || draft.amount || amount;
+      const categoryValue = rows[0]?.resolvedPurchaseCategory || draft.purchaseCategory || activePurchaseCategory;
+
+      if (entryIds.length > 0) {
+        await lotteryService.replacePurchaseSendMemo({
+          sellerId: draft.targetSellerId,
+          bookingDate: firstRowDate,
+          memoNumber,
+          entryIds,
+          sessionMode: sessionValue,
+          amount: amountValue,
+          purchaseCategory: categoryValue,
+          rows: rows.map((row, index) => ({
+            rangeStart: row.numberStart || row.from,
+            rangeEnd: row.numberEnd || row.to,
+            boxValue: row.semValue,
+            amount: row.bookingAmount || amountValue,
+            bookingDate: row.drawDate || firstRowDate,
+            sessionMode: row.resolvedSessionMode || sessionValue,
+            purchaseCategory: row.resolvedPurchaseCategory || categoryValue,
+            entryIds: row.entryIds || [],
+            memoRowOrder: row.memoRowOrder ?? index
+          }))
+        });
+      } else {
+        for (const [index, row] of rows.entries()) {
+          await lotteryService.sendPurchase({
+            sellerId: draft.targetSellerId,
+            series: '',
+            rangeStart: row.numberStart || row.from,
+            rangeEnd: row.numberEnd || row.to,
+            boxValue: row.semValue,
+            amount: row.bookingAmount || amountValue,
+            memoNumber,
+            bookingDate: row.drawDate || firstRowDate,
+            sessionMode: row.resolvedSessionMode || sessionValue,
+            purchaseCategory: row.resolvedPurchaseCategory || categoryValue,
+            memoRowOrder: row.memoRowOrder ?? index
+          });
+        }
+      }
+
+      await clearDraftRows(draft.draftKey);
+      setSuccess(`${draft.sellerName || 'Seller'} ko purchase send ho gaya`);
+      await Promise.all([
+        loadSendPurchaseDrafts(),
+        loadPurchaseEntries(),
+        loadPurchaseSendMemoEntries(draft.targetSellerId, firstRowDate),
+        loadSeePurchaseEntries(),
+        loadTransferHistory(getHistoryFilters())
+      ]);
+    } catch (error) {
+      setBookingError(error.response?.data?.message || error.message || 'Purchase send nahi hua');
+    } finally {
+      setSendPurchaseSendingKey('');
+    }
+  };
+  const sendAllPurchaseDrafts = async () => {
+    for (const draft of sendPurchaseDrafts) {
+      await sendPurchaseDraft(draft);
+    }
+  };
+  useEffect(() => {
+    if (activeTab === 'send-purchase') {
+      loadSendPurchaseDrafts();
+    }
+  }, [activeTab, user?.id, treeData]);
   const unsoldPartyOptions = [
     {
       id: user?.id,
@@ -1252,7 +1494,7 @@ const SellerDashboard = ({
         sessionMode,
         purchaseCategory: activePurchaseCategory,
         amount
-      });
+      }, { skipLocalRead: true });
 
       const summaryRows = (response.data || []).map((row) => ({
         id: row.sellerId || row.seller_id,
@@ -1623,14 +1865,36 @@ const SellerDashboard = ({
     let cancelled = false;
     sellerPurchaseDraftRestoreKeyRef.current = sellerLocalDraftKey;
     sellerPurchaseSkipSaveKeyRef.current = sellerLocalDraftKey;
-    loadDraftRows(sellerLocalDraftKey).then((savedRows) => {
+    loadDraftRows(sellerLocalDraftKey).then(async (savedRows) => {
       if (cancelled) {
         return;
       }
+
+      let rowsToRestore = savedRows;
+      let removedStaleDraftCount = 0;
+      if (savedRows.length > 0 && purchaseSendSellerId) {
+        const serverEntries = await loadPurchaseSendMemoEntries(purchaseSendSellerId, bookingDate);
+        if (cancelled) {
+          return;
+        }
+
+        const staleDraftResult = removeServerMatchedPurchaseDraftRows(savedRows, serverEntries || []);
+        rowsToRestore = staleDraftResult.rows;
+        removedStaleDraftCount = staleDraftResult.removedCount;
+
+        if (staleDraftResult.removedCount > 0) {
+          if (rowsToRestore.length > 0) {
+            await saveDraftRows(sellerLocalDraftKey, rowsToRestore);
+          } else {
+            await clearDraftRows(sellerLocalDraftKey);
+          }
+        }
+      }
+
       setRetroDraftRows((currentRows) => {
-        const shouldKeepCurrentRows = currentRows.length > 0 && savedRows.length === 0;
-        setRetroActiveRowIndex(shouldKeepCurrentRows ? currentRows.length : (savedRows.length > 0 ? savedRows.length : 0));
-        return shouldKeepCurrentRows ? currentRows : savedRows;
+        const shouldKeepCurrentRows = currentRows.length > 0 && rowsToRestore.length === 0 && removedStaleDraftCount === 0;
+        setRetroActiveRowIndex(shouldKeepCurrentRows ? currentRows.length : (rowsToRestore.length > 0 ? rowsToRestore.length : 0));
+        return shouldKeepCurrentRows ? currentRows : rowsToRestore;
       });
       setRetroEditorVisible(true);
     });
@@ -1677,7 +1941,7 @@ const SellerDashboard = ({
     return () => {
       cancelled = true;
     };
-  }, [activeTab, sellerLocalDraftKey]);
+  }, [activeTab, sellerLocalDraftKey, purchaseSendSellerId, bookingDate]);
 
   useEffect(() => {
     if (activeTab !== 'unsold') {
@@ -3055,7 +3319,7 @@ const SellerDashboard = ({
             ? `${partyLabel} ke unsold remove stock me selected filter ka maal nahi hai`
             : `${partyLabel} ke purchase stock me selected filter ka maal nahi hai`,
         details,
-        isUnsoldRemoveLookup ? 'F4 Unsold Remove Stock' : isUnsoldLookup ? 'F4 Unsold Stock' : 'F4 Purchase Send Stock'
+        isUnsoldRemoveLookup ? 'F4 Unsold Remove Stock' : isUnsoldLookup ? 'F4 Unsold Stock' : 'F4 Purchase Stock'
       );
     } catch (err) {
       openBlockingWarning(err.response?.data?.message || 'Stock lookup error', [], 'F4 Stock');
@@ -3157,87 +3421,22 @@ const SellerDashboard = ({
       }
 
       const effectiveMemoNumber = Number(purchaseSendMemoNumber || nextPurchaseSendMemoNumber);
-      const refreshBookingDate = rowsToSave[0]?.drawDate || bookingDate;
-      const currentMemoEntryIds = isEditingExistingPurchaseSendMemo
-        ? purchaseSendMemoEntries
-          .filter((entry) => (
-          getPurchaseEntryMemoNumber(entry) === effectiveMemoNumber
-            && (
-              String(entry.userId || entry.user_id || '') === String(purchaseSendSellerId || '')
-              || (
-                String(selectedParty?.username || '').trim()
-                && String(entry.displaySeller || entry.username || '').trim().toLowerCase() === String(selectedParty?.username || '').trim().toLowerCase()
-              )
-            )
-          ))
-          .map((entry) => entry.id)
-          .filter(Boolean)
-        : [];
+      const rowsWithMemo = rowsToSave.map((row, index) => ({
+        ...row,
+        memoNumber: effectiveMemoNumber,
+        bookingAmount: row.bookingAmount || amount,
+        resolvedSessionMode: row.resolvedSessionMode || sessionMode,
+        resolvedPurchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+        memoRowOrder: row.memoRowOrder ?? index
+      }));
 
-      if (isEditingExistingPurchaseSendMemo) {
-        const response = await lotteryService.replacePurchaseSendMemo({
-          sellerId: purchaseSendSellerId,
-          bookingDate: refreshBookingDate,
-          memoNumber: effectiveMemoNumber,
-          entryIds: currentMemoEntryIds,
-          sessionMode,
-          amount,
-          purchaseCategory: activePurchaseCategory,
-          rows: rowsToSave.map((row, index) => ({
-            rangeStart: row.numberStart || row.from,
-            rangeEnd: row.numberEnd || row.to,
-            boxValue: row.semValue,
-            amount: row.bookingAmount || amount,
-            bookingDate: row.drawDate || bookingDate,
-            sessionMode: row.resolvedSessionMode || sessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
-            entryIds: row.entryIds || [],
-            memoRowOrder: row.memoRowOrder ?? index
-          }))
-        });
-        setSuccess(response.data.message || `Memo ${effectiveMemoNumber} updated successfully`);
-      } else {
-        for (const [index, row] of rowsToSave.entries()) {
-          await lotteryService.sendPurchase({
-            sellerId: purchaseSendSellerId,
-            series: '',
-            rangeStart: row.numberStart,
-            rangeEnd: row.numberEnd,
-            boxValue: row.semValue,
-            amount: row.bookingAmount,
-            memoNumber: effectiveMemoNumber,
-            bookingDate: row.drawDate || bookingDate,
-            sessionMode: row.resolvedSessionMode || sessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
-            memoRowOrder: row.memoRowOrder ?? index
-          });
-        }
-        setSuccess('Purchase sent successfully');
-      }
-
-      const [, refreshedMemoEntries] = await Promise.all([
-        loadPurchaseEntries(),
-        loadPurchaseSendMemoEntries(purchaseSendSellerId, refreshBookingDate),
-        loadSeePurchaseEntries(),
-        loadTransferHistory(getHistoryFilters())
-      ]);
-      const refreshedMemoSummaries = buildCurrentMemoSummaries(refreshedMemoEntries || []);
-      const nextMemoNumber = refreshedMemoSummaries.length > 0
-        ? Math.max(...refreshedMemoSummaries.map((memo) => memo.memoNumber)) + 1
-        : 1;
-      setPurchaseSendMemoNumber(nextMemoNumber);
-      setPurchaseSendMemoSelectionIndex(0);
+      await saveDraftRows(sellerLocalDraftKey, rowsWithMemo);
+      setRetroDraftRows(rowsWithMemo);
+      setSuccess('Purchase local me save ho gaya. Send Purchase se bhejo.');
       setPurchaseSendMemoPopupOpen(false);
-      clearDraftRows(sellerLocalDraftKey);
-      setRetroDraftRows([]);
-      setRetroActiveRowIndex(0);
-      setRetroEditorVisible(true);
-      setRetroFromInput('');
-      setRetroToInput('');
-      setRetroCodeInput('');
       focusPurchaseSellerSelectAfterSave();
     } catch (err) {
-      const errorMessage = err.response?.data?.message || 'Error sending purchase';
+      const errorMessage = err.response?.data?.message || 'Error saving purchase';
       if (String(errorMessage).includes('pehle se use ho chuka hai')) {
         setBookingError('');
         return;
@@ -4317,14 +4516,44 @@ const SellerDashboard = ({
 
     return amountMatches && categoryMatches;
   });
+  const eligibleBillSellerNameSet = new Set(
+    directChildSellers
+      .filter((seller) => sellerSupportsAmount(seller, historyAmountFilter || amount))
+      .map((seller) => seller.username)
+  );
+  const selectedBillSellerNamesRaw = Array.isArray(historySellerFilter)
+    ? historySellerFilter
+    : (historySellerFilter ? [historySellerFilter] : []);
+  const selectedBillSellerNames = selectedBillSellerNamesRaw.filter((sellerName) => (
+    eligibleBillSellerNameSet.size === 0 || eligibleBillSellerNameSet.has(sellerName)
+  ));
+  const selectedBillSellerLabel = selectedBillSellerNames.join(', ');
+  const toggleBillSellerFilter = (sellerName) => {
+    if (!sellerName) {
+      setHistorySellerFilter([]);
+      return;
+    }
+
+    setHistorySellerFilter((currentNames) => {
+      const currentSet = new Set(Array.isArray(currentNames) ? currentNames : []);
+      if (currentSet.has(sellerName)) {
+        currentSet.delete(sellerName);
+      } else {
+        currentSet.add(sellerName);
+      }
+      return Array.from(currentSet);
+    });
+  };
   const currentPurchaseBillRows = purchaseBillRows.filter((record) => (
-    !historySellerFilter || record.billRootUsername === historySellerFilter || record.sellerName === historySellerFilter
+    selectedBillSellerNames.length === 0
+    || selectedBillSellerNames.includes(record.billRootUsername)
+    || selectedBillSellerNames.includes(record.sellerName)
   ));
   const billData = buildBillData({
     records: [],
     prizeRecords: filteredBillPrizeResults,
     treeData,
-    selectedSellerUsername: historySellerFilter
+    selectedSellerUsernames: selectedBillSellerNames
   });
   const billTransferHistory = currentPurchaseBillRows;
   const transferHistoryByActor = groupTransferHistoryByActor(transferHistory);
@@ -4468,10 +4697,10 @@ const SellerDashboard = ({
     Number(memo.memoNumber) === Number(purchaseSendMemoNumber)
   ));
   const highlightedPurchaseSendMemoOption = purchaseSendMemoOptions[purchaseSendMemoSelectionIndex] || selectedPurchaseSendMemoOption || null;
-  const sellerPurchaseSummaryQuantity = retroDraftRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
-  const sellerPurchaseSummaryAmount = retroDraftRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
-  const sellerUnsoldSummaryQuantity = unsoldDraftRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
-  const sellerUnsoldSummaryAmount = unsoldDraftRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+  const sellerPurchaseSummaryQuantity = retroDraftRows.reduce((sum, row) => sum + Number(getRetroRowQuantity(row) || 0), 0);
+  const sellerPurchaseSummaryAmount = retroDraftRows.reduce((sum, row) => sum + Number(getRetroRowAmount(row) || 0), 0);
+  const sellerUnsoldSummaryQuantity = unsoldDraftRows.reduce((sum, row) => sum + Number(getRetroRowQuantity(row) || 0), 0);
+  const sellerUnsoldSummaryAmount = unsoldDraftRows.reduce((sum, row) => sum + Number(getRetroRowAmount(row) || 0), 0);
   const sellerPurchasePreview = buildPurchasePreview();
   const sellerPurchaseGridRows = createRetroGridRows(retroDraftRows);
   const sellerPurchaseEditableRow = (
@@ -4801,7 +5030,7 @@ const SellerDashboard = ({
       onClick: startNewRetroDraftRow
     },
     {
-      label: retroSaving ? 'Sending...' : 'Send (F2)',
+      label: retroSaving ? 'Saving...' : 'Save (F2)',
       shortcut: 'F2',
       variant: 'primary',
       onClick: saveRetroDraftRows,
@@ -5282,7 +5511,7 @@ const SellerDashboard = ({
     const cachedBill = await billCacheService.loadGeneratedBill({
       filters: {
         ...getBillFilters(),
-        seller: historySellerFilter
+        seller: selectedBillSellerNames.join('|')
       }
     });
     const bill = cachedBill?.bill;
@@ -5330,7 +5559,7 @@ const SellerDashboard = ({
       username: user.username,
       sessionMode,
       periodLabel: historyPeriodLabel,
-      shiftLabel: `${historyShift === 'ALL' ? 'ALL' : (historyShift || 'All')} | Amount ${historyAmountFilter || '7'}${historySellerFilter ? ` | Seller: ${historySellerFilter}` : ''}`,
+      shiftLabel: `${historyShift === 'ALL' ? 'ALL' : (historyShift || 'All')} | Amount ${historyAmountFilter || '7'}${selectedBillSellerLabel ? ` | Seller: ${selectedBillSellerLabel}` : ''}`,
       title: 'Generate Bill'
     };
     const didOpen = openTransferBill(generatedBill);
@@ -5343,7 +5572,7 @@ const SellerDashboard = ({
     await billCacheService.saveGeneratedBill({
       filters: {
         ...getBillFilters(),
-        seller: historySellerFilter
+        seller: selectedBillSellerNames.join('|')
       },
       bill: generatedBill
     }).catch((error) => {
@@ -5740,7 +5969,8 @@ const SellerDashboard = ({
   };
 
   const sellerLauncherItems = [
-    { tab: 'purchase-send', label: 'Purchase Send' },
+    { tab: 'purchase-send', label: 'Purchase' },
+    { tab: 'send-purchase', label: 'Send Purchase' },
     { tab: 'see-purchase', label: 'See Purchase' },
     { tab: 'unsold', label: 'Unsold' },
     { tab: 'unsold-remove', label: 'Unsold Remove' },
@@ -5756,6 +5986,9 @@ const SellerDashboard = ({
     { tab: 'stock-transfer', label: 'Stock Transfer' }
   ].filter((item) => {
     if (item.tab === 'purchase-send') {
+      return canForwardPurchase;
+    }
+    if (item.tab === 'send-purchase') {
       return canForwardPurchase;
     }
     if (item.tab === 'see-purchase') {
@@ -6272,7 +6505,7 @@ const SellerDashboard = ({
               className={`accordion-header ${activeTab === 'purchase-send' ? 'active' : ''}`}
               onClick={() => handleTabToggle('purchase-send')}
             >
-              Purchase Send
+              Purchase
             </button>
           </div>
         )}
@@ -6280,12 +6513,12 @@ const SellerDashboard = ({
         {activeTab === 'purchase-send' && canForwardPurchase && (
           <div className="accordion-item" style={{ order: 1 }}>
             <button className="accordion-header active" onClick={requestExitConfirmation}>
-              Purchase Send
+              Purchase
             </button>
             <div className="accordion-content">
               <RetroPurchasePanel
                 screenCode="RAHUL"
-                panelTitle="Purchase Send"
+                panelTitle="Purchase"
                 screenTitle={entryCompanyLabel || 'SELLER PURCHASE SEND'}
                 headerTimestamp={sellerUnsoldTimestamp}
                 memoNumber={selectedPurchaseSendMemoOption ? String(selectedPurchaseSendMemoOption.memoNumber) : '1'}
@@ -6369,6 +6602,84 @@ const SellerDashboard = ({
                 blockingWarning={activeTab === 'purchase-send' ? blockingWarning : null}
                 onBlockingWarningClose={clearBlockingWarning}
               />
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'send-purchase' && canForwardPurchase && (
+          <div className="accordion-item" style={{ order: 1 }}>
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
+              Send Purchase
+            </button>
+            <div className="accordion-content">
+              <div className="send-purchase-header">
+                <div>
+                  <h2>Send Purchase</h2>
+                  <p>Purchase me saved local drafts yahan se seller/stockist/sub-stockist ko bhejo.</p>
+                </div>
+                <div className="send-purchase-actions">
+                  <button type="button" className="btn-secondary" onClick={loadSendPurchaseDrafts} disabled={sendPurchaseLoading || Boolean(sendPurchaseSendingKey)}>
+                    Refresh
+                  </button>
+                  <button type="button" className="btn-primary" onClick={sendAllPurchaseDrafts} disabled={sendPurchaseDrafts.length === 0 || Boolean(sendPurchaseSendingKey)}>
+                    Send All
+                  </button>
+                </div>
+              </div>
+
+              <div className="send-purchase-table-wrap">
+                <table className="send-purchase-table">
+                  <thead>
+                    <tr>
+                      <th>Seller</th>
+                      <th>Memo</th>
+                      <th>Date</th>
+                      <th>Shift</th>
+                      <th>Amount</th>
+                      <th>Rows</th>
+                      <th>Piece</th>
+                      <th>Total</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sendPurchaseLoading && (
+                      <tr>
+                        <td colSpan="9">Loading...</td>
+                      </tr>
+                    )}
+                    {!sendPurchaseLoading && sendPurchaseDrafts.length === 0 && (
+                      <tr>
+                        <td colSpan="9">Send karne ke liye koi local purchase draft nahi hai</td>
+                      </tr>
+                    )}
+                    {!sendPurchaseLoading && sendPurchaseDrafts.map((draft) => (
+                      <tr key={draft.draftKey}>
+                        <td>
+                          <strong>{draft.keyword ? `${draft.keyword} ` : ''}{draft.sellerName}</strong>
+                        </td>
+                        <td>{draft.memoNumber}</td>
+                        <td>{formatDisplayDate(draft.bookingDate)}</td>
+                        <td>{draft.sessionMode}</td>
+                        <td>{draft.amount}</td>
+                        <td>{draft.rows.length}</td>
+                        <td>{draft.pieceCount}</td>
+                        <td>{draft.amountTotal.toFixed(2)}</td>
+                        <td>
+                          <button
+                            type="button"
+                            className="btn-primary compact"
+                            onClick={() => sendPurchaseDraft(draft)}
+                            disabled={Boolean(sendPurchaseSendingKey)}
+                          >
+                            {sendPurchaseSendingKey === draft.draftKey ? 'Sending...' : 'Send'}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}
@@ -7162,17 +7473,29 @@ const SellerDashboard = ({
 
                 <label style={{ marginTop: '12px', display: 'block' }}>Select Seller:</label>
                 <div style={{ marginTop: '8px' }}>
-                  <select
-                    value={historySellerFilter}
-                    onChange={(event) => setHistorySellerFilter(event.target.value)}
-                  >
-                    <option value="">ALL All Direct Sellers</option>
-                    {directChildSellers.filter((seller) => sellerSupportsAmount(seller, historyAmountFilter || amount)).map((seller) => (
-                      <option key={seller.id || seller.username} value={seller.username}>
-                        {`${getPartyKeyword(seller)} ${seller.username} [${getPartyKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="bill-seller-picker">
+                    <label className={`bill-seller-option all ${selectedBillSellerNames.length === 0 ? 'selected' : ''}`.trim()}>
+                      <input
+                        type="checkbox"
+                        checked={selectedBillSellerNames.length === 0}
+                        onChange={() => setHistorySellerFilter([])}
+                      />
+                      <span>ALL All Direct Sellers</span>
+                    </label>
+                    {directChildSellers.filter((seller) => sellerSupportsAmount(seller, historyAmountFilter || amount)).map((seller) => {
+                      const isSelected = selectedBillSellerNames.includes(seller.username);
+                      return (
+                        <label key={seller.id || seller.username} className={`bill-seller-option ${isSelected ? 'selected' : ''}`.trim()}>
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleBillSellerFilter(seller.username)}
+                          />
+                          <span>{`${getPartyKeyword(seller)} ${seller.username} [${getPartyKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' }}>

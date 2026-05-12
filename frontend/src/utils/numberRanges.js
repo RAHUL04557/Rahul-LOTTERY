@@ -97,8 +97,7 @@ export const getConsecutiveNumberCellMeta = (rows = [], getSignature = () => '')
 
       const difference = nextNumericValue - currentNumericValue;
       if (difference === 0) {
-        endIndex += 1;
-        continue;
+        break;
       }
 
       if (Math.abs(difference) !== 1) {
@@ -161,8 +160,7 @@ export const groupConsecutiveNumberRows = (rows = [], getSignature = () => '') =
 
       const difference = nextNumericValue - currentNumericValue;
       if (difference === 0) {
-        endIndex += 1;
-        continue;
+        break;
       }
 
       if (Math.abs(difference) !== 1) {

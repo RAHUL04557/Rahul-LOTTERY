@@ -1,5 +1,5 @@
 const bcrypt = require('bcryptjs');
-const { query } = require('../config/database');
+const { getClient, query } = require('../config/database');
 
 const DEFAULT_RESULT_UPLOAD_PASSWORD = 'rahul@9749';
 
@@ -462,7 +462,61 @@ const getAdmins = async (req, res) => {
   }
 };
 
+const deleteBranchOwnedData = async (client, branchIds = []) => {
+  if (!Array.isArray(branchIds) || branchIds.length === 0) {
+    return;
+  }
+
+  await client.query(
+    `DELETE FROM lottery_entry_history h
+     WHERE h.entry_id IN (
+       SELECT id FROM lottery_entries
+       WHERE user_id = ANY($1::int[])
+          OR sent_to_parent = ANY($1::int[])
+          OR forwarded_by = ANY($1::int[])
+     )
+        OR h.from_user_id = ANY($1::int[])
+        OR h.to_user_id = ANY($1::int[])
+        OR h.actor_user_id = ANY($1::int[])`,
+    [branchIds]
+  );
+
+  await client.query(
+    `DELETE FROM lottery_entries
+     WHERE user_id = ANY($1::int[])
+        OR sent_to_parent = ANY($1::int[])
+        OR forwarded_by = ANY($1::int[])`,
+    [branchIds]
+  );
+
+  await client.query(
+    `DELETE FROM booking_entry_history h
+     WHERE h.entry_id IN (
+       SELECT id FROM booking_entries
+       WHERE user_id = ANY($1::int[])
+          OR created_by = ANY($1::int[])
+          OR sent_to_admin = ANY($1::int[])
+     )
+        OR h.user_id = ANY($1::int[])
+        OR h.actor_user_id = ANY($1::int[])
+        OR h.to_user_id = ANY($1::int[])`,
+    [branchIds]
+  );
+
+  await client.query(
+    `DELETE FROM booking_entries
+     WHERE user_id = ANY($1::int[])
+        OR created_by = ANY($1::int[])
+        OR sent_to_admin = ANY($1::int[])`,
+    [branchIds]
+  );
+
+  await client.query('DELETE FROM prize_results WHERE uploaded_by = ANY($1::int[])', [branchIds]);
+};
+
 const deleteAdmin = async (req, res) => {
+  const client = await getClient();
+
   try {
     if (req.user.role !== 'superadmin') {
       return res.status(403).json({ message: 'Only super admin can delete admin IDs' });
@@ -473,7 +527,7 @@ const deleteAdmin = async (req, res) => {
       return res.status(400).json({ message: 'Valid admin id required' });
     }
 
-    const targetAdminResult = await query(
+    const targetAdminResult = await client.query(
       "SELECT id, username, role FROM users WHERE id = $1 AND role = 'admin' LIMIT 1",
       [targetAdminId]
     );
@@ -482,7 +536,9 @@ const deleteAdmin = async (req, res) => {
       return res.status(404).json({ message: 'Admin not found' });
     }
 
-    const branchResult = await query(
+    await client.query('BEGIN');
+
+    const branchResult = await client.query(
       `WITH RECURSIVE branch_users AS (
         SELECT id
         FROM users
@@ -497,14 +553,20 @@ const deleteAdmin = async (req, res) => {
     );
 
     const branchIds = branchResult.rows.map((row) => row.id);
-    await query('DELETE FROM users WHERE id = ANY($1::int[])', [branchIds]);
+    await deleteBranchOwnedData(client, branchIds);
+    await client.query('DELETE FROM users WHERE id = ANY($1::int[])', [branchIds]);
+    await client.query('COMMIT');
 
     res.json({
       message: `${targetAdminResult.rows[0].username} admin deleted successfully`,
-      deletedCount: branchIds.length
+      deletedCount: branchIds.length,
+      deletedUserIds: branchIds
     });
   } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
     res.status(500).json({ message: 'Server error', error: error.message });
+  } finally {
+    client.release();
   }
 };
 

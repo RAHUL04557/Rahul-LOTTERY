@@ -825,8 +825,7 @@ const getManualSavedUnsoldRows = async ({
     'le.user_id = $1',
     'h.actor_user_id = $2',
     'le.entry_source = $3',
-    'h.action_type = $4',
-    "LOWER(TRIM(le.status)) = 'accepted'"
+    'h.action_type = $4'
   ];
 
   if (bookingDate) {
@@ -2966,21 +2965,21 @@ const getPurchaseEntries = async (req, res) => {
     if (status) {
       if (status === UNSOLD_ACCEPTED_STATUS) {
         conditions.push(`LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`);
-        if (req.user.role === 'admin' && sellerId && adminScopedBranchIds.length === 0) {
-          params.push(sellerId);
-          const selectedSellerParamIndex = params.length;
+        if (req.user.role === 'admin') {
           params.push(req.user.id);
           const adminUserParamIndex = params.length;
           conditions.push(`(
-            le.forwarded_by = $${selectedSellerParamIndex}
-            OR le.sent_to_parent = $${selectedSellerParamIndex}
-            OR le.forwarded_by = $${adminUserParamIndex}
+            le.forwarded_by = $${adminUserParamIndex}
             OR le.sent_to_parent = $${adminUserParamIndex}
           )`);
         }
       } else {
-        params.push(status);
-        conditions.push(`LOWER(TRIM(le.status)) = $${params.length}`);
+        if (status === 'unsold') {
+          conditions.push(`LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')`);
+        } else {
+          params.push(status);
+          conditions.push(`LOWER(TRIM(le.status)) = $${params.length}`);
+        }
       }
     }
 
@@ -3000,7 +2999,7 @@ const getPurchaseEntries = async (req, res) => {
       params
     );
 
-    const manualSavedRows = status === UNSOLD_ACCEPTED_STATUS && sellerId && sellerId !== Number(req.user.id)
+    const manualSavedRows = [UNSOLD_ACCEPTED_STATUS, 'unsold', UNSOLD_LOCAL_STATUS].includes(status) && sellerId && sellerId !== Number(req.user.id)
       ? await getManualSavedUnsoldRows({
         targetSellerId: sellerId,
         actorUserId: req.user.id,
@@ -3864,8 +3863,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
            AND h.booking_date = $5::date
            AND h.session_mode = $6
            AND h.purchase_category = $7
-           AND h.amount = $8::numeric
-           AND LOWER(TRIM(le.status)) = 'accepted'`,
+           AND h.amount = $8::numeric`,
         [targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount]
       );
 
@@ -4484,6 +4482,7 @@ const getPurchasePieceSummary = async (req, res) => {
         SELECT bu.root_seller_id AS user_id,
                COALESCE(SUM(CASE WHEN le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS total_piece,
                COALESCE(SUM(CASE WHEN LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
+                 AND (le.forwarded_by = $1 OR le.sent_to_parent = $1)
                  AND le.box_value ~ '^\\d+(\\.\\d+)?$'
                  THEN le.box_value::numeric ELSE 0 END), 0) AS unsold_piece
         FROM lottery_entries le
@@ -4552,6 +4551,63 @@ const getPurchasePieceSummary = async (req, res) => {
       );
     }
     const summaryMap = new Map(summaryResult.rows.map((row) => [Number(row.user_id), row]));
+
+    if (currentUserIsAdmin) {
+      const manualParams = [req.user.id, PURCHASE_ENTRY_SOURCE, 'saved_unsold'];
+      const manualConditions = [
+        'h.actor_user_id = $1',
+        'le.entry_source = $2',
+        'h.action_type = $3'
+      ];
+
+      if (bookingDate) {
+        manualParams.push(bookingDate);
+        manualConditions.push(`h.booking_date = $${manualParams.length}::date`);
+      }
+
+      if (sessionMode) {
+        manualParams.push(sessionMode);
+        manualConditions.push(`h.session_mode = $${manualParams.length}`);
+      }
+
+      if (purchaseCategory) {
+        manualParams.push(purchaseCategory);
+        manualConditions.push(`h.purchase_category = $${manualParams.length}`);
+      }
+
+      if (normalizedAmount) {
+        manualParams.push(normalizedAmount);
+        manualConditions.push(`h.amount = $${manualParams.length}::numeric`);
+      }
+
+      const manualUnsoldResult = await query(
+        `WITH RECURSIVE branch_users AS (
+          SELECT id, id AS root_seller_id
+          FROM users
+          WHERE parent_id = $1 AND role = 'seller'
+          UNION ALL
+          SELECT u.id, bu.root_seller_id
+          FROM users u
+          INNER JOIN branch_users bu ON u.parent_id = bu.id
+        )
+        SELECT bu.root_seller_id AS user_id,
+               COALESCE(SUM(CASE WHEN h.box_value ~ '^\\d+(\\.\\d+)?$' THEN h.box_value::numeric ELSE 0 END), 0) AS manual_unsold_piece
+        FROM lottery_entry_history h
+        INNER JOIN lottery_entries le ON le.id = h.entry_id
+        INNER JOIN branch_users bu ON bu.id = le.user_id
+        WHERE ${manualConditions.join(' AND ')}
+        GROUP BY bu.root_seller_id`,
+        manualParams
+      );
+
+      manualUnsoldResult.rows.forEach((row) => {
+        const sellerId = Number(row.user_id);
+        const existing = summaryMap.get(sellerId) || { user_id: sellerId, total_piece: 0, unsold_piece: 0 };
+        existing.unsold_piece = Number(existing.unsold_piece || 0) + Number(row.manual_unsold_piece || 0);
+        summaryMap.set(sellerId, existing);
+      });
+    }
+
     const untransferredParams = [req.user.id, currentUserIsAdmin ? ADMIN_PURCHASE_ENTRY_SOURCE : PURCHASE_ENTRY_SOURCE];
     const currentUserSellerType = normalizeSellerType(req.user.sellerType);
     const untransferredConditions = [
@@ -4737,6 +4793,7 @@ const getPurchaseBillSummary = async (req, res) => {
         CASE WHEN le.amount = 7 THEN bu.root_rate_amount_6 ELSE bu.root_rate_amount_12 END AS applied_rate,
         COALESCE(SUM(CASE WHEN le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS total_piece,
         COALESCE(SUM(CASE WHEN LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
+          AND (le.forwarded_by = $1 OR le.sent_to_parent = $1)
           AND le.box_value ~ '^\\d+(\\.\\d+)?$'
           THEN le.box_value::numeric ELSE 0 END), 0) AS unsold_piece,
         COUNT(*) AS entry_count,
@@ -4762,8 +4819,7 @@ const getPurchaseBillSummary = async (req, res) => {
     const manualConditions = [
       'le.entry_source = $2',
       'h.action_type = $3',
-      'h.actor_user_id = $4',
-      "LOWER(TRIM(le.status)) = 'accepted'"
+      'h.actor_user_id = $4'
     ];
 
     if (dateFilterResult.dateFilter) {

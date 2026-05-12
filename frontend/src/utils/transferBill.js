@@ -291,7 +291,7 @@ export const buildBillAmountSummariesWithPrize = (records = [], adjustmentTotals
   }, {});
 };
 
-export const buildBillData = ({ records = [], prizeRecords = [], treeData, selectedSellerUsername = '' }) => {
+export const buildBillData = ({ records = [], prizeRecords = [], treeData, selectedSellerUsername = '', selectedSellerUsernames = [] }) => {
   const directChildSellers = (treeData?.children || []).filter((node) => node.role === 'seller');
 
   if (directChildSellers.length === 0) {
@@ -304,9 +304,17 @@ export const buildBillData = ({ records = [], prizeRecords = [], treeData, selec
     };
   }
 
+  const selectedSellerSet = new Set(
+    (Array.isArray(selectedSellerUsernames) ? selectedSellerUsernames : [])
+      .filter(Boolean)
+  );
+  if (selectedSellerUsername) {
+    selectedSellerSet.add(selectedSellerUsername);
+  }
+
   const selectedRootSet = new Set(
-    (selectedSellerUsername
-      ? directChildSellers.filter((node) => node.username === selectedSellerUsername)
+    (selectedSellerSet.size > 0
+      ? directChildSellers.filter((node) => selectedSellerSet.has(node.username))
       : directChildSellers
     ).map((node) => node.username)
   );

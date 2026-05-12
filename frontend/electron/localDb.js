@@ -1117,6 +1117,36 @@ const setupLocalDbIpc = (ipcMain) => {
 
   ipcMain.handle('local-db:list-users', () => getSavedVisibleUsers());
 
+  ipcMain.handle('local-db:purge-users', (_event, { userIds } = {}) => {
+    const ids = [...new Set((Array.isArray(userIds) ? userIds : [])
+      .map((userId) => Number(userId))
+      .filter((userId) => Number.isInteger(userId) && userId > 0))];
+
+    if (ids.length === 0) {
+      return { ok: true, deletedCount: 0 };
+    }
+
+    const database = initLocalDb();
+    const placeholders = ids.map(() => '?').join(', ');
+    const runDelete = (sql, repeatCount = 1) => database.prepare(sql).run(
+      ...Array.from({ length: repeatCount }).flatMap(() => ids)
+    );
+
+    database.transaction(() => {
+      runDelete(`DELETE FROM local_purchase_entries WHERE user_id IN (${placeholders}) OR owner_user_id IN (${placeholders}) OR forwarded_by IN (${placeholders}) OR sent_to_parent IN (${placeholders})`, 4);
+      runDelete(`DELETE FROM local_prize_results WHERE uploaded_by IN (${placeholders})`);
+      runDelete(`DELETE FROM local_purchase_send_drafts WHERE user_id IN (${placeholders}) OR target_seller_id IN (${placeholders})`, 2);
+      runDelete(`DELETE FROM local_unsold_drafts WHERE user_id IN (${placeholders}) OR target_seller_id IN (${placeholders})`, 2);
+      runDelete(`DELETE FROM local_unsold_remove_drafts WHERE user_id IN (${placeholders}) OR target_seller_id IN (${placeholders})`, 2);
+      runDelete(`DELETE FROM local_manual_unsold_entries WHERE user_id IN (${placeholders}) OR actor_user_id IN (${placeholders})`, 2);
+      runDelete(`DELETE FROM sync_queue WHERE user_id IN (${placeholders})`);
+      runDelete(`DELETE FROM local_generated_bills WHERE user_id IN (${placeholders})`);
+      runDelete(`DELETE FROM local_users WHERE id IN (${placeholders}) OR owner_admin_id IN (${placeholders}) OR parent_id IN (${placeholders})`, 3);
+    })();
+
+    return { ok: true, deletedCount: ids.length };
+  });
+
   ipcMain.handle('local-db:get-user-tree', (_event, { user } = {}) => buildLocalUserTree(user));
 
   ipcMain.handle('local-db:load-draft', (_event, { type, draftKey }) => {
@@ -1133,6 +1163,35 @@ const setupLocalDbIpc = (ipcMain) => {
       ...row,
       rows: JSON.parse(row.rows_json || '[]')
     };
+  });
+
+  ipcMain.handle('local-db:list-drafts', (_event, { type, userId } = {}) => {
+    const tableName = getDraftTable(type);
+    const params = [];
+    const conditions = [];
+
+    if (userId) {
+      conditions.push('user_id = ?');
+      params.push(Number(userId));
+    }
+
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const rows = initLocalDb()
+      .prepare(`SELECT * FROM ${tableName} ${whereClause} ORDER BY updated_at DESC`)
+      .all(...params);
+
+    return rows.map((row) => ({
+      ...row,
+      draftKey: row.draft_key,
+      targetSellerId: row.target_seller_id,
+      memoNumber: row.memo_number,
+      bookingDate: row.booking_date,
+      sessionMode: row.session_mode,
+      purchaseCategory: row.purchase_category,
+      amount: row.amount,
+      updatedAt: row.updated_at,
+      rows: JSON.parse(row.rows_json || '[]')
+    }));
   });
 
   ipcMain.handle('local-db:save-draft', (_event, payload) => {
