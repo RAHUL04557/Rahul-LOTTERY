@@ -578,6 +578,8 @@ const BookingPanel = ({
   const [blockingWarning, setBlockingWarning] = useState(null);
   const [saveConfirmOpen, setSaveConfirmOpen] = useState(false);
   const [saveConfirmSelected, setSaveConfirmSelected] = useState('no');
+  const [duplicateConfirm, setDuplicateConfirm] = useState(null);
+  const [duplicateConfirmSelected, setDuplicateConfirmSelected] = useState('no');
 
   const sellerInputRef = useRef(null);
   const dateInputRef = useRef(null);
@@ -1053,6 +1055,63 @@ const BookingPanel = ({
       });
   };
 
+  const findDuplicateBookingMatches = (row, targetRowIndex) => {
+    const rowNumbers = new Set(getEntryNumbers(row));
+    if (rowNumbers.size === 0) return [];
+    const currentDate = normalizeDateValue(row.bookingDate) || getTodayDateValue();
+    const duplicateKeys = new Set();
+    const duplicateMatches = [];
+    const pushDuplicateMatches = (entry, fallbackMemoNumber) => {
+      getEntryNumbers(entry).forEach((number) => {
+        if (!rowNumbers.has(number)) return;
+        const sellerName = entry.sellerName || selectedSeller?.username || 'Selected seller';
+        const memoNo = Number(entry.memoNumber || fallbackMemoNumber || effectiveMemoNumber || 0);
+        const key = [number, sellerName, normalizeDateValue(entry.bookingDate), memoNo].join('|');
+        if (duplicateKeys.has(key)) return;
+        duplicateKeys.add(key);
+        duplicateMatches.push({
+          number,
+          sellerName,
+          bookingDate: normalizeDateValue(entry.bookingDate),
+          memoNumber: memoNo || '-'
+        });
+      });
+    };
+    const scopedDraftRows = draftRows.filter((entry, index) => (
+      index !== targetRowIndex
+      && isSameDateValue(entry.bookingDate, currentDate)
+    ));
+    const scopedSavedRows = allEntries.filter((entry) => (
+      isSameDateValue(entry.bookingDate, currentDate)
+    ));
+
+    scopedDraftRows.forEach((entry) => pushDuplicateMatches(entry, effectiveMemoNumber));
+    scopedSavedRows.forEach((entry) => pushDuplicateMatches(entry, entry.memoNumber));
+
+    return duplicateMatches.sort((left, right) => (
+      Number(left.number) - Number(right.number)
+      || String(left.sellerName).localeCompare(String(right.sellerName))
+      || Number(left.memoNumber || 0) - Number(right.memoNumber || 0)
+    ));
+  };
+
+  const commitDraftRow = (row, targetRowIndex) => {
+    const isUpdatingExistingRow = targetRowIndex < draftRows.length;
+    setDraftRows((currentRows) => {
+      if (targetRowIndex < currentRows.length) {
+        const nextRows = [...currentRows];
+        nextRows[targetRowIndex] = { ...row, id: currentRows[targetRowIndex].id };
+        return nextRows;
+      }
+      return [...currentRows, row];
+    });
+    setRangeStart('');
+    setRangeEnd('');
+    setActiveRowIndex(isUpdatingExistingRow ? draftRows.length : draftRows.length + 1);
+    focusCodeInput();
+    return true;
+  };
+
   const addOrUpdateDraftRow = () => {
     onError?.('');
     onSuccess?.('');
@@ -1104,27 +1163,43 @@ const BookingPanel = ({
       rangeEnd: normalizedTo
     };
 
-    const isUpdatingExistingRow = activeRowIndex < draftRows.length;
-    setDraftRows((currentRows) => {
-      if (activeRowIndex < currentRows.length) {
-        const nextRows = [...currentRows];
-        nextRows[activeRowIndex] = { ...row, id: currentRows[activeRowIndex].id };
-        return nextRows;
-      }
-      return [...currentRows, row];
-    });
-    if (isUpdatingExistingRow) {
-      setRangeStart('');
-      setRangeEnd('');
-      setActiveRowIndex(draftRows.length);
-      focusCodeInput();
-      return true;
+    const duplicateMatches = findDuplicateBookingMatches(row, activeRowIndex);
+    if (duplicateMatches.length > 0) {
+      const duplicateDetails = duplicateMatches.slice(0, 3).map((match) => (
+        `${match.number} - Seller: ${match.sellerName}, Date: ${formatDisplayDate(match.bookingDate)}, Memo: ${match.memoNumber}`
+      ));
+      const duplicateLabel = duplicateMatches.length > 3
+        ? `${duplicateDetails.join(' | ')} | +${duplicateMatches.length - 3} more`
+        : duplicateDetails.join(' | ');
+      setDuplicateConfirm({
+        row,
+        targetRowIndex: activeRowIndex,
+        message: `You have already added this number: ${duplicateLabel}. Do you want to still add this number as duplicate?`
+      });
+      setDuplicateConfirmSelected('no');
+      return false;
     }
+
+    return commitDraftRow(row, activeRowIndex);
+  };
+
+  const confirmDuplicateBooking = () => {
+    if (duplicateConfirm?.row) {
+      commitDraftRow(duplicateConfirm.row, duplicateConfirm.targetRowIndex);
+    }
+    setDuplicateConfirm(null);
+    setDuplicateConfirmSelected('no');
+  };
+
+  const cancelDuplicateBooking = () => {
+    setDuplicateConfirm(null);
+    setDuplicateConfirmSelected('no');
     setRangeStart('');
     setRangeEnd('');
-    setActiveRowIndex(draftRows.length + 1);
-    focusCodeInput();
-    return true;
+    window.requestAnimationFrame(() => {
+      fromInputRef.current?.focus();
+      fromInputRef.current?.select?.();
+    });
   };
 
   const moveDraftSelection = (delta) => {
@@ -1256,7 +1331,8 @@ const BookingPanel = ({
     });
     setDraftRows([]);
     resetEntryInputs();
-    setMemoNumber(effectiveMemoNumber);
+    setMemoNumber(null);
+    setMemoSelectionIndex(0);
   };
 
   const refocusAfterSaveConfirmation = () => {
@@ -1828,6 +1904,14 @@ const BookingPanel = ({
         onSelectedChange={setSaveConfirmSelected}
         onConfirm={confirmSaveRequest}
         onCancel={cancelSaveConfirmation}
+      />
+      <ExitConfirmPrompt
+        open={Boolean(duplicateConfirm)}
+        selected={duplicateConfirmSelected}
+        message={duplicateConfirm?.message || ''}
+        onSelectedChange={setDuplicateConfirmSelected}
+        onConfirm={confirmDuplicateBooking}
+        onCancel={cancelDuplicateBooking}
       />
       <RetroPurchasePanel
       screenCode="RAHUL"
