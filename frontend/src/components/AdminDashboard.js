@@ -3137,6 +3137,63 @@ const AdminDashboard = ({
     && numberFallsWithinRange(entry.number, row.from, row.to)
   );
 
+  const findLocalPurchaseDraftConflicts = async (row = {}) => {
+    const drafts = await listDraftRows({
+      role: 'admin',
+      userId: user?.id,
+      tab: 'purchase-send'
+    });
+    const currentDraftKey = buildAdminPurchaseDraftKey(purchaseMemoNumber);
+
+    return drafts.flatMap((draft) => {
+      if (
+        draft.draftKey === currentDraftKey
+        || String(draft.bookingDate || '') !== String(row.drawDate || purchaseBookingDate || '')
+        || String(draft.sessionMode || '') !== String(row.resolvedSessionMode || purchaseSessionMode || '')
+        || String(draft.purchaseCategory || '') !== String(row.resolvedPurchaseCategory || purchaseCategory || '')
+        || String(draft.amount || '') !== String(row.bookingAmount || purchaseAmount || '')
+      ) {
+        return [];
+      }
+
+      const seller = directAdminSellers.find((entry) => String(entry.id) === String(draft.targetSellerId));
+
+      return (Array.isArray(draft.rows) ? draft.rows : [])
+        .filter((draftRow) => (
+          String(draftRow.semValue || '') === String(row.semValue || '')
+          && rangesOverlap(
+            draftRow.numberStart || draftRow.from,
+            draftRow.numberEnd || draftRow.to,
+            row.from,
+            row.to
+          )
+        ))
+        .map((draftRow) => ({
+          displaySeller: seller?.username || draftRow.partyName || `Seller ${draft.targetSellerId}`,
+          memoNumber: draft.memoNumber || draftRow.memoNumber,
+          number: draftRow.numberStart || draftRow.from,
+          from: draftRow.numberStart || draftRow.from,
+          to: draftRow.numberEnd || draftRow.to
+        }));
+    });
+  };
+
+  const validatePurchaseSendRowAgainstSavedDrafts = async (row = {}) => {
+    const draftConflicts = await findLocalPurchaseDraftConflicts(row);
+
+    if (draftConflicts.length > 0) {
+      return {
+        error: formatDuplicateSellerWarning(draftConflicts),
+        details: draftConflicts.slice(0, 5).map((entry) => (
+          `Seller ${entry.displaySeller || 'Unknown'} | Memo No. ${entry.memoNumber || 'N/A'} | ${entry.from || ''}-${entry.to || ''}`
+        )),
+        title: 'Duplicate Number'
+      };
+    }
+
+    return { ok: true };
+  };
+
   const validatePurchaseSendRowsForDuplicates = async (rowsToCheck = []) => {
     for (let leftIndex = 0; leftIndex < rowsToCheck.length; leftIndex += 1) {
       const leftRow = rowsToCheck[leftIndex];
@@ -3160,6 +3217,11 @@ const AdminDashboard = ({
     }
 
     for (const row of rowsToCheck) {
+      const draftValidation = await validatePurchaseSendRowAgainstSavedDrafts(row);
+      if (draftValidation.error) {
+        return draftValidation;
+      }
+
       const localConflicts = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => purchaseEntryConflictsWithRow(entry, row));
       if (localConflicts.length > 0) {
         return {
@@ -3219,6 +3281,16 @@ const AdminDashboard = ({
         'Number already added.',
         [`Seller ${selectedPurchaseSeller?.username || 'N/A'}`],
         'Duplicate Number'
+      );
+      return;
+    }
+
+    const localDraftValidation = await validatePurchaseSendRowAgainstSavedDrafts(result.row);
+    if (localDraftValidation.error) {
+      openBlockingWarning(
+        localDraftValidation.error,
+        localDraftValidation.details || [],
+        localDraftValidation.title || 'Duplicate Number'
       );
       return;
     }
