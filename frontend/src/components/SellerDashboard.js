@@ -1075,6 +1075,7 @@ const SellerDashboard = ({
   const [retroActiveRowIndex, setRetroActiveRowIndex] = useState(0);
   const [retroEditorVisible, setRetroEditorVisible] = useState(true);
   const [retroSaving, setRetroSaving] = useState(false);
+  const [localPurchaseMemoDrafts, setLocalPurchaseMemoDrafts] = useState([]);
   const [sendPurchaseDrafts, setSendPurchaseDrafts] = useState([]);
   const [sendPurchaseLoading, setSendPurchaseLoading] = useState(false);
   const [sendPurchaseSendingKey, setSendPurchaseSendingKey] = useState('');
@@ -1109,16 +1110,29 @@ const SellerDashboard = ({
   const [exitConfirmSelected, setExitConfirmSelected] = useState('no');
   const [exitReadyFromFirstControl, setExitReadyFromFirstControl] = useState(false);
   const blockingWarningActionRef = useRef(null);
-  const sellerLocalDraftKey = buildDraftStorageKey([
+  const buildSellerPurchaseDraftKey = (memoNumber = null) => buildDraftStorageKey([
     'seller',
     user?.id,
-    activeTab,
-    activeTab === 'purchase-send' ? purchaseSendSellerId : unsoldPartyId,
+    'purchase-send',
+    purchaseSendSellerId,
     bookingDate,
     sessionMode,
     activePurchaseCategory,
-    amount
+    amount,
+    memoNumber ?? 'working'
   ]);
+  const sellerLocalDraftKey = activeTab === 'purchase-send'
+    ? buildSellerPurchaseDraftKey(purchaseSendMemoNumber)
+    : buildDraftStorageKey([
+      'seller',
+      user?.id,
+      activeTab,
+      unsoldPartyId,
+      bookingDate,
+      sessionMode,
+      activePurchaseCategory,
+      amount
+    ]);
   const sellerPurchaseDraftRestoreKeyRef = useRef('');
   const sellerUnsoldDraftRestoreKeyRef = useRef('');
   const sellerPurchaseSkipSaveKeyRef = useRef('');
@@ -1339,6 +1353,26 @@ const SellerDashboard = ({
     || retroPartyOptions.find((party) => party.username === selectedPartyName)
     || retroPartyOptions[0]
     || null;
+  const loadLocalPurchaseMemoDrafts = async () => {
+    try {
+      const drafts = await listDraftRows({
+        role: 'seller',
+        userId: user?.id,
+        tab: 'purchase-send'
+      });
+      setLocalPurchaseMemoDrafts(drafts.filter((draft) => (
+        Number(draft.targetSellerId || 0) === Number(purchaseSendSellerId || 0)
+        && String(draft.bookingDate || '') === String(bookingDate || '')
+        && String(draft.sessionMode || '') === String(sessionMode || '')
+        && String(draft.purchaseCategory || '') === String(activePurchaseCategory || '')
+        && String(draft.amount || '') === String(amount || '')
+        && Number.isInteger(Number(draft.memoNumber || 0))
+        && Number(draft.memoNumber || 0) > 0
+      )));
+    } catch (error) {
+      setBookingError(error.message || 'Local purchase memo draft load nahi hua');
+    }
+  };
   const enrichSendPurchaseDraft = (draft) => {
     const party = retroPartyOptions.find((entry) => String(entry.id) === String(draft.targetSellerId))
       || activeAmountChildSellers.find((entry) => String(entry.id) === String(draft.targetSellerId));
@@ -1360,7 +1394,7 @@ const SellerDashboard = ({
         userId: user?.id,
         tab: 'purchase-send'
       });
-      setSendPurchaseDrafts(drafts.map(enrichSendPurchaseDraft));
+      setSendPurchaseDrafts(drafts.filter((draft) => Number(draft.memoNumber || 0) > 0).map(enrichSendPurchaseDraft));
     } catch (error) {
       setBookingError(error.message || 'Send Purchase draft load nahi hua');
     } finally {
@@ -1429,6 +1463,7 @@ const SellerDashboard = ({
       await clearDraftRows(draft.draftKey);
       setSuccess(`${draft.sellerName || 'Seller'} ko purchase send ho gaya`);
       await Promise.all([
+        loadLocalPurchaseMemoDrafts(),
         loadSendPurchaseDrafts(),
         loadPurchaseEntries(),
         loadPurchaseSendMemoEntries(draft.targetSellerId, firstRowDate),
@@ -1739,6 +1774,7 @@ const SellerDashboard = ({
   useEffect(() => {
     if (activeTab === 'purchase-send') {
       loadPurchaseSendMemoEntries();
+      loadLocalPurchaseMemoDrafts();
     }
 
     if (activeTab === 'unsold') {
@@ -1891,13 +1927,14 @@ const SellerDashboard = ({
         }
       }
 
-      setRetroDraftRows((currentRows) => {
-        const shouldKeepCurrentRows = currentRows.length > 0 && rowsToRestore.length === 0 && removedStaleDraftCount === 0;
-        setRetroActiveRowIndex(shouldKeepCurrentRows ? currentRows.length : (rowsToRestore.length > 0 ? rowsToRestore.length : 0));
-        return shouldKeepCurrentRows ? currentRows : rowsToRestore;
+        setRetroDraftRows((currentRows) => {
+          const shouldKeepCurrentRows = currentRows.length > 0 && rowsToRestore.length === 0 && removedStaleDraftCount === 0;
+          setRetroActiveRowIndex(shouldKeepCurrentRows ? currentRows.length : (rowsToRestore.length > 0 ? rowsToRestore.length : 0));
+          return shouldKeepCurrentRows ? currentRows : rowsToRestore;
+        });
+        setPurchaseSendMemoNumber(rowsToRestore[0]?.memoNumber ? Number(rowsToRestore[0].memoNumber) : null);
+        setRetroEditorVisible(true);
       });
-      setRetroEditorVisible(true);
-    });
 
     return () => {
       cancelled = true;
@@ -2864,14 +2901,18 @@ const SellerDashboard = ({
     if (option.isNew) {
       setRetroDraftRows([]);
       setRetroActiveRowIndex(0);
+      setPurchaseSendMemoNumber(null);
       setRetroCodeInput('');
       setRetroFromInput('');
       setRetroToInput('');
     } else {
-      const selectedEntries = purchaseSendMemoEntries.filter((entry) => (
-        getPurchaseEntryMemoNumber(entry) === Number(option.memoNumber)
-      ));
-      const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, amount, { ignoreMemoRowOrder: true });
+      const draftRows = option.draftRows || buildPurchaseSendDraftRowsFromEntries(
+        purchaseSendMemoEntries.filter((entry) => (
+          getPurchaseEntryMemoNumber(entry) === Number(option.memoNumber)
+        )),
+        amount,
+        { ignoreMemoRowOrder: true }
+      );
       setRetroDraftRows(draftRows);
 
       if (draftRows.length > 0) {
@@ -3430,10 +3471,21 @@ const SellerDashboard = ({
         memoRowOrder: row.memoRowOrder ?? index
       }));
 
-      await saveDraftRows(sellerLocalDraftKey, rowsWithMemo);
-      setRetroDraftRows(rowsWithMemo);
+      const savedMemoDraftKey = buildSellerPurchaseDraftKey(effectiveMemoNumber);
+      await saveDraftRows(savedMemoDraftKey, rowsWithMemo);
+      if (sellerLocalDraftKey !== savedMemoDraftKey) {
+        await clearDraftRows(sellerLocalDraftKey);
+      }
+      setRetroDraftRows([]);
+      setRetroActiveRowIndex(0);
+      setRetroCodeInput('');
+      setRetroFromInput('');
+      setRetroToInput('');
+      setPurchaseSendMemoNumber(null);
+      setPurchaseSendMemoSelectionIndex(0);
       setSuccess('Purchase local me save ho gaya. Send Purchase se bhejo.');
       setPurchaseSendMemoPopupOpen(false);
+      await loadLocalPurchaseMemoDrafts();
       focusPurchaseSellerSelectAfterSave();
     } catch (err) {
       const errorMessage = err.response?.data?.message || 'Error saving purchase';
@@ -4666,28 +4718,58 @@ const SellerDashboard = ({
     second: '2-digit',
     hour12: true
   }).replace(',', '');
-  const purchaseSendMemoSummaries = buildPurchaseMemoSummaries(purchaseSendMemoEntries);
+  const purchaseSendServerMemoSummaries = buildPurchaseMemoSummaries(purchaseSendMemoEntries);
+  const purchaseSendLocalMemoSummaries = localPurchaseMemoDrafts.map((draft) => ({
+    key: `seller-local-memo-${draft.memoNumber}`,
+    memoNumber: Number(draft.memoNumber || 0),
+    drawDate: draft.rows[0]?.drawDate || draft.bookingDate || bookingDate,
+    totalPieceCount: draft.rows.reduce((sum, row) => sum + Number(getRetroRowQuantity(row) || 0), 0),
+    draftRows: draft.rows,
+    draftKey: draft.draftKey,
+    isLocalDraft: true
+  }));
+  const purchaseSendMemoSummaries = [
+    ...purchaseSendLocalMemoSummaries,
+    ...purchaseSendServerMemoSummaries.filter((memo) => (
+      !purchaseSendLocalMemoSummaries.some((localMemo) => Number(localMemo.memoNumber) === Number(memo.memoNumber))
+    ))
+  ];
   const nextPurchaseSendMemoNumber = purchaseSendMemoSummaries.length > 0
-    ? Math.max(...purchaseSendMemoSummaries.map((memo) => memo.memoNumber)) + 1
+    ? Math.max(...purchaseSendMemoSummaries.map((memo) => Number(memo.memoNumber || 0))) + 1
     : 1;
+  const activePurchaseSendDraftMemoNumber = Number(purchaseSendMemoNumber || retroDraftRows[0]?.memoNumber || nextPurchaseSendMemoNumber);
+  const purchaseSendDraftQuantity = retroDraftRows.reduce((sum, row) => sum + Number(getRetroRowQuantity(row) || 0), 0);
+  const draftMatchesExistingPurchaseSendMemo = purchaseSendMemoSummaries.some((memo) => (
+    Number(memo.memoNumber) === activePurchaseSendDraftMemoNumber
+  ));
+  const newPurchaseSendMemoNumber = draftMatchesExistingPurchaseSendMemo && retroDraftRows.length > 0
+    ? nextPurchaseSendMemoNumber
+    : activePurchaseSendDraftMemoNumber;
   const purchaseSendMemoOptions = [
     {
-      key: `new-seller-send-${nextPurchaseSendMemoNumber}`,
-      memoNumber: nextPurchaseSendMemoNumber,
+      key: `new-seller-send-${newPurchaseSendMemoNumber}`,
+      memoNumber: newPurchaseSendMemoNumber,
       isNew: true,
-      label: String(nextPurchaseSendMemoNumber),
+      label: String(newPurchaseSendMemoNumber),
       drawDate: bookingDate,
-      quantity: ''
+      quantity: !draftMatchesExistingPurchaseSendMemo && retroDraftRows.length > 0 ? purchaseSendDraftQuantity : ''
     },
     ...purchaseSendMemoSummaries.map((memo) => ({
-      key: `seller-send-memo-${memo.memoNumber}`,
+      key: memo.key || `seller-send-memo-${memo.memoNumber}`,
       memoNumber: memo.memoNumber,
       isNew: false,
       label: String(memo.memoNumber),
       drawDate: memo.drawDate,
-      quantity: memo.totalPieceCount,
-      totalPieceCount: memo.totalPieceCount,
-      batches: memo.batches
+      quantity: Number(memo.memoNumber) === activePurchaseSendDraftMemoNumber && retroDraftRows.length > 0
+        ? purchaseSendDraftQuantity
+        : memo.totalPieceCount,
+      totalPieceCount: Number(memo.memoNumber) === activePurchaseSendDraftMemoNumber && retroDraftRows.length > 0
+        ? purchaseSendDraftQuantity
+        : memo.totalPieceCount,
+      batches: memo.batches,
+      draftRows: memo.draftRows,
+      draftKey: memo.draftKey,
+      isLocalDraft: Boolean(memo.isLocalDraft)
     }))
   ];
   const selectedPurchaseSendMemoOption = purchaseSendMemoOptions.find((option) => (

@@ -32,7 +32,7 @@ const getDraftTypeFromTab = (tab) => {
 
 export const parseDraftKey = (key) => {
   const parts = String(key || '').split(':');
-  const [, role, userId, tab, targetSellerId, bookingDate, sessionMode, purchaseCategory, amount] = parts;
+  const [, role, userId, tab, targetSellerId, bookingDate, sessionMode, purchaseCategory, amount, memoNumber] = parts;
   const type = getDraftTypeFromTab(tab);
 
   return {
@@ -44,7 +44,10 @@ export const parseDraftKey = (key) => {
     bookingDate,
     sessionMode,
     purchaseCategory,
-    amount
+    amount,
+    memoNumber: memoNumber === undefined || memoNumber === null || String(memoNumber).trim() === '' || Number.isNaN(Number(memoNumber))
+      ? null
+      : Number(memoNumber)
   };
 };
 
@@ -181,6 +184,7 @@ export const saveDraftRows = async (key, rows = []) => {
         draftKey: key,
         userId: draftInfo.userId,
         targetSellerId: draftInfo.targetSellerId,
+        memoNumber: draftInfo.memoNumber,
         rows,
         bookingDate: draftInfo.bookingDate,
         sessionMode: draftInfo.sessionMode,

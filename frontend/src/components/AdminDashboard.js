@@ -1459,6 +1459,7 @@ const AdminDashboard = ({
   const [purchaseDraftRows, setPurchaseDraftRows] = useState([]);
   const [purchaseActiveRowIndex, setPurchaseActiveRowIndex] = useState(0);
   const [purchaseEditorVisible, setPurchaseEditorVisible] = useState(true);
+  const [localPurchaseMemoDrafts, setLocalPurchaseMemoDrafts] = useState([]);
   const [sendPurchaseDrafts, setSendPurchaseDrafts] = useState([]);
   const [sendPurchaseLoading, setSendPurchaseLoading] = useState(false);
   const [sendPurchaseSendingKey, setSendPurchaseSendingKey] = useState('');
@@ -1492,16 +1493,29 @@ const AdminDashboard = ({
   const saveConfirmActionRef = useRef(null);
   const saveConfirmFocusRef = useRef(null);
   const blockingWarningActionRef = useRef(null);
-  const adminLocalDraftKey = buildDraftStorageKey([
+  const buildAdminPurchaseDraftKey = (memoNumber = null) => buildDraftStorageKey([
     'admin',
     user?.id,
-    activeTab,
+    'purchase-send',
     purchaseSellerId,
     purchaseBookingDate,
     purchaseSessionMode,
     purchaseCategory,
-    purchaseAmount
+    purchaseAmount,
+    memoNumber ?? 'working'
   ]);
+  const adminLocalDraftKey = activeTab === 'purchase-send'
+    ? buildAdminPurchaseDraftKey(purchaseMemoNumber)
+    : buildDraftStorageKey([
+      'admin',
+      user?.id,
+      activeTab,
+      purchaseSellerId,
+      purchaseBookingDate,
+      purchaseSessionMode,
+      purchaseCategory,
+      purchaseAmount
+    ]);
   const adminPurchaseDraftRestoreKeyRef = useRef('');
   const adminPurchaseSkipSaveKeyRef = useRef('');
   const clearBlockingWarning = () => {
@@ -1736,6 +1750,7 @@ const AdminDashboard = ({
         return;
       }
       setPurchaseDraftRows(savedRows);
+      setPurchaseMemoNumber(savedRows[0]?.memoNumber ? Number(savedRows[0].memoNumber) : null);
       setPurchaseActiveRowIndex(savedRows.length > 0 ? savedRows.length : 0);
       setPurchaseEditorVisible(true);
     });
@@ -1744,6 +1759,12 @@ const AdminDashboard = ({
       cancelled = true;
     };
   }, [activeTab, adminLocalDraftKey]);
+
+  useEffect(() => {
+    if (activeTab === 'purchase-send') {
+      loadLocalPurchaseMemoDrafts();
+    }
+  }, [activeTab, purchaseSellerId, purchaseBookingDate, purchaseSessionMode, purchaseCategory, purchaseAmount, user?.id]);
 
   useEffect(() => {
     if (!['purchase-send', 'unsold', 'unsold-remove'].includes(activeTab)) {
@@ -2779,15 +2800,18 @@ const AdminDashboard = ({
     ));
     setPurchaseMemoPopupOpen(false);
     if (option.isNew) {
+      setPurchaseMemoNumber(null);
       setPurchaseDraftRows([]);
       setPurchaseActiveRowIndex(0);
       setPurchaseEditorVisible(true);
       resetPurchaseSendEntryInputs();
     } else {
-      const selectedEntries = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
-        getPurchaseEntryMemoNumber(entry) === Number(option.memoNumber)
-      ));
-      const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, purchaseAmount);
+      const draftRows = option.draftRows || buildPurchaseSendDraftRowsFromEntries(
+        [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
+          getPurchaseEntryMemoNumber(entry) === Number(option.memoNumber)
+        )),
+        purchaseAmount
+      );
       setPurchaseDraftRows(draftRows);
       resetPurchaseSendEntryInputs();
       setPurchaseEditorVisible(true);
@@ -3361,10 +3385,20 @@ const AdminDashboard = ({
         memoRowOrder: row.memoRowOrder ?? index
       }));
 
-      await saveDraftRows(adminLocalDraftKey, rowsWithMemo);
-      setPurchaseDraftRows(rowsWithMemo);
+      const savedMemoDraftKey = buildAdminPurchaseDraftKey(effectiveMemoNumber);
+      await saveDraftRows(savedMemoDraftKey, rowsWithMemo);
+      if (adminLocalDraftKey !== savedMemoDraftKey) {
+        await clearDraftRows(adminLocalDraftKey);
+      }
+      setPurchaseDraftRows([]);
+      setPurchaseActiveRowIndex(0);
+      setPurchaseEditorVisible(true);
+      resetPurchaseSendEntryInputs();
+      setPurchaseMemoNumber(null);
+      setPurchaseMemoSelectionIndex(0);
       setSuccess('Purchase local me save ho gaya. Send Purchase se bhejo.');
       setPurchaseMemoPopupOpen(false);
+      await loadLocalPurchaseMemoDrafts();
     } catch (err) {
       const rawErrorMessage = err.response?.data?.message || err.message || '';
       const normalizedErrorMessage = String(rawErrorMessage).toLowerCase();
@@ -4805,6 +4839,26 @@ const AdminDashboard = ({
 
   const stockTransferTargetOptions = activeAmountAdminSellers.filter((option) => option.id);
   const selectedPurchaseSeller = activeAmountAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId)) || null;
+  const loadLocalPurchaseMemoDrafts = async () => {
+    try {
+      const drafts = await listDraftRows({
+        role: 'admin',
+        userId: user?.id,
+        tab: 'purchase-send'
+      });
+      setLocalPurchaseMemoDrafts(drafts.filter((draft) => (
+        Number(draft.targetSellerId || 0) === Number(purchaseSellerId || 0)
+        && String(draft.bookingDate || '') === String(purchaseBookingDate || '')
+        && String(draft.sessionMode || '') === String(purchaseSessionMode || '')
+        && String(draft.purchaseCategory || '') === String(purchaseCategory || '')
+        && String(draft.amount || '') === String(purchaseAmount || '')
+        && Number.isInteger(Number(draft.memoNumber || 0))
+        && Number(draft.memoNumber || 0) > 0
+      )));
+    } catch (error) {
+      setError(error.message || 'Local purchase memo draft load nahi hua');
+    }
+  };
   const getPurchaseDraftQuantity = (row = {}) => {
     const fromNumber = normalizeNumericInput(row.numberStart || row.from);
     const toNumber = resolveRangeEndValue(fromNumber, row.numberEnd || row.to || row.numberStart || row.from);
@@ -4846,7 +4900,7 @@ const AdminDashboard = ({
         userId: user?.id,
         tab: 'purchase-send'
       });
-      setSendPurchaseDrafts(drafts.map(enrichSendPurchaseDraft));
+      setSendPurchaseDrafts(drafts.filter((draft) => Number(draft.memoNumber || 0) > 0).map(enrichSendPurchaseDraft));
     } catch (error) {
       setError(error.message || 'Send Purchase draft load nahi hua');
     } finally {
@@ -4914,6 +4968,7 @@ const AdminDashboard = ({
       await clearDraftRows(draft.draftKey);
       setSuccess(`${draft.sellerName || 'Seller'} ko purchase send ho gaya`);
       await Promise.all([
+        loadLocalPurchaseMemoDrafts(),
         loadSendPurchaseDrafts(),
         loadPurchaseEntries(firstRowDate, sessionValue, draft.targetSellerId)
       ]);
@@ -4962,28 +5017,58 @@ const AdminDashboard = ({
   )) || adminStockMemoOptions[0] || null;
   const isEditingExistingAdminStockMemo = adminStockMemoSummaries.some((memo) => Number(memo.memoNumber) === Number(adminStockMemoNumber));
   const highlightedAdminStockMemoOption = adminStockMemoOptions[adminStockMemoSelectionIndex] || selectedAdminStockMemoOption || null;
-  const purchaseMemoSummaries = buildPurchaseMemoSummaries([...purchaseEntries, ...unsoldPurchaseEntries]);
+  const purchaseServerMemoSummaries = buildPurchaseMemoSummaries([...purchaseEntries, ...unsoldPurchaseEntries]);
+  const purchaseLocalMemoSummaries = localPurchaseMemoDrafts.map((draft) => ({
+    key: `admin-local-memo-${draft.memoNumber}`,
+    memoNumber: Number(draft.memoNumber || 0),
+    drawDate: draft.rows[0]?.drawDate || draft.bookingDate || purchaseBookingDate,
+    totalPieceCount: draft.rows.reduce((sum, row) => sum + getPurchaseDraftQuantity(row), 0),
+    draftRows: draft.rows,
+    draftKey: draft.draftKey,
+    isLocalDraft: true
+  }));
+  const purchaseMemoSummaries = [
+    ...purchaseLocalMemoSummaries,
+    ...purchaseServerMemoSummaries.filter((memo) => (
+      !purchaseLocalMemoSummaries.some((localMemo) => Number(localMemo.memoNumber) === Number(memo.memoNumber))
+    ))
+  ];
   const nextPurchaseMemoNumber = purchaseMemoSummaries.length > 0
-    ? Math.max(...purchaseMemoSummaries.map((memo) => memo.memoNumber)) + 1
+    ? Math.max(...purchaseMemoSummaries.map((memo) => Number(memo.memoNumber || 0))) + 1
     : 1;
+  const activePurchaseDraftMemoNumber = Number(purchaseMemoNumber || purchaseDraftRows[0]?.memoNumber || nextPurchaseMemoNumber);
+  const purchaseDraftQuantity = purchaseDraftRows.reduce((sum, row) => sum + getPurchaseDraftQuantity(row), 0);
+  const draftMatchesExistingPurchaseMemo = purchaseMemoSummaries.some((memo) => (
+    Number(memo.memoNumber) === activePurchaseDraftMemoNumber
+  ));
+  const newPurchaseMemoNumber = draftMatchesExistingPurchaseMemo && purchaseDraftRows.length > 0
+    ? nextPurchaseMemoNumber
+    : activePurchaseDraftMemoNumber;
   const purchaseMemoOptions = [
     {
-      key: `new-${nextPurchaseMemoNumber}`,
-      memoNumber: nextPurchaseMemoNumber,
+      key: `new-${newPurchaseMemoNumber}`,
+      memoNumber: newPurchaseMemoNumber,
       isNew: true,
-      label: String(nextPurchaseMemoNumber),
+      label: String(newPurchaseMemoNumber),
       drawDate: purchaseBookingDate,
-      quantity: ''
+      quantity: !draftMatchesExistingPurchaseMemo && purchaseDraftRows.length > 0 ? purchaseDraftQuantity : ''
     },
     ...purchaseMemoSummaries.map((memo) => ({
-      key: `memo-${memo.memoNumber}`,
+      key: memo.key || `memo-${memo.memoNumber}`,
       memoNumber: memo.memoNumber,
       isNew: false,
       label: String(memo.memoNumber),
       drawDate: memo.drawDate,
-      quantity: memo.totalPieceCount,
-      totalPieceCount: memo.totalPieceCount,
-      batches: memo.batches
+      quantity: Number(memo.memoNumber) === activePurchaseDraftMemoNumber && purchaseDraftRows.length > 0
+        ? purchaseDraftQuantity
+        : memo.totalPieceCount,
+      totalPieceCount: Number(memo.memoNumber) === activePurchaseDraftMemoNumber && purchaseDraftRows.length > 0
+        ? purchaseDraftQuantity
+        : memo.totalPieceCount,
+      batches: memo.batches,
+      draftRows: memo.draftRows,
+      draftKey: memo.draftKey,
+      isLocalDraft: Boolean(memo.isLocalDraft)
     }))
   ];
   const selectedPurchaseMemoOption = purchaseMemoOptions.find((option) => (
