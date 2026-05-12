@@ -2781,19 +2781,6 @@ const SellerDashboard = ({
       };
     }
 
-    const localDraftValidation = await validateRetroRowAgainstSavedDrafts(result.row);
-    if (localDraftValidation.error) {
-      return localDraftValidation;
-    }
-
-    const stockValidation = await validateRetroRowInStock(result.row);
-    if (stockValidation.error) {
-      return {
-        error: stockValidation.error,
-        title: 'Stock Missing'
-      };
-    }
-
     if (retroActiveRowIndex < currentRows.length) {
       const updatedRows = [...currentRows];
       updatedRows[retroActiveRowIndex] = {
