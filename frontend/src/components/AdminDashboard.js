@@ -3115,7 +3115,9 @@ const AdminDashboard = ({
   };
 
   const currentPurchaseMemoEntryMatches = (entry = {}) => {
-    if (!isEditingExistingPurchaseMemo) {
+    const activeMemoNumber = Number(purchaseMemoNumber || purchaseDraftRows[0]?.memoNumber || nextPurchaseMemoNumber || 0);
+
+    if (!activeMemoNumber) {
       return false;
     }
 
@@ -3124,7 +3126,7 @@ const AdminDashboard = ({
     const sellerMatches = String(entry.userId || entry.user_id || '') === String(purchaseSellerId || '')
       || (selectedSellerName && entrySellerName === selectedSellerName);
 
-    return getPurchaseEntryMemoNumber(entry) === Number(purchaseMemoNumber || 0) && sellerMatches;
+    return getPurchaseEntryMemoNumber(entry) === activeMemoNumber && sellerMatches;
   };
 
   const purchaseEntryConflictsWithRow = (entry = {}, row = {}) => (
