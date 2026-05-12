@@ -3148,6 +3148,7 @@ const AdminDashboard = ({
     return drafts.flatMap((draft) => {
       if (
         draft.draftKey === currentDraftKey
+        || Number(draft.targetSellerId || 0) === Number(purchaseSellerId || 0)
         || String(draft.bookingDate || '') !== String(row.drawDate || purchaseBookingDate || '')
         || String(draft.sessionMode || '') !== String(row.resolvedSessionMode || purchaseSessionMode || '')
         || String(draft.purchaseCategory || '') !== String(row.resolvedPurchaseCategory || purchaseCategory || '')
