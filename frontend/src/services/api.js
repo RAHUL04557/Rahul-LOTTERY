@@ -815,18 +815,15 @@ export const lotteryService = {
     };
 
     try {
-      const localResult = await getLocalPurchaseBillSummary(params);
-      if (localResult) {
-        return localResult;
-      }
-    } catch (error) {
-      console.warn('Local bill summary failed, falling back to server:', error.message);
+      return await api.get('/lottery/purchases/bill-summary', {
+        ...requestOptions,
+        params
+      });
+    } catch (serverError) {
+      console.warn('Server bill summary failed, falling back to local:', serverError.message);
     }
 
-    return api.get('/lottery/purchases/bill-summary', {
-      ...requestOptions,
-      params
-    });
+    return getLocalPurchaseBillSummary(params);
   },
   traceNumber: async ({ number, uniqueCode, date, fromDate, toDate, sessionMode, amount, sem } = {}, requestOptions = {}) => {
     const params = {
@@ -956,15 +953,12 @@ export const priceService = {
     };
 
     try {
-      const localResult = await getLocalBillPrizes(params);
-      if (localResult) {
-        return localResult;
-      }
-    } catch (error) {
-      console.warn('Local bill prizes failed, falling back to server:', error.message);
+      return await api.get('/prices/bill-prizes', { params });
+    } catch (serverError) {
+      console.warn('Server bill prizes failed, falling back to local:', serverError.message);
     }
 
-    return api.get('/prices/bill-prizes', { params });
+    return getLocalBillPrizes(params);
   },
   getPriceByCode: (uniqueCode) => api.get(`/prices/${uniqueCode}`),
   getAllPrices: async ({ resultForDate, sessionMode, purchaseCategory } = {}) => {
