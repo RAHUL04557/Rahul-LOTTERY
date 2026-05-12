@@ -3184,6 +3184,10 @@ const AdminDashboard = ({
   };
 
   const validatePurchaseSendRowAgainstSavedDrafts = async (row = {}) => {
+    if (isEditingExistingPurchaseMemo) {
+      return { ok: true };
+    }
+
     const draftConflicts = await findLocalPurchaseDraftConflicts(row);
 
     if (draftConflicts.length > 0) {
