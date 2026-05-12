@@ -1946,13 +1946,17 @@ const SellerDashboard = ({
       return;
     }
 
+    if (blockingWarning) {
+      return;
+    }
+
     if (sellerPurchaseSkipSaveKeyRef.current === sellerLocalDraftKey) {
       sellerPurchaseSkipSaveKeyRef.current = '';
       return;
     }
 
     saveDraftRows(sellerLocalDraftKey, retroDraftRows);
-  }, [activeTab, sellerLocalDraftKey, retroDraftRows]);
+  }, [activeTab, sellerLocalDraftKey, retroDraftRows, blockingWarning]);
 
   useEffect(() => {
     if (activeTab !== 'unsold') {

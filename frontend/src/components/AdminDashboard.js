@@ -1771,13 +1771,17 @@ const AdminDashboard = ({
       return;
     }
 
+    if (blockingWarning) {
+      return;
+    }
+
     if (adminPurchaseSkipSaveKeyRef.current === adminLocalDraftKey) {
       adminPurchaseSkipSaveKeyRef.current = '';
       return;
     }
 
     saveDraftRows(adminLocalDraftKey, purchaseDraftRows);
-  }, [activeTab, adminLocalDraftKey, purchaseDraftRows]);
+  }, [activeTab, adminLocalDraftKey, purchaseDraftRows, blockingWarning]);
 
   useEffect(() => {
     setExitReadyFromFirstControl(false);
@@ -3139,69 +3143,8 @@ const AdminDashboard = ({
     && numberFallsWithinRange(entry.number, row.from, row.to)
   );
 
-  const findLocalPurchaseDraftConflicts = async (row = {}) => {
-    const drafts = await listDraftRows({
-      role: 'admin',
-      userId: user?.id,
-      tab: 'purchase-send'
-    });
-    const currentDraftKey = buildAdminPurchaseDraftKey(purchaseMemoNumber);
-    const effectiveMemoNumber = Number(purchaseMemoNumber || nextPurchaseMemoNumber || 0);
-
-    return drafts.flatMap((draft) => {
-      if (
-        draft.draftKey === currentDraftKey
-        || (
-          Number(draft.targetSellerId || 0) === Number(purchaseSellerId || 0)
-          && Number(draft.memoNumber || 0) === effectiveMemoNumber
-        )
-        || String(draft.bookingDate || '') !== String(row.drawDate || purchaseBookingDate || '')
-        || String(draft.sessionMode || '') !== String(row.resolvedSessionMode || purchaseSessionMode || '')
-        || String(draft.purchaseCategory || '') !== String(row.resolvedPurchaseCategory || purchaseCategory || '')
-        || String(draft.amount || '') !== String(row.bookingAmount || purchaseAmount || '')
-      ) {
-        return [];
-      }
-
-      const seller = directAdminSellers.find((entry) => String(entry.id) === String(draft.targetSellerId));
-
-      return (Array.isArray(draft.rows) ? draft.rows : [])
-        .filter((draftRow) => (
-          String(draftRow.semValue || '') === String(row.semValue || '')
-          && rangesOverlap(
-            draftRow.numberStart || draftRow.from,
-            draftRow.numberEnd || draftRow.to,
-            row.from,
-            row.to
-          )
-        ))
-        .map((draftRow) => ({
-          displaySeller: seller?.username || draftRow.partyName || `Seller ${draft.targetSellerId}`,
-          memoNumber: draft.memoNumber || draftRow.memoNumber,
-          number: draftRow.numberStart || draftRow.from,
-          from: draftRow.numberStart || draftRow.from,
-          to: draftRow.numberEnd || draftRow.to
-        }));
-    });
-  };
-
   const validatePurchaseSendRowAgainstSavedDrafts = async (row = {}) => {
-    if (isEditingExistingPurchaseMemo) {
-      return { ok: true };
-    }
-
-    const draftConflicts = await findLocalPurchaseDraftConflicts(row);
-
-    if (draftConflicts.length > 0) {
-      return {
-        error: formatDuplicateSellerWarning(draftConflicts),
-        details: draftConflicts.slice(0, 5).map((entry) => (
-          `Seller ${entry.displaySeller || 'Unknown'} | Memo No. ${entry.memoNumber || 'N/A'} | ${entry.from || ''}-${entry.to || ''}`
-        )),
-        title: 'Duplicate Number'
-      };
-    }
-
+    void row;
     return { ok: true };
   };
 
