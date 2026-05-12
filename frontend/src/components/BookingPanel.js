@@ -128,6 +128,12 @@ const isSameBookingScope = (entry, sessionMode, purchaseCategory) => (
   && String(entry?.purchaseCategory || (entry?.sessionMode === 'NIGHT' ? 'E' : 'M')) === String(purchaseCategory || '')
 );
 
+const isSameDuplicateBookingScope = (entry, row, currentDate) => (
+  isSameDateValue(entry.bookingDate, currentDate)
+  && getEntryShift(entry) === getEntryShift(row)
+  && String(entry.amount || '') === String(row.amount || '')
+);
+
 const sellerSupportsAmount = (seller, amountValue) => {
   if (!seller || !amountValue) {
     return true;
@@ -1073,16 +1079,17 @@ const BookingPanel = ({
           number,
           sellerName,
           bookingDate: normalizeDateValue(entry.bookingDate),
+          sem: entry.boxValue || '-',
           memoNumber: memoNo || '-'
         });
       });
     };
     const scopedDraftRows = draftRows.filter((entry, index) => (
       index !== targetRowIndex
-      && isSameDateValue(entry.bookingDate, currentDate)
+      && isSameDuplicateBookingScope(entry, row, currentDate)
     ));
     const scopedSavedRows = allEntries.filter((entry) => (
-      isSameDateValue(entry.bookingDate, currentDate)
+      isSameDuplicateBookingScope(entry, row, currentDate)
     ));
 
     scopedDraftRows.forEach((entry) => pushDuplicateMatches(entry, effectiveMemoNumber));
@@ -1166,7 +1173,7 @@ const BookingPanel = ({
     const duplicateMatches = findDuplicateBookingMatches(row, activeRowIndex);
     if (duplicateMatches.length > 0) {
       const duplicateDetails = duplicateMatches.slice(0, 3).map((match) => (
-        `${match.number} - Seller: ${match.sellerName}, Date: ${formatDisplayDate(match.bookingDate)}, Memo: ${match.memoNumber}`
+        `${match.number} - Seller: ${match.sellerName}, Date: ${formatDisplayDate(match.bookingDate)}, Memo: ${match.memoNumber}, SEM: ${match.sem}`
       ));
       const duplicateLabel = duplicateMatches.length > 3
         ? `${duplicateDetails.join(' | ')} | +${duplicateMatches.length - 3} more`
