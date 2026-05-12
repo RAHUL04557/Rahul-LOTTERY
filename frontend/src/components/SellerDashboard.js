@@ -2677,6 +2677,67 @@ const SellerDashboard = ({
     ))
   );
 
+  const findLocalRetroDraftConflicts = async (row = {}) => {
+    const drafts = await listDraftRows({
+      role: 'seller',
+      userId: user?.id,
+      tab: 'purchase-send'
+    });
+    const activeMemoNumber = Number(purchaseSendMemoNumber || retroDraftRows[0]?.memoNumber || nextPurchaseSendMemoNumber || 0);
+
+    return drafts.flatMap((draft) => {
+      if (
+        (
+          Number(draft.targetSellerId || 0) === Number(purchaseSendSellerId || 0)
+          && Number(draft.memoNumber || 0) === activeMemoNumber
+        )
+        || String(draft.bookingDate || '') !== String(row.drawDate || bookingDate || '')
+        || String(draft.sessionMode || '') !== String(row.resolvedSessionMode || sessionMode || '')
+        || String(draft.purchaseCategory || '') !== String(row.resolvedPurchaseCategory || activePurchaseCategory || '')
+        || String(draft.amount || '') !== String(row.bookingAmount || amount || '')
+      ) {
+        return [];
+      }
+
+      const party = retroPartyOptions.find((entry) => String(entry.id) === String(draft.targetSellerId))
+        || activeAmountChildSellers.find((entry) => String(entry.id) === String(draft.targetSellerId));
+
+      return (Array.isArray(draft.rows) ? draft.rows : [])
+        .filter((draftRow) => (
+          String(draftRow.semValue || '') === String(row.semValue || '')
+          && rangesOverlap(
+            draftRow.numberStart || draftRow.from,
+            draftRow.numberEnd || draftRow.to,
+            row.from,
+            row.to
+          )
+        ))
+        .map((draftRow) => ({
+          partyName: party?.username || draftRow.partyName || `Seller ${draft.targetSellerId}`,
+          memoNumber: draft.memoNumber || draftRow.memoNumber,
+          from: draftRow.numberStart || draftRow.from,
+          to: draftRow.numberEnd || draftRow.to
+        }));
+    });
+  };
+
+  const validateRetroRowAgainstSavedDrafts = async (row = {}) => {
+    const draftConflicts = await findLocalRetroDraftConflicts(row);
+
+    if (draftConflicts.length > 0) {
+      const partyNames = [...new Set(draftConflicts.map((entry) => entry.partyName).filter(Boolean))];
+      return {
+        error: `You already send this stock to ${partyNames.join(', ') || 'another seller'}`,
+        details: draftConflicts.slice(0, 5).map((entry) => (
+          `Seller ${entry.partyName || 'Unknown'} | Memo No. ${entry.memoNumber || 'N/A'} | ${entry.from || ''}-${entry.to || ''}`
+        )),
+        title: 'Duplicate Number'
+      };
+    }
+
+    return { ok: true };
+  };
+
   const hasPendingRetroEditorValues = () => (
     retroEditorVisible
     && (Boolean(String(retroFromInput || '').trim())
@@ -2718,6 +2779,11 @@ const SellerDashboard = ({
         details: [`Memo No. ${user?.username || 'N/A'}`],
         title: 'Duplicate Number'
       };
+    }
+
+    const localDraftValidation = await validateRetroRowAgainstSavedDrafts(result.row);
+    if (localDraftValidation.error) {
+      return localDraftValidation;
     }
 
     const stockValidation = await validateRetroRowInStock(result.row);
@@ -2813,6 +2879,16 @@ const SellerDashboard = ({
 
     Promise.resolve().then(async () => {
       try {
+        const localDraftValidation = await validateRetroRowAgainstSavedDrafts(result.row);
+        if (localDraftValidation.error) {
+          openBlockingWarning(
+            localDraftValidation.error,
+            localDraftValidation.details || [],
+            localDraftValidation.title || 'Duplicate Number'
+          );
+          return;
+        }
+
         const stockValidation = await validateRetroRowInStock(result.row);
         if (stockValidation.error) {
           openBlockingWarning(stockValidation.error, [], 'Stock Missing');
