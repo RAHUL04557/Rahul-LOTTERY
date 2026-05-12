@@ -3042,18 +3042,6 @@ const AdminDashboard = ({
 
   const getPurchaseSendRowsForSave = async () => {
     const currentRows = [...purchaseDraftRows];
-    const currentMemoEntryMatches = (entry = {}) => {
-      if (!isEditingExistingPurchaseMemo) {
-        return false;
-      }
-
-      const selectedSellerName = String(selectedPurchaseSeller?.username || '').trim().toLowerCase();
-      const entrySellerName = String(entry.displaySeller || entry.username || '').trim().toLowerCase();
-      const sellerMatches = String(entry.userId || entry.user_id || '') === String(purchaseSellerId || '')
-        || (selectedSellerName && entrySellerName === selectedSellerName);
-
-      return getPurchaseEntryMemoNumber(entry) === Number(purchaseMemoNumber || 0) && sellerMatches;
-    };
 
     if (isEditingExistingPurchaseMemo && currentRows.length === 0) {
       return { rows: currentRows };
@@ -3084,9 +3072,10 @@ const AdminDashboard = ({
 
     const conflictingPurchaseEntries = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
       !(
-        currentMemoEntryMatches(entry)
+        currentPurchaseMemoEntryMatches(entry)
       )
       && String(entry.sem || '') === String(result.row.semValue || '')
+      && String(entry.amount || '') === String(result.row.bookingAmount || purchaseAmount || '')
       && String(entry.sessionMode || '') === String(result.row.resolvedSessionMode || '')
       && String(entry.purchaseCategory || '') === String(result.row.resolvedPurchaseCategory || '')
       && String(formatDateOnly(entry.bookingDate || '')) === String(result.row.drawDate || '')
@@ -3125,6 +3114,84 @@ const AdminDashboard = ({
     return { rows: [...currentRows, result.row], consumedEditor: true };
   };
 
+  const currentPurchaseMemoEntryMatches = (entry = {}) => {
+    if (!isEditingExistingPurchaseMemo) {
+      return false;
+    }
+
+    const selectedSellerName = String(selectedPurchaseSeller?.username || '').trim().toLowerCase();
+    const entrySellerName = String(entry.displaySeller || entry.username || '').trim().toLowerCase();
+    const sellerMatches = String(entry.userId || entry.user_id || '') === String(purchaseSellerId || '')
+      || (selectedSellerName && entrySellerName === selectedSellerName);
+
+    return getPurchaseEntryMemoNumber(entry) === Number(purchaseMemoNumber || 0) && sellerMatches;
+  };
+
+  const purchaseEntryConflictsWithRow = (entry = {}, row = {}) => (
+    !currentPurchaseMemoEntryMatches(entry)
+    && String(entry.sem || entry.boxValue || '') === String(row.semValue || '')
+    && String(entry.amount || '') === String(row.bookingAmount || purchaseAmount || '')
+    && String(entry.sessionMode || '') === String(row.resolvedSessionMode || purchaseSessionMode || '')
+    && String(entry.purchaseCategory || '') === String(row.resolvedPurchaseCategory || purchaseCategory || '')
+    && String(formatDateOnly(entry.bookingDate || '')) === String(row.drawDate || purchaseBookingDate || '')
+    && numberFallsWithinRange(entry.number, row.from, row.to)
+  );
+
+  const validatePurchaseSendRowsForDuplicates = async (rowsToCheck = []) => {
+    for (let leftIndex = 0; leftIndex < rowsToCheck.length; leftIndex += 1) {
+      const leftRow = rowsToCheck[leftIndex];
+      const conflictingDraftRow = rowsToCheck.find((rightRow, rightIndex) => (
+        rightIndex > leftIndex
+        && String(rightRow.semValue || '') === String(leftRow.semValue || '')
+        && String(rightRow.resolvedSessionMode || '') === String(leftRow.resolvedSessionMode || '')
+        && String(rightRow.resolvedPurchaseCategory || '') === String(leftRow.resolvedPurchaseCategory || '')
+        && String(rightRow.drawDate || '') === String(leftRow.drawDate || '')
+        && String(rightRow.bookingAmount || purchaseAmount || '') === String(leftRow.bookingAmount || purchaseAmount || '')
+        && rangesOverlap(rightRow.from, rightRow.to, leftRow.from, leftRow.to)
+      ));
+
+      if (conflictingDraftRow) {
+        return {
+          error: 'Number already added.',
+          details: [`Draft ${leftRow.from}-${leftRow.to} overlaps ${conflictingDraftRow.from}-${conflictingDraftRow.to}`],
+          title: 'Duplicate Number'
+        };
+      }
+    }
+
+    for (const row of rowsToCheck) {
+      const localConflicts = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => purchaseEntryConflictsWithRow(entry, row));
+      if (localConflicts.length > 0) {
+        return {
+          error: formatDuplicateSellerWarning(localConflicts),
+          details: [],
+          title: 'Duplicate Number'
+        };
+      }
+
+      const serverEntriesResponse = await lotteryService.getPurchases({
+        bookingDate: row.drawDate || purchaseBookingDate,
+        sessionMode: row.resolvedSessionMode || purchaseSessionMode,
+        purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
+        amount: row.bookingAmount || purchaseAmount,
+        boxValue: row.semValue
+      });
+      const serverConflicts = (serverEntriesResponse.data || [])
+        .map(mapApiEntry)
+        .filter((entry) => purchaseEntryConflictsWithRow(entry, row));
+
+      if (serverConflicts.length > 0) {
+        return {
+          error: formatDuplicateSellerWarning(serverConflicts),
+          details: [],
+          title: 'Duplicate Number'
+        };
+      }
+    }
+
+    return { ok: true };
+  };
+
   const commitPurchaseSendDraftRow = async () => {
     if (blockingWarning) {
       return;
@@ -3138,18 +3205,6 @@ const AdminDashboard = ({
     }
 
     const isEditingExistingRow = purchaseActiveRowIndex < purchaseDraftRows.length;
-    const currentMemoEntryMatches = (entry = {}) => {
-      if (!isEditingExistingPurchaseMemo) {
-        return false;
-      }
-
-      const selectedSellerName = String(selectedPurchaseSeller?.username || '').trim().toLowerCase();
-      const entrySellerName = String(entry.displaySeller || entry.username || '').trim().toLowerCase();
-      const sellerMatches = String(entry.userId || entry.user_id || '') === String(purchaseSellerId || '')
-        || (selectedSellerName && entrySellerName === selectedSellerName);
-
-      return getPurchaseEntryMemoNumber(entry) === Number(purchaseMemoNumber || 0) && sellerMatches;
-    };
     const conflictingPurchaseDraft = purchaseDraftRows.find((row, index) => (
       index !== purchaseActiveRowIndex
       && String(row.semValue || '') === String(result.row.semValue || '')
@@ -3170,9 +3225,10 @@ const AdminDashboard = ({
 
     const conflictingPurchaseEntries = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
       !(
-        currentMemoEntryMatches(entry)
+        currentPurchaseMemoEntryMatches(entry)
       )
       && String(entry.sem || '') === String(result.row.semValue || '')
+      && String(entry.amount || '') === String(result.row.bookingAmount || purchaseAmount || '')
       && String(entry.sessionMode || '') === String(result.row.resolvedSessionMode || '')
       && String(entry.purchaseCategory || '') === String(result.row.resolvedPurchaseCategory || '')
       && String(formatDateOnly(entry.bookingDate || '')) === String(result.row.drawDate || '')
@@ -3198,7 +3254,7 @@ const AdminDashboard = ({
       });
       const serverConflicts = (serverEntriesResponse.data || []).filter((entry) => (
         !(
-          currentMemoEntryMatches(mapApiEntry(entry))
+          currentPurchaseMemoEntryMatches(mapApiEntry(entry))
         )
         && numberFallsWithinRange(entry.number, result.row.from, result.row.to)
       ));
@@ -3363,6 +3419,16 @@ const AdminDashboard = ({
 
     if (rowsToSave.length === 0 && !isEditingExistingPurchaseMemo) {
       openBlockingWarning('Save karne ke liye row add karo');
+      return;
+    }
+
+    const duplicateValidation = await validatePurchaseSendRowsForDuplicates(rowsToSave);
+    if (duplicateValidation.error) {
+      openBlockingWarning(
+        duplicateValidation.error,
+        duplicateValidation.details || [],
+        duplicateValidation.title || 'Duplicate Number'
+      );
       return;
     }
 
