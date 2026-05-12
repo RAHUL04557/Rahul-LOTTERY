@@ -143,6 +143,21 @@ const getPurchasesFromLocalDb = async (params = {}) => {
   return { data };
 };
 
+const cachePurchaseResponse = async (response) => {
+  const localDb = getLocalDb();
+  const responseEntries = Array.isArray(response?.data)
+    ? response.data
+    : Array.isArray(response?.data?.entries)
+    ? response.data.entries
+    : [];
+
+  if (localDb?.upsertPurchases && responseEntries.length > 0) {
+    await localDb.upsertPurchases(responseEntries).catch((error) => {
+      console.warn('Local purchase cache update failed:', error.message);
+    });
+  }
+};
+
 const canUseLocalRead = async () => {
   const localDb = getLocalDb();
 
@@ -551,18 +566,24 @@ export const lotteryService = {
     };
 
     try {
+      const response = await api.get('/lottery/purchases', {
+        ...requestOptions,
+        params
+      });
+      await cachePurchaseResponse(response);
+      return response;
+    } catch (error) {
+      if (!isNetworkError(error)) {
+        throw error;
+      }
+
       const localResult = await getPurchasesFromLocalDb(params);
       if (localResult) {
         return localResult;
       }
-    } catch (error) {
-      console.warn('Local purchase read failed, falling back to server:', error.message);
-    }
 
-    return api.get('/lottery/purchases', {
-      ...requestOptions,
-      params
-    });
+      throw error;
+    }
   },
   getSellerPurchaseView: ({ bookingDate, sessionMode, sellerId, purchaseCategory, amount } = {}, requestOptions = {}) =>
     api.get('/lottery/purchases/seller-view', {
