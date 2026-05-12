@@ -2127,6 +2127,7 @@ const BookingPrizeTable = ({ rows }) => (
       <thead>
         <tr>
           <th>Date</th>
+          <th>Shift</th>
           <th>Seller</th>
           <th>Base</th>
           <th>SEM</th>
@@ -2140,6 +2141,7 @@ const BookingPrizeTable = ({ rows }) => (
         {rows.length > 0 ? rows.map((row) => (
           <tr key={`${row.id}-${row.prizeKey}-${row.winningNumber}`}>
             <td>{formatDisplayDate(row.bookingDate)}</td>
+            <td>{getShiftLabel(row.sessionMode, row.purchaseCategory)}</td>
             <td>{row.sellerName}</td>
             <td>{row.amount}</td>
             <td>{row.boxValue}</td>
@@ -2148,7 +2150,7 @@ const BookingPrizeTable = ({ rows }) => (
             <td>{row.winningNumber}</td>
             <td>{Number(row.calculatedPrize || 0).toFixed(2)}</td>
           </tr>
-        )) : <tr><td colSpan="8">Selected filter me booking prize nahi mila</td></tr>}
+        )) : <tr><td colSpan="9">Selected filter me booking prize nahi mila</td></tr>}
       </tbody>
     </table>
   </div>

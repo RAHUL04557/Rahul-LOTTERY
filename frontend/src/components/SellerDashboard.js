@@ -3020,12 +3020,15 @@ const SellerDashboard = ({
     });
   };
 
+  const visibleUnsoldMemoEntries = useMemo(() => (
+    unsoldMemoEntries.filter((entry) => isRemovableUnsoldEntry(entry))
+  ), [unsoldMemoEntries]);
   const editableUnsoldMemoEntries = useMemo(() => (
-    unsoldMemoEntries.filter((entry) => (
+    visibleUnsoldMemoEntries.filter((entry) => (
       String(entry.status || '').trim().toLowerCase() === 'unsold_saved'
     ))
-  ), [unsoldMemoEntries]);
-  const unsoldMemoSummaries = buildCurrentMemoSummaries(editableUnsoldMemoEntries);
+  ), [visibleUnsoldMemoEntries]);
+  const unsoldMemoSummaries = buildCurrentMemoSummaries(visibleUnsoldMemoEntries);
   const nextUnsoldMemoNumber = unsoldMemoSummaries.length > 0
     ? Math.max(...unsoldMemoSummaries.map((memo) => memo.memoNumber)) + 1
     : 1;
@@ -3102,10 +3105,10 @@ const SellerDashboard = ({
     setUnsoldMemoPopupOpen(true);
   };
 
-  const hydrateUnsoldDraftRowsForMemo = (memoNumber, sourceEntries = editableUnsoldMemoEntries) => {
+  const hydrateUnsoldDraftRowsForMemo = (memoNumber, sourceEntries = visibleUnsoldMemoEntries) => {
     const selectedEntries = sourceEntries.filter((entry) => (
       Number(entry.memoNumber) === Number(memoNumber)
-      && String(entry.status || '').trim().toLowerCase() === 'unsold_saved'
+      && isRemovableUnsoldEntry(entry)
     ));
     const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, amount, {
       existingUnsoldMemo: true,
@@ -3244,14 +3247,14 @@ const SellerDashboard = ({
       return;
     }
 
-    const selectedMemoExists = editableUnsoldMemoEntries.some((entry) => (
+    const selectedMemoExists = visibleUnsoldMemoEntries.some((entry) => (
       Number(entry.memoNumber) === Number(unsoldMemoNumber)
     ));
 
     if (selectedMemoExists) {
-      hydrateUnsoldDraftRowsForMemo(unsoldMemoNumber, editableUnsoldMemoEntries);
+      hydrateUnsoldDraftRowsForMemo(unsoldMemoNumber, visibleUnsoldMemoEntries);
     }
-  }, [activeTab, editableUnsoldMemoEntries, unsoldMemoNumber, unsoldMemoPopupOpen]);
+  }, [activeTab, visibleUnsoldMemoEntries, unsoldMemoNumber, unsoldMemoPopupOpen]);
 
   useEffect(() => {
     if (activeTab !== 'unsold' || !selectedUnsoldMemoOption?.isNew || unsoldMemoPopupOpen) {
