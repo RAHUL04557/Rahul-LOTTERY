@@ -1005,6 +1005,23 @@ const buildCurrentMemoSummaries = (entries = []) => {
   return buildPurchaseMemoSummaries(normalizedEntries);
 };
 
+const buildAdminUnsoldMemoSummaries = (entries = []) => {
+  const normalizedEntries = entries.map((entry) => ({
+    ...entry,
+    purchaseMemoNumber: entry.memoNumber ?? entry.memo_number ?? entry.purchaseMemoNumber ?? entry.purchase_memo_number ?? null
+  }));
+
+  return buildPurchaseMemoSummaries(normalizedEntries);
+};
+
+const getAdminUnsoldEntryMemoNumber = (entry = {}) => Number(
+  entry.memoNumber
+  || entry.memo_number
+  || entry.purchaseMemoNumber
+  || entry.purchase_memo_number
+  || 0
+);
+
 const PRIZE_RESULT_COLUMNS_PER_LINE = 5;
 const PRIZE_RESULT_MAX_STANDARD_FOUR_DIGIT_NUMBERS = 10;
 const PRIZE_RESULT_MAX_SECOND_PRIZE_NUMBERS = 10;
@@ -1482,6 +1499,7 @@ const AdminDashboard = ({
   const adminSendFromInputRef = useRef(null);
   const adminSendToInputRef = useRef(null);
   const adminSendDrawDateInputRef = useRef(null);
+  const pendingAdminUnsoldMemoAppendIndexRef = useRef(null);
   const dashboardRef = useRef(null);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [exitConfirmSelected, setExitConfirmSelected] = useState('no');
@@ -1658,6 +1676,42 @@ const AdminDashboard = ({
   useEffect(() => {
     setPurchaseActiveRowIndex((currentIndex) => Math.min(currentIndex, purchaseDraftRows.length));
   }, [purchaseDraftRows.length]);
+
+  useEffect(() => {
+    const pendingIndex = pendingAdminUnsoldMemoAppendIndexRef.current;
+    if (activeTab !== 'unsold' || pendingIndex === null) {
+      return;
+    }
+
+    if (!purchaseDraftRows.some((row) => row.isExistingUnsoldMemoRow)) {
+      pendingAdminUnsoldMemoAppendIndexRef.current = null;
+      return;
+    }
+
+    if (
+      purchaseActiveRowIndex !== pendingIndex
+      || purchaseCodeInput
+      || purchaseFromInput
+      || purchaseToInput
+    ) {
+      setPurchaseActiveRowIndex(pendingIndex);
+      resetPurchaseSendEntryInputs();
+      return;
+    }
+
+    pendingAdminUnsoldMemoAppendIndexRef.current = null;
+    window.requestAnimationFrame(() => {
+      adminSendCodeInputRef.current?.focus();
+      adminSendCodeInputRef.current?.select?.();
+    });
+  }, [
+    activeTab,
+    purchaseActiveRowIndex,
+    purchaseCodeInput,
+    purchaseDraftRows,
+    purchaseFromInput,
+    purchaseToInput
+  ]);
 
   useEffect(() => {
     if (activeTab !== 'purchase-send') {
@@ -2889,24 +2943,27 @@ const AdminDashboard = ({
         hydrateAdminUnsoldRemoveDraftRowsForMemo(option.memoNumber, adminUnsoldRemoveMemoEntries);
       } else {
         const selectedEntries = adminOwnedUnsoldPurchaseEntries.filter((entry) => (
-          Number(entry.memoNumber) === Number(option.memoNumber)
+          getAdminUnsoldEntryMemoNumber(entry) === Number(option.memoNumber)
         ));
         const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, purchaseAmount, {
           existingUnsoldMemo: true,
           ignoreMemoRowOrder: true
         });
+        const nextRowIndex = draftRows.length;
+        pendingAdminUnsoldMemoAppendIndexRef.current = nextRowIndex;
         setPurchaseDraftRows(draftRows);
+        resetPurchaseSendEntryInputs();
+        setPurchaseEditorVisible(true);
+        setPurchaseActiveRowIndex(nextRowIndex);
 
-        if (draftRows.length > 0) {
-          const firstRow = draftRows[0];
-          setPurchaseCodeInput(firstRow.code || '');
-          setPurchaseFromInput(firstRow.from || '');
-          setPurchaseToInput(firstRow.to || '');
-          setPurchaseActiveRowIndex(0);
-        } else {
-          setPurchaseActiveRowIndex(0);
+        window.setTimeout(() => {
+          setPurchaseActiveRowIndex(nextRowIndex);
           resetPurchaseSendEntryInputs();
-        }
+          window.requestAnimationFrame(() => {
+            adminSendCodeInputRef.current?.focus();
+            adminSendCodeInputRef.current?.select?.();
+          });
+        }, 0);
       }
     }
     window.requestAnimationFrame(() => adminSendCodeInputRef.current?.focus());
@@ -3692,30 +3749,9 @@ const AdminDashboard = ({
       await lotteryService.checkPurchaseUnsoldRemove(payload);
       return { ok: true };
     } catch (err) {
-      const requestedNumbers = buildConsecutiveNumbers(row.from, row.to);
-      if (requestedNumbers.error) {
-        return { error: err.response?.data?.message || requestedNumbers.error };
-      }
-
-      const lookupEntries = await getAdminUnsoldRemoveStockEntries({
-        bookingDate: payload.bookingDate,
-        sessionMode: payload.sessionMode,
-        purchaseCategory: payload.purchaseCategory,
-        sellerId: payload.sellerId,
-        amount: payload.amount,
-        boxValue: payload.boxValue
-      });
-      const removableNumbers = new Set(lookupEntries
-        .map((entry) => String(entry.number || '').padStart(5, '0')));
-      const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !removableNumbers.has(currentNumber));
-
-      if (missingNumbers.length === 0) {
-        return { ok: true };
-      }
-
       return {
         error: err.response?.data?.message
-          || `${formatAdminUnsoldErrorDate(payload.bookingDate)} date me ${getSelectedAdminUnsoldSellerName()} ke unsold remove stock me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
+          || `${formatAdminUnsoldErrorDate(payload.bookingDate)} date me ${getSelectedAdminUnsoldSellerName()} ke unsold remove stock me ye number nahi hai`
       };
     }
   };
@@ -5140,7 +5176,7 @@ const AdminDashboard = ({
     || String(entry.sentToParent || '') === String(user?.id || '')
     || String(entry.id || '').startsWith('manual-unsold-')
   ));
-  const adminUnsoldMemoSummaries = buildCurrentMemoSummaries(adminOwnedUnsoldPurchaseEntries);
+  const adminUnsoldMemoSummaries = buildAdminUnsoldMemoSummaries(adminOwnedUnsoldPurchaseEntries);
   const nextAdminUnsoldMemoNumber = adminUnsoldMemoSummaries.length > 0
     ? Math.max(...adminUnsoldMemoSummaries.map((memo) => memo.memoNumber)) + 1
     : 1;

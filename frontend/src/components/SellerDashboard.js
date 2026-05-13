@@ -1122,6 +1122,7 @@ const SellerDashboard = ({
   const unsoldCodeInputRef = useRef(null);
   const unsoldFromInputRef = useRef(null);
   const unsoldToInputRef = useRef(null);
+  const pendingUnsoldMemoAppendIndexRef = useRef(null);
   const dashboardRef = useRef(null);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [exitConfirmSelected, setExitConfirmSelected] = useState('no');
@@ -3132,15 +3133,73 @@ const SellerDashboard = ({
       existingUnsoldMemo: true,
       existingUnsoldRemoveMemo: true
     });
+    const nextRowIndex = draftRows.length;
+    pendingUnsoldMemoAppendIndexRef.current = nextRowIndex;
     setUnsoldDraftRows(draftRows);
     setUnsoldEditorVisible(true);
-    setUnsoldActiveRowIndex(draftRows.length);
+    setUnsoldActiveRowIndex(nextRowIndex);
     setUnsoldCodeInput('');
     setUnsoldTableFromInput('');
     setUnsoldTableToInput('');
     setUnsoldNumber('');
     setUnsoldRangeEndNumber('');
+    window.setTimeout(() => {
+      setUnsoldActiveRowIndex(nextRowIndex);
+      setUnsoldCodeInput('');
+      setUnsoldTableFromInput('');
+      setUnsoldTableToInput('');
+      setUnsoldNumber('');
+      setUnsoldRangeEndNumber('');
+      window.requestAnimationFrame(() => {
+        unsoldCodeInputRef.current?.focus();
+        unsoldCodeInputRef.current?.select?.();
+      });
+    }, 0);
   };
+
+  useEffect(() => {
+    const pendingIndex = pendingUnsoldMemoAppendIndexRef.current;
+    if (activeTab !== 'unsold' || pendingIndex === null) {
+      return;
+    }
+
+    if (!unsoldDraftRows.some((row) => row.isExistingUnsoldMemoRow)) {
+      pendingUnsoldMemoAppendIndexRef.current = null;
+      return;
+    }
+
+    if (
+      unsoldActiveRowIndex !== pendingIndex
+      || unsoldCodeInput
+      || unsoldTableFromInput
+      || unsoldTableToInput
+      || unsoldNumber
+      || unsoldRangeEndNumber
+    ) {
+      setUnsoldActiveRowIndex(pendingIndex);
+      setUnsoldCodeInput('');
+      setUnsoldTableFromInput('');
+      setUnsoldTableToInput('');
+      setUnsoldNumber('');
+      setUnsoldRangeEndNumber('');
+      return;
+    }
+
+    pendingUnsoldMemoAppendIndexRef.current = null;
+    window.requestAnimationFrame(() => {
+      unsoldCodeInputRef.current?.focus();
+      unsoldCodeInputRef.current?.select?.();
+    });
+  }, [
+    activeTab,
+    unsoldActiveRowIndex,
+    unsoldCodeInput,
+    unsoldDraftRows,
+    unsoldNumber,
+    unsoldRangeEndNumber,
+    unsoldTableFromInput,
+    unsoldTableToInput
+  ]);
 
   const hydrateUnsoldRemoveDraftRowsForMemo = (memoNumber, sourceEntries = unsoldRemoveMemoEntries) => {
     const selectedEntries = sourceEntries
@@ -3268,9 +3327,7 @@ const SellerDashboard = ({
     const selectedMemoExists = visibleUnsoldMemoEntries.some((entry) => (
       getUnsoldEntryMemoNumber(entry) === Number(unsoldMemoNumber)
     ));
-    const hasHydratedExistingMemoRows = unsoldDraftRows.some((row) => row.isExistingUnsoldMemoRow);
-
-    if (selectedMemoExists && (!hasHydratedExistingMemoRows || unsoldDraftRows.length === 0)) {
+    if (selectedMemoExists && unsoldDraftRows.length === 0) {
       hydrateUnsoldDraftRowsForMemo(unsoldMemoNumber, visibleUnsoldMemoEntries);
     }
   }, [activeTab, visibleUnsoldMemoEntries, unsoldMemoNumber, unsoldMemoPopupOpen, unsoldDraftRows]);
@@ -4173,33 +4230,10 @@ const SellerDashboard = ({
       await lotteryService.checkPurchaseUnsoldRemove(payload);
       return { ok: true };
     } catch (err) {
-      const requestedNumbers = buildConsecutiveNumbers(payload.rangeStart, payload.rangeEnd);
-      if (requestedNumbers.error) {
-        return { error: err.response?.data?.message || requestedNumbers.error };
-      }
-
-      const response = await lotteryService.getPurchases({
-        bookingDate: payload.bookingDate,
-        sessionMode: payload.sessionMode,
-        sellerId: payload.sellerId,
-        status: 'unsold',
-        purchaseCategory: payload.purchaseCategory,
-        amount: payload.amount,
-        boxValue: payload.boxValue
-      });
-      const lookupEntries = (response.data || []).map(mapApiEntry).filter(isRemovableUnsoldEntry);
-      const removableNumbers = new Set(lookupEntries
-        .map((entry) => String(entry.number || '').padStart(5, '0')));
-      const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !removableNumbers.has(currentNumber));
-
-      if (missingNumbers.length === 0) {
-        return { ok: true };
-      }
-
       const partyOption = unsoldPartyOptions.find((party) => String(party.id) === partyId) || selectedUnsoldParty || {};
       return {
         error: err.response?.data?.message
-          || `${formatDisplayDate(payload.bookingDate)} date me ${partyOption.username || 'selected party'} ke unsold remove stock me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
+          || `${formatDisplayDate(payload.bookingDate)} date me ${partyOption.username || 'selected party'} ke unsold remove stock me ye number nahi hai`
       };
     }
   };
@@ -4541,7 +4575,9 @@ const SellerDashboard = ({
         setUnsoldRangeEndNumber('');
         focusActiveSellerSelect();
       } else {
-        const refreshedUnsoldMemoSummaries = buildCurrentMemoSummaries(refreshedUnsoldEntries || []);
+        const refreshedUnsoldMemoSummaries = buildUnsoldMemoSummaries(
+          refreshedUnsoldEntries || []
+        );
         const nextMemoNumber = refreshedUnsoldMemoSummaries.length > 0
           ? Math.max(...refreshedUnsoldMemoSummaries.map((memo) => memo.memoNumber)) + 1
           : 1;
