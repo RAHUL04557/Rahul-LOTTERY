@@ -3013,7 +3013,8 @@ const AdminDashboard = ({
         boxValue: purchaseSem,
         amount: purchaseAmount,
         bookingDate: purchaseBookingDate,
-        sessionMode: purchaseSessionMode
+        sessionMode: purchaseSessionMode,
+        purchaseCategory
       });
 
       setSuccess(response.data.message || 'Purchase sent successfully');
@@ -5018,7 +5019,15 @@ const AdminDashboard = ({
         userId: user?.id,
         tab: 'purchase-send'
       });
-      setSendPurchaseDrafts(drafts.filter((draft) => Number(draft.memoNumber || 0) > 0).map(enrichSendPurchaseDraft));
+      setSendPurchaseDrafts(drafts
+        .filter((draft) => (
+          Number(draft.memoNumber || 0) > 0
+          && String(draft.bookingDate || '') === String(purchaseBookingDate || '')
+          && String(draft.sessionMode || '') === String(purchaseSessionMode || '')
+          && String(draft.purchaseCategory || '') === String(purchaseCategory || '')
+          && String(draft.amount || '') === String(purchaseAmount || '')
+        ))
+        .map(enrichSendPurchaseDraft));
     } catch (error) {
       setError(error.message || 'Send Purchase draft load nahi hua');
     } finally {
@@ -5105,7 +5114,7 @@ const AdminDashboard = ({
     if (activeTab === 'send-purchase') {
       loadSendPurchaseDrafts();
     }
-  }, [activeTab, user?.id, treeData]);
+  }, [activeTab, user?.id, treeData, purchaseBookingDate, purchaseSessionMode, purchaseCategory, purchaseAmount]);
   const adminStockMemoSummaries = buildPurchaseMemoSummaries(adminStockEntries);
   const nextAdminStockMemoNumber = adminStockMemoSummaries.length > 0
     ? Math.max(...adminStockMemoSummaries.map((memo) => memo.memoNumber)) + 1

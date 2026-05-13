@@ -1414,7 +1414,15 @@ const SellerDashboard = ({
         userId: user?.id,
         tab: 'purchase-send'
       });
-      setSendPurchaseDrafts(drafts.filter((draft) => Number(draft.memoNumber || 0) > 0).map(enrichSendPurchaseDraft));
+      setSendPurchaseDrafts(drafts
+        .filter((draft) => (
+          Number(draft.memoNumber || 0) > 0
+          && String(draft.bookingDate || '') === String(bookingDate || '')
+          && String(draft.sessionMode || '') === String(sessionMode || '')
+          && String(draft.purchaseCategory || '') === String(activePurchaseCategory || '')
+          && String(draft.amount || '') === String(amount || '')
+        ))
+        .map(enrichSendPurchaseDraft));
     } catch (error) {
       setBookingError(error.message || 'Send Purchase draft load nahi hua');
     } finally {
@@ -1505,7 +1513,7 @@ const SellerDashboard = ({
     if (activeTab === 'send-purchase') {
       loadSendPurchaseDrafts();
     }
-  }, [activeTab, user?.id, treeData]);
+  }, [activeTab, user?.id, treeData, bookingDate, sessionMode, activePurchaseCategory, amount]);
   const unsoldPartyOptions = [
     {
       id: user?.id,

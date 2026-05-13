@@ -1514,7 +1514,8 @@ const assignPurchasedEntries = async (req, res) => {
     const bookingDate = normalizeBookingDate(rawBookingDate);
     const targetSellerId = Number(sellerId || sellerUserId);
     const rangeResult = buildPurchaseNumbers(rangeStart, rangeEnd);
-    const purchaseCategory = normalizePurchaseCategory(req.body.purchaseCategory || req.query.purchaseCategory || req.headers['x-purchase-category']);
+    const purchaseCategory = normalizePurchaseCategory(req.body.purchaseCategory || req.query.purchaseCategory || req.headers['x-purchase-category'])
+      || getDefaultPurchaseCategory(sessionMode);
     const normalizedBoxValue = normalizePurchaseBoxValue(boxValue);
     const normalizedAmount = normalizePurchaseAmount(amount);
 
@@ -1651,7 +1652,8 @@ const addAdminPurchaseEntries = async (req, res) => {
     const sessionMode = getRequiredSessionMode(req, res);
     const bookingDate = normalizeBookingDate(rawBookingDate);
     const rangeResult = buildPurchaseNumbers(rangeStart, rangeEnd);
-    const purchaseCategory = normalizePurchaseCategory(req.body.purchaseCategory || req.query.purchaseCategory || req.headers['x-purchase-category']);
+    const purchaseCategory = normalizePurchaseCategory(req.body.purchaseCategory || req.query.purchaseCategory || req.headers['x-purchase-category'])
+      || getDefaultPurchaseCategory(sessionMode);
     const normalizedBoxValue = normalizePurchaseBoxValue(boxValue);
     const normalizedAmount = normalizePurchaseAmount(amount);
 
@@ -4277,7 +4279,8 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
 
     const sessionMode = getRequiredSessionMode(req, res);
     const bookingDate = normalizeBookingDate(req.body.bookingDate || req.query.bookingDate);
-    const purchaseCategory = normalizePurchaseCategory(req.body.purchaseCategory || req.query.purchaseCategory || req.headers['x-purchase-category']);
+    const purchaseCategory = normalizePurchaseCategory(req.body.purchaseCategory || req.query.purchaseCategory || req.headers['x-purchase-category'])
+      || getDefaultPurchaseCategory(sessionMode);
     const amount = String(req.body.amount || req.query.amount || '').trim();
     const normalizedAmount = /^\d+(\.\d+)?$/.test(amount) ? amount : '';
 
