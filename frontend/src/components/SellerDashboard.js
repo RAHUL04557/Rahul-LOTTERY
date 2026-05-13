@@ -690,11 +690,28 @@ const buildCurrentMemoSummaries = (entries = []) => {
   return buildPurchaseMemoSummaries(normalizedEntries);
 };
 
+const buildUnsoldMemoSummaries = (entries = []) => {
+  const normalizedEntries = entries.map((entry) => ({
+    ...entry,
+    purchaseMemoNumber: entry.memoNumber ?? entry.memo_number ?? entry.purchaseMemoNumber ?? entry.purchase_memo_number ?? null
+  }));
+
+  return buildPurchaseMemoSummaries(normalizedEntries);
+};
+
 const getPurchaseEntryMemoNumber = (entry = {}) => Number(
   entry.purchaseMemoNumber
   || entry.purchase_memo_number
   || entry.memoNumber
   || entry.memo_number
+  || 0
+);
+
+const getUnsoldEntryMemoNumber = (entry = {}) => Number(
+  entry.memoNumber
+  || entry.memo_number
+  || entry.purchaseMemoNumber
+  || entry.purchase_memo_number
   || 0
 );
 
@@ -3022,9 +3039,7 @@ const SellerDashboard = ({
 
   const visibleUnsoldMemoEntries = useMemo(() => (
     unsoldMemoEntries.filter((entry) => (
-      entry.memoNumber !== null
-      && entry.memoNumber !== undefined
-      && String(entry.memoNumber).trim() !== ''
+      getUnsoldEntryMemoNumber(entry) > 0
     ))
   ), [unsoldMemoEntries]);
   const editableUnsoldMemoEntries = useMemo(() => (
@@ -3032,7 +3047,7 @@ const SellerDashboard = ({
       String(entry.status || '').trim().toLowerCase() === 'unsold_saved'
     ))
   ), [visibleUnsoldMemoEntries]);
-  const unsoldMemoSummaries = buildCurrentMemoSummaries(visibleUnsoldMemoEntries);
+  const unsoldMemoSummaries = buildUnsoldMemoSummaries(visibleUnsoldMemoEntries);
   const nextUnsoldMemoNumber = unsoldMemoSummaries.length > 0
     ? Math.max(...unsoldMemoSummaries.map((memo) => memo.memoNumber)) + 1
     : 1;
@@ -3111,7 +3126,7 @@ const SellerDashboard = ({
 
   const hydrateUnsoldDraftRowsForMemo = (memoNumber, sourceEntries = visibleUnsoldMemoEntries) => {
     const selectedEntries = sourceEntries.filter((entry) => (
-      Number(entry.memoNumber) === Number(memoNumber)
+      getUnsoldEntryMemoNumber(entry) === Number(memoNumber)
     ));
     const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, amount, {
       existingUnsoldMemo: true,
@@ -3251,13 +3266,14 @@ const SellerDashboard = ({
     }
 
     const selectedMemoExists = visibleUnsoldMemoEntries.some((entry) => (
-      Number(entry.memoNumber) === Number(unsoldMemoNumber)
+      getUnsoldEntryMemoNumber(entry) === Number(unsoldMemoNumber)
     ));
+    const hasHydratedExistingMemoRows = unsoldDraftRows.some((row) => row.isExistingUnsoldMemoRow);
 
-    if (selectedMemoExists) {
+    if (selectedMemoExists && (!hasHydratedExistingMemoRows || unsoldDraftRows.length === 0)) {
       hydrateUnsoldDraftRowsForMemo(unsoldMemoNumber, visibleUnsoldMemoEntries);
     }
-  }, [activeTab, visibleUnsoldMemoEntries, unsoldMemoNumber, unsoldMemoPopupOpen]);
+  }, [activeTab, visibleUnsoldMemoEntries, unsoldMemoNumber, unsoldMemoPopupOpen, unsoldDraftRows]);
 
   useEffect(() => {
     if (activeTab !== 'unsold' || !selectedUnsoldMemoOption?.isNew || unsoldMemoPopupOpen) {
