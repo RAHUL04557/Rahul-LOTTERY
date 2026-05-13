@@ -1115,6 +1115,8 @@ const SellerDashboard = ({
   const unsoldDateInputRef = useRef(null);
   const unsoldPartySelectRef = useRef(null);
   const unsoldMemoRef = useRef(null);
+  const unsoldMemoLoadSeqRef = useRef(0);
+  const unsoldRemoveMemoLoadSeqRef = useRef(0);
   const purchaseCodeInputRef = useRef(null);
   const purchaseFromInputRef = useRef(null);
   const purchaseToInputRef = useRef(null);
@@ -2122,16 +2124,20 @@ const SellerDashboard = ({
   };
 
   const loadUnsoldMemoEntries = async (targetSellerId = unsoldPartyId, selectedBookingDate = bookingDate) => {
+    const requestSeq = unsoldMemoLoadSeqRef.current + 1;
+    unsoldMemoLoadSeqRef.current = requestSeq;
     if (!targetSellerId) {
       setUnsoldMemoEntries([]);
       return;
     }
 
+    setUnsoldMemoEntries([]);
+
     try {
       const response = await lotteryService.getPurchases({
         bookingDate: selectedBookingDate,
         sessionMode,
-        sellerId: String(targetSellerId) === String(user?.id) ? undefined : targetSellerId,
+        sellerId: targetSellerId,
         status: 'unsold',
         purchaseCategory: activePurchaseCategory,
         amount
@@ -2139,16 +2145,22 @@ const SellerDashboard = ({
       const mappedEntries = (response.data || [])
         .map(mapApiEntry)
         .filter((entry) => activeTab === 'unsold-remove' ? isRemovableUnsoldEntry(entry) : true);
-      setUnsoldMemoEntries(mappedEntries);
+      if (requestSeq === unsoldMemoLoadSeqRef.current) {
+        setUnsoldMemoEntries(mappedEntries);
+      }
       return mappedEntries;
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading unsold memo entries');
-      setUnsoldMemoEntries([]);
+      if (requestSeq === unsoldMemoLoadSeqRef.current) {
+        setUnsoldMemoEntries([]);
+      }
       return [];
     }
   };
 
   const loadUnsoldRemoveMemoEntries = async (targetSellerId = unsoldPartyId, selectedBookingDate = bookingDate) => {
+    const requestSeq = unsoldRemoveMemoLoadSeqRef.current + 1;
+    unsoldRemoveMemoLoadSeqRef.current = requestSeq;
     if (!targetSellerId) {
       setUnsoldRemoveMemoEntries([]);
       return [];
@@ -2158,16 +2170,20 @@ const SellerDashboard = ({
       const response = await lotteryService.getPurchaseUnsoldRemoveMemo({
         bookingDate: selectedBookingDate,
         sessionMode,
-        sellerId: String(targetSellerId) === String(user?.id) ? undefined : targetSellerId,
+        sellerId: targetSellerId,
         amount,
         purchaseCategory: activePurchaseCategory
       });
       const mappedEntries = (response.data || []).map(mapHistoryRecord);
-      setUnsoldRemoveMemoEntries(mappedEntries);
+      if (requestSeq === unsoldRemoveMemoLoadSeqRef.current) {
+        setUnsoldRemoveMemoEntries(mappedEntries);
+      }
       return mappedEntries;
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading unsold remove memo entries');
-      setUnsoldRemoveMemoEntries([]);
+      if (requestSeq === unsoldRemoveMemoLoadSeqRef.current) {
+        setUnsoldRemoveMemoEntries([]);
+      }
       return [];
     }
   };
@@ -3040,9 +3056,11 @@ const SellerDashboard = ({
 
   const visibleUnsoldMemoEntries = useMemo(() => (
     unsoldMemoEntries.filter((entry) => (
+      String(entry.userId || '') === String(unsoldPartyId || '')
+      &&
       getUnsoldEntryMemoNumber(entry) > 0
     ))
-  ), [unsoldMemoEntries]);
+  ), [unsoldMemoEntries, unsoldPartyId]);
   const editableUnsoldMemoEntries = useMemo(() => (
     visibleUnsoldMemoEntries.filter((entry) => (
       String(entry.status || '').trim().toLowerCase() === 'unsold_saved'

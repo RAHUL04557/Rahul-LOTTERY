@@ -1500,6 +1500,8 @@ const AdminDashboard = ({
   const adminSendToInputRef = useRef(null);
   const adminSendDrawDateInputRef = useRef(null);
   const pendingAdminUnsoldMemoAppendIndexRef = useRef(null);
+  const adminPurchaseLoadSeqRef = useRef(0);
+  const adminUnsoldRemoveMemoLoadSeqRef = useRef(0);
   const dashboardRef = useRef(null);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [exitConfirmSelected, setExitConfirmSelected] = useState('no');
@@ -2498,6 +2500,8 @@ const AdminDashboard = ({
     selectedSessionMode = purchaseSessionMode,
     selectedSellerId = purchaseSellerId
   ) => {
+    const requestSeq = adminPurchaseLoadSeqRef.current + 1;
+    adminPurchaseLoadSeqRef.current = requestSeq;
     try {
       if (!selectedSellerId) {
         setPurchaseEntries([]);
@@ -2524,11 +2528,15 @@ const AdminDashboard = ({
         })
       ]);
 
-      setPurchaseEntries(normalizeAdminSelectedSellerEntries(assignedResponse.data || [], selectedSellerId));
-      setUnsoldPurchaseEntries(normalizeAdminSelectedSellerEntries(unsoldResponse.data || [], selectedSellerId)
-        .filter((entry) => activeTab === 'unsold-remove' ? isRemovableUnsoldEntry(entry) : true));
+      if (requestSeq === adminPurchaseLoadSeqRef.current) {
+        setPurchaseEntries(normalizeAdminSelectedSellerEntries(assignedResponse.data || [], selectedSellerId));
+        setUnsoldPurchaseEntries(normalizeAdminSelectedSellerEntries(unsoldResponse.data || [], selectedSellerId)
+          .filter((entry) => activeTab === 'unsold-remove' ? isRemovableUnsoldEntry(entry) : true));
+      }
     } catch (err) {
-      setError(err.response?.data?.message || 'Error loading purchase record');
+      if (requestSeq === adminPurchaseLoadSeqRef.current) {
+        setError(err.response?.data?.message || 'Error loading purchase record');
+      }
     }
   };
 
@@ -2537,6 +2545,8 @@ const AdminDashboard = ({
     selectedSessionMode = purchaseSessionMode,
     selectedSellerId = purchaseSellerId
   ) => {
+    const requestSeq = adminUnsoldRemoveMemoLoadSeqRef.current + 1;
+    adminUnsoldRemoveMemoLoadSeqRef.current = requestSeq;
     if (!selectedSellerId) {
       setAdminUnsoldRemoveMemoEntries([]);
       return [];
@@ -2551,11 +2561,15 @@ const AdminDashboard = ({
         amount: purchaseAmount
       });
       const mappedEntries = (response.data || []).map(mapHistoryRecord);
-      setAdminUnsoldRemoveMemoEntries(mappedEntries);
+      if (requestSeq === adminUnsoldRemoveMemoLoadSeqRef.current) {
+        setAdminUnsoldRemoveMemoEntries(mappedEntries);
+      }
       return mappedEntries;
     } catch (err) {
-      setError(err.response?.data?.message || 'Error loading unsold remove memo entries');
-      setAdminUnsoldRemoveMemoEntries([]);
+      if (requestSeq === adminUnsoldRemoveMemoLoadSeqRef.current) {
+        setError(err.response?.data?.message || 'Error loading unsold remove memo entries');
+        setAdminUnsoldRemoveMemoEntries([]);
+      }
       return [];
     }
   };
@@ -5172,9 +5186,12 @@ const AdminDashboard = ({
   const isEditingExistingPurchaseMemo = purchaseMemoSummaries.some((memo) => Number(memo.memoNumber) === Number(purchaseMemoNumber));
   const highlightedPurchaseMemoOption = purchaseMemoOptions[purchaseMemoSelectionIndex] || selectedPurchaseMemoOption || null;
   const adminOwnedUnsoldPurchaseEntries = unsoldPurchaseEntries.filter((entry) => (
+    String(entry.userId || '') === String(purchaseSellerId || '')
+    && (
     String(entry.forwardedBy || '') === String(user?.id || '')
     || String(entry.sentToParent || '') === String(user?.id || '')
     || String(entry.id || '').startsWith('manual-unsold-')
+    )
   ));
   const adminUnsoldMemoSummaries = buildAdminUnsoldMemoSummaries(adminOwnedUnsoldPurchaseEntries);
   const nextAdminUnsoldMemoNumber = adminUnsoldMemoSummaries.length > 0

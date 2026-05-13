@@ -140,8 +140,12 @@ const getPurchasesFromLocalDb = async (params = {}) => {
   }
 
   const currentUser = getCurrentUser();
+  const scopedParams = { ...params };
+  if (!scopedParams.sellerId && currentUser?.role === 'seller' && currentUser?.id) {
+    scopedParams.sellerId = currentUser.id;
+  }
   const data = await localDb.listPurchases({
-    ...params,
+    ...scopedParams,
     currentUserId: currentUser?.id
   });
   return { data };
