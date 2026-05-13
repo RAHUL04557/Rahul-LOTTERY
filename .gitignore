@@ -16,5 +16,6 @@ yarn-error.log*
 .eslintrc
 frontend/release/*.exe
 frontend/release/*.exe.blockmap
+frontend/release/*.zip
 frontend/release/latest.yml
 frontend/release/win-unpacked/
