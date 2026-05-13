@@ -1798,9 +1798,18 @@ const AdminDashboard = ({
       return;
     }
 
-    let cancelled = false;
     adminPurchaseDraftRestoreKeyRef.current = adminLocalDraftKey;
     adminPurchaseSkipSaveKeyRef.current = adminLocalDraftKey;
+    if (activeTab === 'unsold' || activeTab === 'unsold-remove') {
+      clearDraftRows(adminLocalDraftKey);
+      setPurchaseDraftRows([]);
+      setPurchaseMemoNumber(null);
+      setPurchaseActiveRowIndex(0);
+      setPurchaseEditorVisible(true);
+      return;
+    }
+
+    let cancelled = false;
     loadDraftRows(adminLocalDraftKey).then((savedRows) => {
       if (cancelled) {
         return;
@@ -5187,6 +5196,10 @@ const AdminDashboard = ({
   const highlightedPurchaseMemoOption = purchaseMemoOptions[purchaseMemoSelectionIndex] || selectedPurchaseMemoOption || null;
   const adminOwnedUnsoldPurchaseEntries = unsoldPurchaseEntries.filter((entry) => (
     String(entry.userId || '') === String(purchaseSellerId || '')
+    && getDateOnlyValue(entry.bookingDate) === purchaseBookingDate
+    && String(entry.sessionMode || '') === String(purchaseSessionMode || '')
+    && String(entry.purchaseCategory || '') === String(purchaseCategory || '')
+    && String(entry.amount || '') === String(purchaseAmount || '')
     && (
     String(entry.forwardedBy || '') === String(user?.id || '')
     || String(entry.sentToParent || '') === String(user?.id || '')

@@ -1987,21 +1987,12 @@ const SellerDashboard = ({
       return;
     }
 
-    let cancelled = false;
     sellerUnsoldDraftRestoreKeyRef.current = sellerLocalDraftKey;
     sellerUnsoldSkipSaveKeyRef.current = sellerLocalDraftKey;
-    loadDraftRows(sellerLocalDraftKey).then((savedRows) => {
-      if (cancelled) {
-        return;
-      }
-      setUnsoldDraftRows(savedRows);
-      setUnsoldActiveRowIndex(savedRows.length > 0 ? savedRows.length : 0);
-      setUnsoldEditorVisible(true);
-    });
-
-    return () => {
-      cancelled = true;
-    };
+    clearDraftRows(sellerLocalDraftKey);
+    setUnsoldDraftRows([]);
+    setUnsoldActiveRowIndex(0);
+    setUnsoldEditorVisible(true);
   }, [activeTab, sellerLocalDraftKey, purchaseSendSellerId, bookingDate]);
 
   useEffect(() => {
@@ -2047,15 +2038,32 @@ const SellerDashboard = ({
   const loadPurchaseEntries = async () => {
     try {
       if (user?.role === 'admin') {
-        const response = await lotteryService.getAdminPurchases({ bookingDate, amount });
+        const response = await lotteryService.getAdminPurchases({
+          bookingDate,
+          sessionMode,
+          purchaseCategory: activePurchaseCategory,
+          amount
+        });
         setPurchaseEntries(response.data.map(mapApiEntry));
         setUnsoldEntries([]);
         return;
       }
 
       const [assignedResponse, unsoldResponse] = await Promise.all([
-        lotteryService.getPurchases({ bookingDate, status: 'accepted', amount }),
-        lotteryService.getPurchases({ bookingDate, status: 'unsold', amount })
+        lotteryService.getPurchases({
+          bookingDate,
+          sessionMode,
+          status: 'accepted',
+          purchaseCategory: activePurchaseCategory,
+          amount
+        }),
+        lotteryService.getPurchases({
+          bookingDate,
+          sessionMode,
+          status: 'unsold',
+          purchaseCategory: activePurchaseCategory,
+          amount
+        })
       ]);
       setPurchaseEntries(assignedResponse.data.map(mapApiEntry));
       setUnsoldEntries(unsoldResponse.data.map(mapApiEntry));
@@ -2144,7 +2152,14 @@ const SellerDashboard = ({
       });
       const mappedEntries = (response.data || [])
         .map(mapApiEntry)
-        .filter((entry) => activeTab === 'unsold-remove' ? isRemovableUnsoldEntry(entry) : true);
+        .filter((entry) => (
+          String(entry.userId || '') === String(targetSellerId || '')
+          && getDateOnlyValue(entry.bookingDate) === selectedBookingDate
+          && String(entry.sessionMode || '') === String(sessionMode || '')
+          && String(entry.purchaseCategory || '') === String(activePurchaseCategory || '')
+          && String(entry.amount || '') === String(amount || '')
+          && (activeTab === 'unsold-remove' ? isRemovableUnsoldEntry(entry) : true)
+        ));
       if (requestSeq === unsoldMemoLoadSeqRef.current) {
         setUnsoldMemoEntries(mappedEntries);
       }
@@ -3057,10 +3072,14 @@ const SellerDashboard = ({
   const visibleUnsoldMemoEntries = useMemo(() => (
     unsoldMemoEntries.filter((entry) => (
       String(entry.userId || '') === String(unsoldPartyId || '')
+      && getDateOnlyValue(entry.bookingDate) === bookingDate
+      && String(entry.sessionMode || '') === String(sessionMode || '')
+      && String(entry.purchaseCategory || '') === String(activePurchaseCategory || '')
+      && String(entry.amount || '') === String(amount || '')
       &&
       getUnsoldEntryMemoNumber(entry) > 0
     ))
-  ), [unsoldMemoEntries, unsoldPartyId]);
+  ), [unsoldMemoEntries, unsoldPartyId, bookingDate, sessionMode, activePurchaseCategory, amount]);
   const editableUnsoldMemoEntries = useMemo(() => (
     visibleUnsoldMemoEntries.filter((entry) => (
       String(entry.status || '').trim().toLowerCase() === 'unsold_saved'
