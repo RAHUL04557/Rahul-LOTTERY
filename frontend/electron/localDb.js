@@ -1967,7 +1967,7 @@ const setupLocalDbIpc = (ipcMain) => {
               AND session_mode = ?
               AND purchase_category = ?
               AND amount = ?
-              AND LOWER(TRIM(status)) IN ('unsold_saved', 'unsold')
+              AND LOWER(TRIM(status)) IN ('unsold_saved', 'unsold_sent', 'unsold_accepted', 'unsold')
           `)
           .run(
             now,
@@ -1981,6 +1981,59 @@ const setupLocalDbIpc = (ipcMain) => {
             purchaseCategory,
             amount
           );
+
+        (Array.isArray(payload.rows) ? payload.rows : []).forEach((row, index) => {
+          const numbers = getPayloadNumbers({
+            rangeStart: row.rangeStart,
+            rangeEnd: row.rangeEnd,
+            number: row.number
+          });
+
+          if (numbers.length === 0) {
+            return;
+          }
+
+          const rowBookingDate = toLocalDate(row.bookingDate || bookingDate);
+          const rowSessionMode = String(row.sessionMode || sessionMode || '');
+          const rowPurchaseCategory = String(row.purchaseCategory || purchaseCategory || '');
+          const rowAmount = String(row.amount || amount || '');
+          const rowBoxValue = String(row.boxValue || '');
+          const placeholders = numbers.map(() => '?').join(', ');
+
+          initLocalDb()
+            .prepare(`
+              UPDATE local_purchase_entries
+              SET status = 'unsold_saved',
+                  memo_number = ?,
+                  purchase_memo_number = COALESCE(purchase_memo_number, memo_number, ?),
+                  memo_row_order = ?,
+                  updated_at = ?,
+                  sync_status = ?
+              WHERE user_id = ?
+                AND entry_source = 'purchase'
+                AND booking_date = ?
+                AND session_mode = ?
+                AND purchase_category = ?
+                AND amount = ?
+                AND box_value = ?
+                AND number IN (${placeholders})
+                AND LOWER(TRIM(status)) = 'accepted'
+            `)
+            .run(
+              memoNumber,
+              memoNumber,
+              row.memoRowOrder ?? index,
+              now,
+              payload.serverSynced ? 'synced' : 'pending',
+              targetUserId,
+              rowBookingDate,
+              rowSessionMode,
+              rowPurchaseCategory,
+              rowAmount,
+              rowBoxValue,
+              ...numbers
+            );
+        });
       }
     }
 

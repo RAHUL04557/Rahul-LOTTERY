@@ -3021,7 +3021,11 @@ const SellerDashboard = ({
   };
 
   const visibleUnsoldMemoEntries = useMemo(() => (
-    unsoldMemoEntries.filter((entry) => isRemovableUnsoldEntry(entry))
+    unsoldMemoEntries.filter((entry) => (
+      entry.memoNumber !== null
+      && entry.memoNumber !== undefined
+      && String(entry.memoNumber).trim() !== ''
+    ))
   ), [unsoldMemoEntries]);
   const editableUnsoldMemoEntries = useMemo(() => (
     visibleUnsoldMemoEntries.filter((entry) => (
@@ -3108,7 +3112,6 @@ const SellerDashboard = ({
   const hydrateUnsoldDraftRowsForMemo = (memoNumber, sourceEntries = visibleUnsoldMemoEntries) => {
     const selectedEntries = sourceEntries.filter((entry) => (
       Number(entry.memoNumber) === Number(memoNumber)
-      && isRemovableUnsoldEntry(entry)
     ));
     const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, amount, {
       existingUnsoldMemo: true,
