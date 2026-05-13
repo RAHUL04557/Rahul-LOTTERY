@@ -3445,7 +3445,7 @@ const removePurchaseUnsoldEntries = async (req, res) => {
          AND le.purchase_category = $4
          AND le.booking_date = $5::date
          AND le.number = ANY($6::varchar[])
-         AND LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
+         AND LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')
          ${stockFilters.join('\n         ')}
          ${ownershipFilter}
        ORDER BY le.number ASC`,
@@ -3458,7 +3458,6 @@ const removePurchaseUnsoldEntries = async (req, res) => {
         PURCHASE_ENTRY_SOURCE,
         req.user.id,
         'saved_unsold',
-        normalizedMemoNumber,
         sessionMode,
         purchaseCategory,
         bookingDate,
@@ -3480,11 +3479,10 @@ const removePurchaseUnsoldEntries = async (req, res) => {
            AND le.entry_source = $2
            AND h.actor_user_id = $3
            AND h.action_type = $4
-           AND h.memo_number = $5
-           AND h.session_mode = $6
-           AND h.purchase_category = $7
-           AND h.booking_date = $8::date
-           AND h.number = ANY($9::varchar[])
+           AND h.session_mode = $5
+           AND h.purchase_category = $6
+           AND h.booking_date = $7::date
+           AND h.number = ANY($8::varchar[])
            AND LOWER(TRIM(le.status)) = 'accepted'
            ${manualFilters.join('\n           ')}
          RETURNING h.*`,
@@ -3642,7 +3640,7 @@ const checkPurchaseUnsoldRemoveEntries = async (req, res) => {
          AND le.purchase_category = $4
          AND le.booking_date = $5::date
          AND le.number = ANY($6::varchar[])
-         AND LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
+         AND LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')
          ${stockFilters.join('\n         ')}
          ${ownershipFilter}
        ORDER BY le.number ASC`,
@@ -3987,7 +3985,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
          AND session_mode = $6
          AND purchase_category = $7
          AND amount = $8::numeric
-         AND LOWER(TRIM(status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold_accepted')
+         AND LOWER(TRIM(status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold', 'unsold_accepted')
        ORDER BY number ASC`,
       [targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount]
     );
