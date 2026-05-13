@@ -346,12 +346,18 @@ const getLocalPrizeResults = async (params = {}) => {
 
 const getLocalBillPrizes = async (params = {}) => {
   const localDb = getLocalDb();
+  const currentUser = getCurrentUser();
 
-  if (!localDb?.getBillPrizes || !(await canUseLocalRead())) {
+  if (!localDb?.getBillPrizes || !(await canUseLocalRead()) || !currentUser?.id) {
     return null;
   }
 
-  return { data: await localDb.getBillPrizes(params) };
+  return {
+    data: await localDb.getBillPrizes({
+      ...params,
+      user: currentUser
+    })
+  };
 };
 
 const checkPrizeFromLocalDb = async (params = {}) => {
@@ -366,12 +372,18 @@ const checkPrizeFromLocalDb = async (params = {}) => {
 
 const getFilteredPrizeResultsFromLocalDb = async (params = {}) => {
   const localDb = getLocalDb();
+  const currentUser = getCurrentUser();
 
-  if (!localDb?.getFilteredPrizeResults || !(await canUseLocalRead())) {
+  if (!localDb?.getFilteredPrizeResults || !(await canUseLocalRead()) || !currentUser?.id) {
     return null;
   }
 
-  return { data: await localDb.getFilteredPrizeResults(params) };
+  return {
+    data: await localDb.getFilteredPrizeResults({
+      ...params,
+      user: currentUser
+    })
+  };
 };
 
 // Add token to all requests

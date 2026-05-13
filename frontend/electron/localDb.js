@@ -551,6 +551,75 @@ const getPrizeMultiplier = (amountValue, semValue) => {
 
 const isUnsoldStatus = (status) => ['unsold_saved', 'unsold_sent', 'unsold_accepted', 'unsold'].includes(String(status || '').trim().toLowerCase());
 
+const buildEntryPrizeLookupKey = ({
+  userId,
+  bookingDate,
+  sessionMode,
+  purchaseCategory,
+  amount,
+  boxValue,
+  number
+}) => ([
+  Number(userId || 0),
+  toLocalDate(bookingDate),
+  String(sessionMode || ''),
+  String(purchaseCategory || ''),
+  String(amount || ''),
+  String(boxValue || ''),
+  String(number || '')
+].join('|'));
+
+const getManualUnsoldLookup = ({ actorUserId, filters = {} }) => {
+  const normalizedActorUserId = Number(actorUserId || filters.currentUserId || filters.userId || filters.user?.id || 0);
+  if (!normalizedActorUserId) {
+    return new Set();
+  }
+
+  const params = [normalizedActorUserId];
+  const conditions = ['actor_user_id = ?'];
+  const { fromDate, toDate } = getDateRange(filters);
+
+  if (fromDate && toDate) {
+    params.push(fromDate, toDate);
+    conditions.push('booking_date BETWEEN ? AND ?');
+  }
+
+  if (filters.bookingDate) {
+    params.push(toLocalDate(filters.bookingDate));
+    conditions.push('booking_date = ?');
+  }
+
+  addCommonPurchaseFilters(conditions, params, {
+    sessionMode: filters.sessionMode || filters.shift,
+    purchaseCategory: filters.purchaseCategory,
+    amount: filters.amount,
+    boxValue: filters.sem || filters.boxValue
+  });
+
+  if (filters.sellerId) {
+    params.push(Number(filters.sellerId));
+    conditions.push('user_id = ?');
+  }
+
+  const rows = initLocalDb()
+    .prepare(`
+      SELECT user_id, booking_date, session_mode, purchase_category, amount, box_value, number
+      FROM local_manual_unsold_entries
+      WHERE ${conditions.join(' AND ')}
+    `)
+    .all(...params);
+
+  return new Set(rows.map((row) => buildEntryPrizeLookupKey({
+    userId: row.user_id,
+    bookingDate: row.booking_date,
+    sessionMode: row.session_mode,
+    purchaseCategory: row.purchase_category,
+    amount: row.amount,
+    boxValue: row.box_value,
+    number: row.number
+  })));
+};
+
 const buildPrizeFilters = (filters = {}) => {
   const params = [];
   const conditions = ['1 = 1'];
@@ -616,6 +685,9 @@ const listLocalPurchaseRowsForPrize = (filters = {}) => {
     conditions.push('user_id = ?');
   }
 
+  const usersById = new Map(getSavedVisibleUsers().map((user) => [Number(user.id), user]));
+  const manualUnsoldLookup = getManualUnsoldLookup({ filters });
+
   return initLocalDb()
     .prepare(`
       SELECT *
@@ -623,7 +695,25 @@ const listLocalPurchaseRowsForPrize = (filters = {}) => {
       WHERE ${conditions.join(' AND ')}
       ORDER BY booking_date DESC, session_mode ASC, user_id ASC, amount ASC, box_value ASC, number ASC
     `)
-    .all(...params);
+    .all(...params)
+    .map((row) => {
+      const manualUnsoldKey = buildEntryPrizeLookupKey({
+        userId: row.user_id,
+        bookingDate: row.booking_date,
+        sessionMode: row.session_mode,
+        purchaseCategory: row.purchase_category,
+        amount: row.amount,
+        boxValue: row.box_value,
+        number: row.number
+      });
+      const sellerUser = usersById.get(Number(row.user_id)) || {};
+
+      return {
+        ...row,
+        status: manualUnsoldLookup.has(manualUnsoldKey) ? 'unsold_saved' : row.status,
+        seller_username: sellerUser.username || null
+      };
+    });
 };
 
 const calculatePrizeRows = ({ purchases, prizes }) => purchases.flatMap((entry) => {
@@ -644,7 +734,7 @@ const calculatePrizeRows = ({ purchases, prizes }) => purchases.flatMap((entry) 
       prizeId: prize.id || prize.localId,
       entryId: entry.server_id || entry.local_id,
       sellerId: entry.user_id,
-      sellerUsername: null,
+      sellerUsername: entry.seller_username || entry.username || null,
       bookedNumber,
       number: bookedNumber,
       amount: Number(entry.amount),
@@ -1417,7 +1507,10 @@ const setupLocalDbIpc = (ipcMain) => {
 
   ipcMain.handle('local-db:get-bill-prizes', (_event, filters = {}) => {
     const prizes = listLocalPrizeResults(filters);
-    const purchases = listLocalPurchaseRowsForPrize(filters);
+    const purchases = listLocalPurchaseRowsForPrize({
+      ...filters,
+      currentUserId: filters.currentUserId || filters.userId || filters.user?.id
+    });
 
     return calculatePrizeRows({ purchases, prizes });
   });
@@ -1490,7 +1583,8 @@ const setupLocalDbIpc = (ipcMain) => {
       sessionMode: filters.sessionMode,
       purchaseCategory: filters.purchaseCategory,
       amount: String(filters.amount || '').toUpperCase() === 'ALL' ? '' : filters.amount,
-      sem: String(filters.sem || '').toUpperCase() === 'ALL' ? '' : filters.sem
+      sem: String(filters.sem || '').toUpperCase() === 'ALL' ? '' : filters.sem,
+      currentUserId: filters.currentUserId || filters.userId || filters.user?.id
     }).filter((entry) => {
       const entryNumber = String(entry.number || '');
       return number.length === 5 ? entryNumber === number : entryNumber.endsWith(number);
@@ -1524,7 +1618,8 @@ const setupLocalDbIpc = (ipcMain) => {
       purchases: listLocalPurchaseRowsForPrize({
         date: filters.date,
         shift: filters.shift === 'ALL' ? '' : filters.shift,
-        sellerId: filters.sellerId
+        sellerId: filters.sellerId,
+        currentUserId: filters.currentUserId || filters.userId || filters.user?.id
       }),
       prizes: listLocalPrizeResults({
         resultForDate: filters.date,
