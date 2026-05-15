@@ -948,6 +948,17 @@ const getLatestRecordPerEntry = (records = []) => {
   return Array.from(latestMap.values()).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 };
 
+const getLatestEntryBatch = (entries = []) => {
+  const latestTime = entries.reduce((maxTime, entry) => {
+    const entryTime = new Date(entry.sentAt || entry.createdAt || 0).getTime();
+    return Number.isFinite(entryTime) && entryTime > maxTime ? entryTime : maxTime;
+  }, 0);
+
+  return latestTime > 0
+    ? entries.filter((entry) => new Date(entry.sentAt || entry.createdAt || 0).getTime() === latestTime)
+    : [];
+};
+
 const createPendingPrizeEntries = () => PRIZE_OPTIONS.reduce((accumulator, prize) => {
   accumulator[prize.key] = [];
   return accumulator;
@@ -5335,6 +5346,7 @@ const AdminDashboard = ({
   });
   const billTransferHistory = adminCurrentBillRows;
   const transferHistoryByActor = groupTransferHistoryByActor(transferHistory);
+  const latestAcceptEntries = getLatestEntryBatch(acceptEntries);
   const adminBillVisibleGroups = adminCurrentBillRows.reduce((groups, record) => {
     const groupName = record.billRootUsername || record.sellerName || 'Unknown Seller';
     if (!groups[groupName]) {
@@ -8133,11 +8145,13 @@ const AdminDashboard = ({
             <div className="accordion-content">
               <h2>Accept Entries</h2>
               <EntriesTableView
-                entries={acceptEntries}
+                entries={latestAcceptEntries}
                 showSeller
                 showStatus
                 splitByAmount
                 groupConsecutiveRows
+                summaryReviewMode
+                currentUsername={user?.username || 'admin'}
                 actionMode="seller-review"
                 actionLoadingId={entryActionLoadingId}
                 onAccept={(entry) => handleAcceptEntryAction(entry, 'accept')}

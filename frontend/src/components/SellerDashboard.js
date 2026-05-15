@@ -156,6 +156,17 @@ const sanitizeFiveDigitInput = (value) => String(value ?? '').replace(/[^0-9]/g,
 const SELLER_PURCHASE_SEND_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F4-Stock', 'F8-Clear', 'Esc-Exit'];
 const SELLER_UNSOLD_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F4-View', 'F8-Clear', 'Esc-Exit'];
 const REMOVABLE_UNSOLD_STATUSES = new Set(['unsold_saved', 'unsold_sent', 'unsold']);
+const F11_SEND_RECORD_ACTIONS = new Set(['unsold_sent', 'unsold_auto_accepted']);
+const getLatestEntryBatch = (entries = []) => {
+  const latestTime = entries.reduce((maxTime, entry) => {
+    const entryTime = new Date(entry.sentAt || entry.createdAt || 0).getTime();
+    return Number.isFinite(entryTime) && entryTime > maxTime ? entryTime : maxTime;
+  }, 0);
+
+  return latestTime > 0
+    ? entries.filter((entry) => new Date(entry.sentAt || entry.createdAt || 0).getTime() === latestTime)
+    : [];
+};
 const SELLER_TYPE_LABELS = {
   seller: 'Stokist',
   sub_seller: 'Sub Stokist',
@@ -1128,8 +1139,13 @@ const SellerDashboard = ({
   const dashboardRef = useRef(null);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [exitConfirmSelected, setExitConfirmSelected] = useState('no');
+  const [saveConfirmOpen, setSaveConfirmOpen] = useState(false);
+  const [saveConfirmSelected, setSaveConfirmSelected] = useState('no');
+  const [saveConfirmMessage, setSaveConfirmMessage] = useState('Do you want to save?');
   const [exitReadyFromFirstControl, setExitReadyFromFirstControl] = useState(false);
   const blockingWarningActionRef = useRef(null);
+  const saveConfirmActionRef = useRef(null);
+  const saveConfirmFocusRef = useRef(null);
   const buildSellerPurchaseDraftKey = (memoNumber = null) => buildDraftStorageKey([
     'seller',
     user?.id,
@@ -1177,6 +1193,13 @@ const SellerDashboard = ({
       unsoldFromInputRef.current?.focus();
       unsoldFromInputRef.current?.select?.();
     });
+  };
+  const focusUnsoldDateInput = () => {
+    focusElementReliably(() => unsoldDateInputRef.current);
+    window.setTimeout(() => {
+      unsoldDateInputRef.current?.focus();
+      unsoldDateInputRef.current?.select?.();
+    }, 160);
   };
   const focusActiveSellerSelect = () => {
     focusElementReliably(() => (
@@ -1357,11 +1380,7 @@ const SellerDashboard = ({
   ];
   const stockTransferTargetOptions = [
     selfPartyOption,
-    ...activeAmountChildSellers.filter((seller) => (
-      currentSellerType === 'sub_seller'
-        ? true
-        : normalizeSellerType(seller.sellerType) !== 'normal_seller'
-    ) && seller.id).map((seller) => ({
+    ...activeAmountChildSellers.filter((seller) => seller.id).map((seller) => ({
       id: seller.id,
       username: seller.username,
       keyword: seller.keyword || '',
@@ -1525,7 +1544,6 @@ const SellerDashboard = ({
     ...activeAmountChildSellers
   ].filter((party) => party.id);
   const selectedUnsoldParty = unsoldPartyOptions.find((party) => String(party.id) === String(unsoldPartyId))
-    || unsoldPartyOptions[0]
     || null;
   const seePurchaseSellerOptions = [
     selfPartyOption,
@@ -2404,6 +2422,7 @@ const SellerDashboard = ({
 
     if (tabName === 'unsold') {
       preferNextUnsoldMemoRef.current = true;
+      setUnsoldPartyId('');
       setUnsoldMemoNumber(nextUnsoldMemoNumber);
       setUnsoldMemoSelectionIndex(0);
       setUnsoldMemoPopupOpen(false);
@@ -2415,6 +2434,7 @@ const SellerDashboard = ({
     }
 
     if (tabName === 'unsold-remove') {
+      setUnsoldPartyId('');
       setUnsoldRemoveMemoNumber(nextUnsoldRemoveMemoNumber);
       setUnsoldMemoSelectionIndex(0);
       setUnsoldMemoPopupOpen(false);
@@ -2596,6 +2616,35 @@ const SellerDashboard = ({
 
     setExitReadyFromFirstControl(false);
     handleTabBack();
+  };
+
+  const requestSaveConfirmation = (action, message = 'Do you want to save?') => {
+    saveConfirmActionRef.current = action;
+    saveConfirmFocusRef.current = document.activeElement;
+    setSaveConfirmMessage(message);
+    setSaveConfirmSelected('no');
+    setSaveConfirmOpen(true);
+  };
+
+  const cancelSaveConfirmation = () => {
+    setSaveConfirmOpen(false);
+    setSaveConfirmSelected('no');
+    saveConfirmActionRef.current = null;
+    const focusTarget = saveConfirmFocusRef.current;
+    saveConfirmFocusRef.current = null;
+    window.requestAnimationFrame(() => {
+      focusTarget?.focus?.();
+      focusTarget?.select?.();
+    });
+  };
+
+  const confirmSaveRequest = () => {
+    const action = saveConfirmActionRef.current;
+    setSaveConfirmOpen(false);
+    setSaveConfirmSelected('no');
+    saveConfirmActionRef.current = null;
+    saveConfirmFocusRef.current = null;
+    action?.();
   };
 
   const handleDashboardFocusCapture = (event) => {
@@ -3853,7 +3902,7 @@ const SellerDashboard = ({
         return;
       }
       if (!retroSaving) {
-        saveRetroDraftRows();
+        requestSaveConfirmation(saveRetroDraftRows);
       }
     },
     F3: () => {
@@ -3905,7 +3954,9 @@ const SellerDashboard = ({
         return;
       }
       if (!unsoldLoading) {
-        document.getElementById(activeTab === 'unsold-remove' ? 'seller-unsold-remove-form' : 'seller-unsold-form')?.requestSubmit();
+        requestSaveConfirmation(
+          () => document.getElementById(activeTab === 'unsold-remove' ? 'seller-unsold-remove-form' : 'seller-unsold-form')?.requestSubmit()
+        );
       }
     },
     F3: () => {
@@ -4793,7 +4844,15 @@ const SellerDashboard = ({
     selectedSellerUsernames: selectedBillSellerNames
   });
   const billTransferHistory = currentPurchaseBillRows;
-  const transferHistoryByActor = groupTransferHistoryByActor(transferHistory);
+  const f11SendRecords = transferHistory.filter((record) => F11_SEND_RECORD_ACTIONS.has(String(record.actionType || '').trim().toLowerCase()));
+  const latestF11SendTime = f11SendRecords.reduce((latestTime, record) => {
+    const recordTime = new Date(record.createdAt).getTime();
+    return Number.isFinite(recordTime) && recordTime > latestTime ? recordTime : latestTime;
+  }, 0);
+  const latestF11SendRecords = latestF11SendTime > 0
+    ? f11SendRecords.filter((record) => new Date(record.createdAt).getTime() === latestF11SendTime)
+    : [];
+  const transferHistoryByActor = groupTransferHistoryByActor(latestF11SendRecords);
   const billTransferHistoryByActor = currentPurchaseBillRows.reduce((groups, record) => {
     const groupName = record.billRootUsername || record.sellerName || 'Unknown Seller';
     if (!groups[groupName]) {
@@ -4849,7 +4908,8 @@ const SellerDashboard = ({
     .sort((left, right) => String(left.sellerName || '').localeCompare(String(right.sellerName || '')));
   const myPrizeResultsBySeller = groupPrizeResultsBySeller(myPrizeResults);
   const todayDateValue = getTodayDateValue();
-  const sortedReceivedEntries = [...receivedEntries].sort((leftEntry, rightEntry) => {
+  const latestReceivedEntries = getLatestEntryBatch(receivedEntries);
+  const sortedReceivedEntries = [...latestReceivedEntries].sort((leftEntry, rightEntry) => {
     const sellerComparison = String(leftEntry.displaySeller || leftEntry.username || '').localeCompare(String(rightEntry.displaySeller || rightEntry.username || ''));
     if (sellerComparison !== 0) {
       return sellerComparison;
@@ -5300,7 +5360,7 @@ const SellerDashboard = ({
       label: retroSaving ? 'Saving...' : 'Save (F2)',
       shortcut: 'F2',
       variant: 'primary',
-      onClick: saveRetroDraftRows,
+      onClick: () => requestSaveConfirmation(saveRetroDraftRows),
       disabled: retroSaving
     },
     {
@@ -5351,10 +5411,11 @@ const SellerDashboard = ({
             setUnsoldDraftRows([]);
             setUnsoldActiveRowIndex(0);
             setUnsoldEditorVisible(true);
+            focusUnsoldDateInput();
           }}
           onEnter={(party) => {
             if (party) {
-              window.requestAnimationFrame(() => unsoldDateInputRef.current?.focus());
+              focusUnsoldDateInput();
             }
           }}
           placeholder="Keyword ya seller name type karo"
@@ -5401,8 +5462,9 @@ const SellerDashboard = ({
     {
       label: unsoldLoading ? 'Saving...' : 'Save (F2)',
       shortcut: 'F2',
-      type: 'submit',
-      form: 'seller-unsold-form',
+      onClick: () => requestSaveConfirmation(
+        () => document.getElementById('seller-unsold-form')?.requestSubmit()
+      ),
       variant: 'primary',
       disabled: unsoldLoading
     },
@@ -5441,7 +5503,9 @@ const SellerDashboard = ({
       ? {
         ...action,
         label: unsoldLoading ? 'Removing...' : 'Remove (F2)',
-        form: 'seller-unsold-remove-form'
+        onClick: () => requestSaveConfirmation(
+          () => document.getElementById('seller-unsold-remove-form')?.requestSubmit()
+        )
       }
       : action
   ));
@@ -5702,7 +5766,13 @@ const SellerDashboard = ({
     </tr>
   );
   const sellerUnsoldGridRows = createRetroGridRows(unsoldDraftRows);
-  const seePurchaseReceivedRows = seePurchaseReceivedEntries.map((entry) => normalizeSeePurchaseEntry(entry));
+  const seePurchaseReceivedRows = seePurchaseReceivedEntries
+    .map((entry) => normalizeSeePurchaseEntry(entry))
+    .filter((entry) => {
+      const selectedUsername = String(selectedSeePurchaseSeller?.username || user?.username || '').trim().toLowerCase();
+      const sourceUsername = String(entry.fromUsername || entry.sellerName || '').trim().toLowerCase();
+      return !selectedUsername || sourceUsername !== selectedUsername;
+    });
   const seePurchaseSentRows = seePurchaseSentEntries.map((entry) => normalizeSeePurchaseEntry(entry));
   const seePurchaseAvailableRows = seePurchaseAvailableEntries.map((entry) => normalizeSeePurchaseEntry(entry));
   const buildSellerSeePurchaseGroups = (rows = [], includeParty = false) => groupConsecutiveNumberRows(
@@ -5711,17 +5781,21 @@ const SellerDashboard = ({
       (entry) => [
         entry.bookingDate,
         entry.sessionMode,
+        entry.purchaseCategory,
         entry.amount,
         entry.boxValue,
-        includeParty ? (entry.toUsername || entry.sellerName) : ''
+        includeParty ? (entry.toUsername || entry.sellerName) : '',
+        includeParty ? entry.memoNumber : ''
       ]
     ),
     (entry) => [
       entry.bookingDate,
       entry.sessionMode,
+      entry.purchaseCategory,
       entry.amount,
       entry.boxValue,
-      includeParty ? (entry.toUsername || entry.sellerName) : ''
+      includeParty ? (entry.toUsername || entry.sellerName) : '',
+      includeParty ? entry.memoNumber : ''
     ].join('|')
   );
   const seePurchaseReceivedGroups = buildSellerSeePurchaseGroups(seePurchaseReceivedRows);
@@ -6075,80 +6149,59 @@ const SellerDashboard = ({
   };
 
   const renderTransferHistoryTables = (records, actorName) => {
-    const { amount6, amount12 } = splitEntriesByAmount(records);
-    const renderTable = (tableRecords, amountLabel) => (
+    const summaryRows = Object.values(records.reduce((groups, record) => {
+      const key = [
+        record.createdAt,
+        record.bookingDate,
+        record.amount,
+        record.statusAfter,
+        record.fromUsername,
+        record.toUsername
+      ].join('|');
+      if (!groups[key]) {
+        groups[key] = {
+          id: key,
+          sentDate: record.createdAt,
+          bookingDate: record.bookingDate,
+          totalUnsold: 0,
+          amount: record.amount,
+          status: record.statusAfter,
+          fromUsername: record.fromUsername,
+          toUsername: record.toUsername
+        };
+      }
+      groups[key].totalUnsold += Number(record.boxValue || 0);
+      return groups;
+    }, {}));
+
+    return (
       <div className="entries-list-block" style={{ marginTop: '20px' }}>
-        <h3>{actorName} - Amount {amountLabel}</h3>
+        <h3>{actorName}</h3>
         <table className="entries-table">
           <thead>
             <tr>
-              <th>Action</th>
-              <th>From</th>
-              <th>To</th>
-              <th>Unique Code</th>
-              <th>SEM</th>
+              <th>Send Date</th>
+              <th>Maal Date</th>
+              <th>Total Unsold</th>
               <th>Amount</th>
-              <th>5-Digit Number</th>
               <th>Status</th>
-              <th>Date Time</th>
-              <th>Total</th>
+              <th>From To</th>
             </tr>
           </thead>
           <tbody>
-            {(() => {
-              const sortedTableRecords = sortRowsForConsecutiveNumbers(
-                tableRecords,
-                (record) => [
-                  record.actionType,
-                  record.fromUsername,
-                  record.toUsername,
-                  record.boxValue,
-                  record.amount,
-                  record.statusAfter
-                ]
-              );
-              const groupedRecords = groupConsecutiveNumberRows(sortedTableRecords, (record) => [
-                record.actionType,
-                record.fromUsername,
-                record.toUsername,
-                record.boxValue,
-                record.amount,
-                record.statusAfter
-              ].join('|'));
-
-              return groupedRecords.map((group) => {
-                const record = group.firstRow;
-                const totalValue = group.rows.reduce((sum, currentRecord) => (
-                  sum + (Number(currentRecord.boxValue || 0) * Number(currentRecord.amount || 0))
-                ), 0);
-                const uniqueCodeLabel = group.rows.length > 1 ? `${group.rows.length} codes` : record.uniqueCode;
-
-                return (
-                  <tr key={group.rows.map((currentRecord) => currentRecord.id).join('-')}>
-                    <td>{record.actionType}</td>
-                    <td>{record.fromUsername}</td>
-                    <td>{record.toUsername}</td>
-                    <td>{uniqueCodeLabel}</td>
-                    <td>{record.boxValue}</td>
-                    <td>{record.amount}</td>
-                    <td>{group.label}</td>
-                    <td>{record.statusAfter}</td>
-                    <td>{new Date(record.createdAt).toLocaleString('en-IN')}</td>
-                    <td>Rs. {totalValue.toFixed(2)}</td>
-                  </tr>
-                );
-              });
-            })()}
+            {summaryRows.map((record) => (
+              <tr key={record.id}>
+                <td>{formatDisplayDateTime(record.sentDate)}</td>
+                <td>{formatDisplayDate(record.bookingDate)}</td>
+                <td>{record.totalUnsold.toFixed(2)}</td>
+                <td>{record.amount}</td>
+                <td>{record.status}</td>
+                <td>{record.fromUsername} to {record.toUsername}</td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>
-    );
-
-    return (
-      <>
-        {amount6.length > 0 && renderTable(amount6, '7')}
-        {amount12.length > 0 && renderTable(amount12, '12')}
-      </>
     );
   };
 
@@ -6290,6 +6343,14 @@ const SellerDashboard = ({
         onConfirm={confirmExitRequest}
         onCancel={cancelExitConfirmation}
       />
+      <ExitConfirmPrompt
+        open={saveConfirmOpen}
+        selected={saveConfirmSelected}
+        message={saveConfirmMessage}
+        onSelectedChange={setSaveConfirmSelected}
+        onConfirm={confirmSaveRequest}
+        onCancel={cancelSaveConfirmation}
+      />
       {pieceSummaryOpen && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1000, display: 'flex', padding: 0 }}>
           <div style={{ background: '#fff', width: '100%', height: '100%', borderRadius: 0, padding: '20px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -6375,7 +6436,7 @@ const SellerDashboard = ({
                   ) : null}
                   {Number(unsoldSendSummary?.pendingSendPiece || 0) > 0 ? (
                     <div style={{ marginTop: '4px', color: '#2f855a', fontWeight: 700 }}>
-                      New unsold ready to send: {Number(unsoldSendSummary.pendingSendPiece || 0).toFixed(2)} piece.
+                      New unsold ready to send: {(Number(unsoldSendSummary.alreadySentPiece || 0) + Number(unsoldSendSummary.unsoldPiece || 0)).toFixed(2)} piece.
                     </div>
                   ) : null}
                 </div>
@@ -6395,9 +6456,9 @@ const SellerDashboard = ({
                       <tr key={row.sellerId}>
                         <td>{row.sellerName}</td>
                         <td>{Number(row.totalPiece || 0).toFixed(2)}</td>
-                        <td>{Number(row.unsoldPiece || 0).toFixed(2)}</td>
+                        <td>{(Number(row.alreadySentPiece || 0) + Number(row.unsoldPiece || 0)).toFixed(2)}</td>
                         <td>{Number(row.alreadySentPiece || 0).toFixed(2)}</td>
-                        <td>{Number(row.pendingSendPiece || 0).toFixed(2)}</td>
+                        <td>{Number(row.unsoldPiece || 0).toFixed(2)}</td>
                         <td>{Number(row.soldPiece || 0).toFixed(2)}</td>
                       </tr>
                     ))}
@@ -7778,7 +7839,7 @@ const SellerDashboard = ({
               {Object.keys(billTransferHistoryByActor).length > 0 ? (
                 <div className="entries-list-block" style={{ marginTop: '20px' }}>
                   <h3>Seller Totals</h3>
-                  <table className="entries-table">
+                  <table className="entries-table" style={{ fontSize: '20px' }}>
                     <thead>
                       <tr>
                         <th>Seller</th>
@@ -7823,7 +7884,7 @@ const SellerDashboard = ({
               )}
 
               {Object.keys(billTransferHistoryByActor).length > 0 && (
-                <div style={{ marginTop: '20px', padding: '18px 22px', borderRadius: '16px', background: '#eef2ff', fontSize: '28px', lineHeight: 1.45 }}>
+                <div style={{ marginTop: '20px', padding: '22px 26px', borderRadius: '16px', background: '#eef2ff', fontSize: '38px', lineHeight: 1.45 }}>
                   <strong>Grand Total:</strong> Unsold % {(Number(billTransferHistoryTotals.totalSentPiece || 0) > 0 ? ((Number(billTransferHistoryTotals.totalUnsoldPiece || 0) / Number(billTransferHistoryTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% | Sold % {(Number(billTransferHistoryTotals.totalSentPiece || 0) > 0 ? ((Number(billTransferHistoryTotals.totalSoldPiece || 0) / Number(billTransferHistoryTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% | Net {formatSignedRupees(billTransferHistoryTotals.netBill)}
                 </div>
               )}
@@ -7854,6 +7915,8 @@ const SellerDashboard = ({
                 showSeller
                 showStatus
                 splitByAmount
+                summaryReviewMode
+                currentUsername={user?.username || ''}
                 actionMode="seller-review"
                 actionLoadingId={entryActionLoadingId}
                 onAccept={(entry) => handleReceivedEntryAction(entry, 'accept')}

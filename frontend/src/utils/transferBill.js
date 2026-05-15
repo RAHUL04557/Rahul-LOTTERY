@@ -549,7 +549,7 @@ export const openTransferBill = ({
   const sellerTotalsTableHtml = `
     <section style="margin-top:24px;">
       <h3 style="margin:0 0 10px;">Seller Totals</h3>
-      <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <table style="width:100%;border-collapse:collapse;font-size:20px;">
         <thead>
           <tr>
             <th>Seller</th>
@@ -580,7 +580,7 @@ export const openTransferBill = ({
           body { font-family: Arial, sans-serif; margin: 24px; color: #1f2937; }
           h1, h2, h3 { margin: 0; }
           table, th, td { border: 1px solid #cbd5e1; }
-          th, td { padding: 8px; text-align: left; }
+          th, td { padding: 12px; text-align: left; font-size: 20px; }
           th { background: #eef2ff; }
           @media print {
             body { margin: 12px; }
@@ -590,7 +590,7 @@ export const openTransferBill = ({
       </head>
       <body>
         ${sellerTotalsTableHtml}
-        <div style="margin-top:24px;padding:18px 22px;border:1px solid #cbd5e1;border-radius:16px;background:#eef2ff;font-size:20px;line-height:1.45;">
+        <div style="margin-top:24px;padding:22px 26px;border:1px solid #cbd5e1;border-radius:16px;background:#eef2ff;font-size:32px;line-height:1.45;">
           <strong>Grand Total:</strong>
           Unsold % ${(Number(totals.totalSentPiece || 0) > 0 ? ((Number(totals.totalUnsoldPiece || 0) / Number(totals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% |
           Sold % ${(Number(totals.totalSentPiece || 0) > 0 ? ((Number(totals.totalSoldPiece || 0) / Number(totals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% |

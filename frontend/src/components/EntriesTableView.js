@@ -22,7 +22,9 @@ const EntriesTableView = ({
   actionLoadingId,
   splitByAmount = false,
   groupConsecutiveRows = false,
-  showSummary = false
+  showSummary = false,
+  summaryReviewMode = false,
+  currentUsername = ''
 }) => {
   if (!entries || entries.length === 0) {
     return <p>{emptyMessage || 'No entries found'}</p>;
@@ -60,6 +62,109 @@ const EntriesTableView = ({
       : bookingDates.length > 1
         ? bookingDates.map((date) => formatDisplayDate(date)).join(', ')
         : '-';
+
+    if (actionMode === 'seller-review' && summaryReviewMode) {
+      const summaryRows = Object.values(sortedTableEntries.reduce((groups, entry) => {
+        const sellerName = entry.displaySeller || entry.username || '-';
+        const key = [
+          sellerName,
+          entry.sentAt || entry.createdAt || '',
+          entry.bookingDate || '',
+          entry.amount,
+          entry.status || ''
+        ].join('|');
+        if (!groups[key]) {
+          groups[key] = {
+            id: key,
+            sellerName,
+            sentAt: entry.sentAt || entry.createdAt || '',
+            bookingDate: entry.bookingDate || '',
+            totalUnsold: 0,
+            amount: entry.amount,
+            status: entry.status || '-',
+            rows: []
+          };
+        }
+        groups[key].totalUnsold += Number(entry.sem || 0);
+        groups[key].rows.push(entry);
+        return groups;
+      }, {}));
+
+      return (
+        <div className="entries-list-block" style={{ marginTop: tableTitle && !title ? '20px' : undefined }}>
+          {tableTitle && <h3>{tableTitle}</h3>}
+          <table className="entries-table">
+            <thead>
+              <tr>
+                {showSeller && <th>Seller</th>}
+                <th>Send Date</th>
+                <th>Maal Date</th>
+                <th>Total Unsold</th>
+                <th>Amount</th>
+                {showStatus && <th>Status</th>}
+                <th>From To</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summaryRows.map((row) => (
+                <tr key={row.id}>
+                  {showSeller && <td>{row.sellerName}</td>}
+                  <td>{row.sentAt ? new Date(row.sentAt).toLocaleString('en-IN') : '-'}</td>
+                  <td>{row.bookingDate ? formatDisplayDate(row.bookingDate) : '-'}</td>
+                  <td>{row.totalUnsold.toFixed(2)}</td>
+                  <td>{row.amount}</td>
+                  {showStatus && (
+                    <td>
+                      <span className={getStatusClassName(row.status)}>
+                        {row.status}
+                      </span>
+                    </td>
+                  )}
+                  <td>{row.sellerName} to {currentUsername || '-'}</td>
+                  <td className="grouped-action-cell">
+                    <div className="grouped-action-buttons">
+                      <button
+                        type="button"
+                        onClick={() => onAccept && onAccept(row.rows)}
+                        disabled={actionLoadingId === (row.rows[0]?.id || row.id)}
+                        style={{ padding: '8px 12px', backgroundColor: '#4caf50' }}
+                      >
+                        Accept
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onReject && onReject(row.rows)}
+                        disabled={actionLoadingId === (row.rows[0]?.id || row.id)}
+                        style={{ padding: '8px 12px', backgroundColor: '#f44336' }}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <div
+            style={{
+              marginTop: '16px',
+              marginBottom: '8px',
+              padding: '18px 22px',
+              borderRadius: '16px',
+              background: '#eef3ff',
+              fontSize: '30px',
+              fontWeight: '700',
+              lineHeight: 1.45,
+              color: '#1f2d3d',
+              boxShadow: '0 8px 20px rgba(15, 23, 42, 0.08)'
+            }}
+          >
+            <strong>Total Piece Count:</strong> {totalPiece.toFixed(2)}
+          </div>
+        </div>
+      );
+    }
 
     if (actionMode === 'seller-review' || groupConsecutiveRows) {
       const groupedEntries = groupConsecutiveNumberRows(sortedTableEntries, getRowSignature);
