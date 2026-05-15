@@ -657,6 +657,21 @@ const mapHistoryRecord = (row) => ({
 
 const repairMissingPurchaseMemoNumbers = async (db = { query }) => {
   await db.query(`
+    UPDATE lottery_entries le
+    SET memo_number = NULL,
+        purchase_memo_number = NULL,
+        memo_row_order = NULL
+    FROM users owner_user
+    WHERE owner_user.id = le.user_id
+      AND le.entry_source = 'purchase'
+      AND LOWER(TRIM(le.status)) = 'accepted'
+      AND LOWER(TRIM(COALESCE(owner_user.seller_type, 'seller'))) <> 'normal_seller'
+      AND le.forwarded_by IS NOT NULL
+      AND le.forwarded_by <> le.user_id
+      AND COALESCE(le.purchase_memo_number, le.memo_number) IS NOT NULL
+  `);
+
+  await db.query(`
     WITH missing_groups AS (
       SELECT
         le.user_id,
@@ -678,9 +693,14 @@ const repairMissingPurchaseMemoNumbers = async (db = { query }) => {
             AND COALESCE(existing.purchase_memo_number, existing.memo_number) IS NOT NULL
         ), 0) + 1 AS memo_number
       FROM lottery_entries le
+      INNER JOIN users owner_user ON owner_user.id = le.user_id
       WHERE le.entry_source = 'purchase'
         AND LOWER(TRIM(le.status)) IN ('accepted', 'unsold')
         AND COALESCE(le.purchase_memo_number, le.memo_number) IS NULL
+        AND (
+          le.forwarded_by = le.user_id
+          OR LOWER(TRIM(COALESCE(owner_user.seller_type, 'seller'))) = 'normal_seller'
+        )
       GROUP BY le.user_id, le.forwarded_by, le.booking_date, le.session_mode, le.purchase_category, le.amount, le.entry_source
     )
     UPDATE lottery_entries le
@@ -4646,7 +4666,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const selfUnsoldParamIndex = params.length + 1;
       summaryResult = await query(
         `SELECT le.user_id,
-                COALESCE(SUM(CASE WHEN le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS total_piece,
+                COALESCE(SUM(CASE WHEN le.memo_number IS NOT NULL AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS total_piece,
                 COALESCE(SUM(CASE WHEN (
                   LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
                   OR (
