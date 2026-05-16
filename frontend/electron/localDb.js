@@ -2229,6 +2229,84 @@ const setupLocalDbIpc = (ipcMain) => {
     });
 
     if (currentUserId) {
+      const sentScopeRows = initLocalDb()
+        .prepare(`
+          SELECT DISTINCT user_id, booking_date, session_mode, purchase_category, amount
+          FROM local_purchase_entries
+          WHERE LOWER(TRIM(status)) IN ('unsold_sent', 'unsold_accepted', 'unsold')
+            AND (sent_to_parent = ? OR forwarded_by = ?)
+            ${fromDate && toDate ? 'AND booking_date BETWEEN ? AND ?' : ''}
+            ${filters.shift || filters.sessionMode ? 'AND session_mode = ?' : ''}
+            ${filters.purchaseCategory ? 'AND purchase_category = ?' : ''}
+            ${filters.amount ? 'AND amount = ?' : ''}
+        `)
+        .all(
+          currentUserId,
+          currentUserId,
+          ...[
+            ...(fromDate && toDate ? [fromDate, toDate] : []),
+            ...(filters.shift || filters.sessionMode ? [String(filters.shift || filters.sessionMode)] : []),
+            ...(filters.purchaseCategory ? [String(filters.purchaseCategory)] : []),
+            ...(filters.amount ? [String(filters.amount)] : [])
+          ]
+        );
+      const sentScopeSet = new Set(sentScopeRows.map((row) => {
+        const groupUserId = getDirectChildRootId(row.user_id, currentUserId, usersById);
+        return [groupUserId, row.session_mode, row.purchase_category, row.amount].join('|');
+      }));
+
+      sentScopeSet.forEach((scopeKey) => {
+        [...groupedRows.entries()].forEach(([rowKey, row]) => {
+          const rowScopeKey = [row.user_id, row.session_mode, row.purchase_category, row.amount].join('|');
+          if (rowScopeKey === scopeKey) {
+            groupedRows.set(rowKey, {
+              ...row,
+              unsold_piece: 0
+            });
+          }
+        });
+      });
+
+      const rawUnsoldParams = [currentUserId, currentUserId];
+      const rawUnsoldConditions = [
+        "entry_source = 'purchase'",
+        "LOWER(TRIM(status)) IN ('unsold_sent', 'unsold_accepted', 'unsold')",
+        '(sent_to_parent = ? OR forwarded_by = ?)'
+      ];
+      if (fromDate && toDate) {
+        rawUnsoldParams.push(fromDate, toDate);
+        rawUnsoldConditions.push('booking_date BETWEEN ? AND ?');
+      }
+      addCommonPurchaseFilters(rawUnsoldConditions, rawUnsoldParams, filters);
+      const rawUnsoldRows = initLocalDb()
+        .prepare(`
+          SELECT user_id, session_mode, purchase_category, amount, box_value,
+                 SUM(CASE WHEN box_value GLOB '[0-9]*' THEN CAST(box_value AS REAL) ELSE 0 END) AS unsold_piece
+          FROM local_purchase_entries
+          WHERE ${rawUnsoldConditions.join(' AND ')}
+          GROUP BY user_id, session_mode, purchase_category, amount, box_value
+        `)
+        .all(...rawUnsoldParams);
+
+      rawUnsoldRows.forEach((row) => {
+        const groupUserId = getDirectChildRootId(row.user_id, currentUserId, usersById);
+        const scopeKey = [groupUserId, row.session_mode, row.purchase_category, row.amount].join('|');
+        if (!sentScopeSet.has(scopeKey)) {
+          return;
+        }
+
+        const key = [groupUserId, row.session_mode, row.purchase_category, row.amount, row.box_value].join('|');
+        const current = groupedRows.get(key);
+        if (!current) {
+          return;
+        }
+
+        groupedRows.set(key, {
+          ...current,
+          unsold_piece: Number(current.unsold_piece || 0) + Number(row.unsold_piece || 0)
+        });
+      });
+
       const manualParams = [currentUserId];
       const manualConditions = ['actor_user_id = ?'];
 
@@ -2260,6 +2338,11 @@ const setupLocalDbIpc = (ipcMain) => {
         const groupUserId = getDirectChildRootId(row.user_id, currentUserId, usersById);
 
         if (!groupUserId) {
+          return;
+        }
+
+        const scopeKey = [groupUserId, row.session_mode, row.purchase_category, row.amount].join('|');
+        if (sentScopeSet.has(scopeKey)) {
           return;
         }
 

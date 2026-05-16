@@ -5355,7 +5355,82 @@ const AdminDashboard = ({
 
     return amountMatches && categoryMatches;
   });
-  const adminCurrentBillRows = purchaseBillRows.filter((record) => (
+  const adminLatestF11BillScopeRows = Object.values(
+    transferHistory
+      .filter((record) => ['unsold_sent', 'unsold_auto_accepted'].includes(String(record.actionType || '').trim().toLowerCase()))
+      .reduce((groups, record) => {
+        const scopeKey = [
+          record.actorUsername || record.fromUsername || '',
+          record.sessionMode || '',
+          record.purchaseCategory || '',
+          String(record.amount || '')
+        ].join('|');
+        const recordTime = new Date(record.createdAt || 0).getTime();
+        const current = groups[scopeKey] || { latestTime: 0, records: [] };
+
+        if (Number.isFinite(recordTime) && recordTime > current.latestTime) {
+          groups[scopeKey] = { latestTime: recordTime, records: [record] };
+          return groups;
+        }
+
+        if (Number.isFinite(recordTime) && recordTime === current.latestTime) {
+          current.records.push(record);
+        }
+
+        return groups;
+      }, {})
+  ).flatMap((group) => group.records);
+  const adminLatestF11UnsoldByBillKey = adminLatestF11BillScopeRows.reduce((groups, record) => {
+    const key = [
+      record.actorUsername || record.fromUsername || '',
+      record.sessionMode || '',
+      record.purchaseCategory || '',
+      String(record.amount || ''),
+      String(record.boxValue || '')
+    ].join('|');
+    groups[key] = Number(groups[key] || 0) + Number(record.boxValue || 0);
+    return groups;
+  }, {});
+  const adminLatestF11ScopeSet = new Set(adminLatestF11BillScopeRows.map((record) => ([
+    record.actorUsername || record.fromUsername || '',
+    record.sessionMode || '',
+    record.purchaseCategory || '',
+    String(record.amount || '')
+  ].join('|'))));
+  const adminBillRowsWithLatestF11 = purchaseBillRows.map((record) => {
+    const sellerName = record.billRootUsername || record.sellerName || record.actorUsername || '';
+    const scopeKey = [
+      sellerName,
+      record.sessionMode || '',
+      record.purchaseCategory || '',
+      String(record.amount || '')
+    ].join('|');
+
+    if (!adminLatestF11ScopeSet.has(scopeKey)) {
+      return record;
+    }
+
+    const rowKey = [
+      sellerName,
+      record.sessionMode || '',
+      record.purchaseCategory || '',
+      String(record.amount || ''),
+      String(record.boxValue || '')
+    ].join('|');
+    const unsoldPiece = Number(adminLatestF11UnsoldByBillKey[rowKey] || 0);
+    const sentPiece = Number(record.sentPiece || 0);
+    const soldPiece = Math.max(sentPiece - unsoldPiece, 0);
+    const appliedRate = Number(record.appliedRate || 0);
+
+    return {
+      ...record,
+      unsoldPiece,
+      soldPiece,
+      totalPiece: soldPiece,
+      billValue: soldPiece * appliedRate
+    };
+  });
+  const adminCurrentBillRows = adminBillRowsWithLatestF11.filter((record) => (
     selectedBillSellerNames.length === 0
     || selectedBillSellerNames.includes(record.billRootUsername)
     || selectedBillSellerNames.includes(record.sellerName)
