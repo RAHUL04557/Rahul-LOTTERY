@@ -3282,7 +3282,7 @@ const markPurchaseEntriesUnsold = async (req, res) => {
          AND le.purchase_category = $4
          AND le.booking_date = $5::date
          AND le.number = ANY($6::varchar[])
-         AND le.memo_number IS NOT NULL
+         ${isAdminRole(req.user.role) ? '' : 'AND le.memo_number IS NOT NULL'}
          ${stockFilters.join('\n         ')}
          ${ownerStockFilter}
        ORDER BY le.number ASC`,

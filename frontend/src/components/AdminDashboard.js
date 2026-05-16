@@ -2680,11 +2680,7 @@ const AdminDashboard = ({
           purchaseCategory: filter.purchaseCategory,
           amount: purchaseAmount,
           boxValue: filter.boxValue || undefined
-        })).data || []).filter((entry) => (
-          entry.memoNumber !== null
-          && entry.memoNumber !== undefined
-          && String(entry.memoNumber).trim() !== ''
-        ));
+        })).data || []);
       const details = buildAdminStockLookupDetails(lookupEntries, filter.label);
       const sellerLabel = getSelectedAdminUnsoldSellerName();
 
@@ -3642,12 +3638,7 @@ const AdminDashboard = ({
 
     const availableNumbers = new Set(
       [
-        ...(response.data || [])
-          .filter((entry) => {
-            const hasMemo = entry.memoNumber !== null && entry.memoNumber !== undefined && String(entry.memoNumber).trim() !== '';
-            return hasMemo;
-          })
-          .map((entry) => String(entry.number || '').padStart(5, '0')),
+        ...(response.data || []).map((entry) => String(entry.number || '').padStart(5, '0')),
         ...currentMemoEntries.map((entry) => String(entry.number || '').padStart(5, '0')),
         ...currentMemoDraftNumbers.map((entry) => String(entry || '').padStart(5, '0'))
       ]
