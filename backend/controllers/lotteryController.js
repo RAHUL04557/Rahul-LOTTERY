@@ -3074,7 +3074,35 @@ const getPurchaseEntries = async (req, res) => {
       })
       : [];
 
-    const uniqueRows = [...adminAcceptedSnapshotRows, ...manualSavedRows, ...result.rows].filter((row, index, rows) => {
+    let liveRows = result.rows;
+    if (status === UNSOLD_ACCEPTED_STATUS && req.user.role === 'admin' && sellerId && result.rows.length > 0) {
+      const liveEntryIds = result.rows
+        .map((row) => Number(row.id))
+        .filter((entryId) => Number.isInteger(entryId) && entryId > 0);
+      if (liveEntryIds.length > 0) {
+        const liveMemoResult = await query(
+          `SELECT DISTINCT ON (entry_id) entry_id, memo_number
+           FROM lottery_entry_history
+           WHERE entry_id = ANY($1::int[])
+             AND to_user_id = $2
+             AND action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')
+             AND memo_number IS NOT NULL
+           ORDER BY entry_id, created_at DESC`,
+          [liveEntryIds, req.user.id]
+        );
+        const liveMemoMap = new Map(liveMemoResult.rows.map((row) => [
+          Number(row.entry_id),
+          Number(row.memo_number)
+        ]));
+        liveRows = result.rows.map((row) => ({
+          ...row,
+          memo_number: liveMemoMap.get(Number(row.id)) || row.memo_number,
+          purchase_memo_number: liveMemoMap.get(Number(row.id)) || row.purchase_memo_number || row.memo_number
+        }));
+      }
+    }
+
+    const uniqueRows = [...adminAcceptedSnapshotRows, ...manualSavedRows, ...liveRows].filter((row, index, rows) => {
       const rowKey = [row.id, row.number, row.box_value].join('|');
       return rows.findIndex((currentRow) => (
         [currentRow.id, currentRow.number, currentRow.box_value].join('|') === rowKey
