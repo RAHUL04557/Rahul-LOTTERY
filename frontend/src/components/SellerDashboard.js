@@ -2933,7 +2933,13 @@ const SellerDashboard = ({
 
     const availableNumbers = new Set((response.data || []).map((entry) => String(entry.number || '').padStart(5, '0')));
     if (isEditingExistingPurchaseSendMemo) {
+      const rowEntryIdSet = new Set((row.entryIds || []).map((entryId) => String(entryId)));
       purchaseSendMemoEntries.forEach((entry) => {
+        if (rowEntryIdSet.has(String(entry.id || entry._id || ''))) {
+          availableNumbers.add(String(entry.number || '').padStart(5, '0'));
+          return;
+        }
+
         const selectedSellerName = String(selectedParty?.username || '').trim().toLowerCase();
         const entrySellerName = String(entry.displaySeller || entry.username || '').trim().toLowerCase();
         const sellerMatches = String(entry.userId || entry.user_id || '') === String(purchaseSendSellerId || '')
@@ -2997,7 +3003,10 @@ const SellerDashboard = ({
           return;
         }
 
-        const stockValidation = await validateRetroRowInStock(result.row);
+        const stockValidation = await validateRetroRowInStock({
+          ...result.row,
+          entryIds: retroActiveRowIndex < retroDraftRows.length ? (retroDraftRows[retroActiveRowIndex].entryIds || []) : []
+        });
         if (stockValidation.error) {
           openBlockingWarning(stockValidation.error, [], 'Stock Missing');
           return;
@@ -3105,19 +3114,14 @@ const SellerDashboard = ({
 
       if (draftRows.length > 0) {
         const firstRow = draftRows[0];
-        setRetroCodeInput(firstRow.code || '');
-        setRetroFromInput(firstRow.from || '');
-        setRetroToInput(firstRow.to || '');
         setSelectedPartyName(firstRow.partyName || selectedPartyName);
         setPartyKeyword(getPartyKeyword(firstRow.partyName || selectedPartyName));
         setSelectedBox(firstRow.semValue || '');
-        setRetroActiveRowIndex(0);
-      } else {
-        setRetroActiveRowIndex(0);
-        setRetroCodeInput('');
-        setRetroFromInput('');
-        setRetroToInput('');
       }
+      setRetroActiveRowIndex(draftRows.length);
+      setRetroCodeInput('');
+      setRetroFromInput('');
+      setRetroToInput('');
     }
 
     window.requestAnimationFrame(() => {
@@ -4239,7 +4243,8 @@ const SellerDashboard = ({
     const existingUnsoldNumbers = new Set(
       unsoldMemoEntries
         .filter((entry) => (
-          String(entry.sem || '') === String(row.semValue || '')
+          String(entry.userId || '') === String(row.partyId || selectedUnsoldParty?.id || user?.id || '')
+          && String(entry.sem || '') === String(row.semValue || '')
           && String(entry.amount || '') === String(row.bookingAmount || amount || '')
           && String(entry.sessionMode || '') === String(row.resolvedSessionMode || sessionMode || '')
           && String(entry.purchaseCategory || '') === String(row.resolvedPurchaseCategory || activePurchaseCategory || '')
