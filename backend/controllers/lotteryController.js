@@ -2881,6 +2881,7 @@ const getPurchaseEntries = async (req, res) => {
     const boxValue = String(req.query.boxValue || '').trim();
     const purchaseCategory = normalizePurchaseCategory(req.query.purchaseCategory);
     const remainingOnly = String(req.query.remaining || '').trim().toLowerCase() === 'true';
+    const latestSentOnly = String(req.query.latestSentOnly || '').trim().toLowerCase() === 'true';
     const params = [PURCHASE_ENTRY_SOURCE];
     const conditions = ['le.entry_source = $1'];
     let childSellerVisibilityParamIndex = null;
@@ -3090,7 +3091,7 @@ const getPurchaseEntries = async (req, res) => {
       params
     );
 
-    const adminAcceptedSnapshotRows = status === UNSOLD_ACCEPTED_STATUS && req.user.role === 'admin' && sellerId
+    const adminAcceptedSnapshotRows = [UNSOLD_ACCEPTED_STATUS, 'unsold'].includes(status) && req.user.role === 'admin' && sellerId
       ? await getLatestAcceptedUnsoldSnapshotRows({
         targetSellerId: sellerId,
         viewerUserId: req.user.id,
@@ -3113,6 +3114,11 @@ const getPurchaseEntries = async (req, res) => {
         boxValue
       })
       : [];
+
+    if (latestSentOnly && req.user.role === 'admin' && sellerId && status === 'unsold') {
+      res.json(adminAcceptedSnapshotRows.map(mapLotteryEntry));
+      return;
+    }
 
     let liveRows = result.rows;
     if ([UNSOLD_ACCEPTED_STATUS, 'unsold'].includes(status) && req.user.role === 'admin' && sellerId && result.rows.length > 0) {
@@ -4545,21 +4551,56 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
 
       return false;
     };
-    const isAlreadySentEntry = (entry) => {
-      const normalizedStatus = String(entry.status || '').trim().toLowerCase();
-      return (
-        (normalizedStatus === UNSOLD_SENT_STATUS && Number(entry.forwarded_by || 0) === Number(req.user.id))
-        || (
-          normalizedStatus === UNSOLD_ACCEPTED_STATUS
-          && Number(entry.forwarded_by || 0) === Number(req.user.id)
-          && entry.sent_to_parent
-          && Number(entry.sent_to_parent) !== Number(req.user.id)
-        )
-      );
-    };
+    const alreadySentParams = [visibleUserIds, PURCHASE_ENTRY_SOURCE, req.user.id, req.user.parentId];
+    const alreadySentConditions = [
+      'le.user_id = ANY($1::int[])',
+      'le.entry_source = $2',
+      'h.actor_user_id = $3',
+      'h.to_user_id = $4',
+      "h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')"
+    ];
+
+    if (bookingDate) {
+      alreadySentParams.push(bookingDate);
+      alreadySentConditions.push(`h.booking_date = $${alreadySentParams.length}::date`);
+    }
+
+    if (sessionMode) {
+      alreadySentParams.push(sessionMode);
+      alreadySentConditions.push(`h.session_mode = $${alreadySentParams.length}`);
+    }
+
+    if (purchaseCategory) {
+      alreadySentParams.push(purchaseCategory);
+      alreadySentConditions.push(`h.purchase_category = $${alreadySentParams.length}`);
+    }
+
+    if (normalizedAmount) {
+      alreadySentParams.push(normalizedAmount);
+      alreadySentConditions.push(`h.amount = $${alreadySentParams.length}::numeric`);
+    }
+
+    const alreadySentHistoryResult = await query(
+      `SELECT DISTINCT ON (h.entry_id)
+         h.entry_id AS id,
+         le.user_id,
+         h.number,
+         h.box_value,
+         h.amount,
+         h.session_mode,
+         h.booking_date,
+         h.purchase_category,
+         h.memo_number,
+         h.created_at
+       FROM lottery_entry_history h
+       INNER JOIN lottery_entries le ON le.id = h.entry_id
+       WHERE ${alreadySentConditions.join(' AND ')}
+       ORDER BY h.entry_id, h.created_at DESC, h.id DESC`,
+      alreadySentParams
+    );
 
     const allEntries = entriesResult.rows || [];
-    const alreadySentEntries = allEntries.filter(isAlreadySentEntry);
+    const alreadySentEntries = alreadySentHistoryResult.rows || [];
     const alreadySentKeySet = new Set(alreadySentEntries.map(buildEntryKey));
     const currentUnsoldByKey = new Map();
     allEntries.filter(isCurrentUnsoldEntry).forEach((entry) => {

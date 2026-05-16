@@ -2509,7 +2509,8 @@ const AdminDashboard = ({
       status: 'unsold',
       purchaseCategory: filter.purchaseCategory || purchaseCategory,
       amount: filter.amount || purchaseAmount,
-      boxValue: filter.boxValue || undefined
+      boxValue: filter.boxValue || undefined,
+      latestSentOnly: true
     });
 
     return normalizeAdminSelectedSellerEntries(response.data || [], selectedSellerId)
@@ -2677,10 +2678,11 @@ const AdminDashboard = ({
           bookingDate: purchaseBookingDate,
           sessionMode: filter.sessionMode,
           sellerId: purchaseSellerId,
-          status: 'accepted',
+          status: 'unsold',
           purchaseCategory: filter.purchaseCategory,
           amount: purchaseAmount,
-          boxValue: filter.boxValue || undefined
+          boxValue: filter.boxValue || undefined,
+          latestSentOnly: true
         })).data || []);
       const details = buildAdminStockLookupDetails(lookupEntries, filter.label);
       const sellerLabel = getSelectedAdminUnsoldSellerName();
