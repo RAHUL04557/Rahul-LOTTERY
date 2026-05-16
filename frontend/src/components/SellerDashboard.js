@@ -53,6 +53,7 @@ const getDateOnlyValue = (dateValue) => {
 
 const mapApiEntry = (entry) => ({
   id: entry.id,
+  entryId: entry.entryId || entry.entry_id || null,
   userId: entry.userId || entry.user_id,
   username: entry.username,
   displaySeller: entry.forwardedByUsername || entry.username,
@@ -832,7 +833,7 @@ const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, option
       isExistingUnsoldRemoveMemoRow: Boolean(options.existingUnsoldRemoveMemo),
       isEditedUnsoldRemoveRow: false,
       memoRowOrder: entry.memoRowOrder ?? index,
-      entryIds: group.rows.map((row) => row.id).filter(Boolean)
+      entryIds: group.rows.map((row) => row.entryId || row.id).filter(Boolean)
     };
   });
 };

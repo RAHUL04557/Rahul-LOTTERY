@@ -590,6 +590,7 @@ const findSellerOwnedPurchaseStockEntries = async ({
 
 const mapLotteryEntry = (row) => ({
   id: row.id,
+  entryId: row.entry_id || row.entryId || null,
   userId: row.user_id,
   username: row.username || null,
   parentUsername: row.parent_username || null,
@@ -884,6 +885,7 @@ const getManualSavedUnsoldRows = async ({
        h.number,
        h.box_value,
        h.unique_code,
+       h.entry_id,
        h.amount,
        h.session_mode,
        '${UNSOLD_LOCAL_STATUS}'::varchar AS status,
