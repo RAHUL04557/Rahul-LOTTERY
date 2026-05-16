@@ -845,7 +845,8 @@ const getManualSavedUnsoldRows = async ({
     'le.user_id = $1',
     'h.actor_user_id = $2',
     'le.entry_source = $3',
-    'h.action_type = $4'
+    'h.action_type = $4',
+    latestSavedUnsoldHistoryCondition
   ];
 
   if (bookingDate) {
@@ -922,6 +923,7 @@ const latestSavedUnsoldHistoryCondition = `
       AND latest_h.session_mode = h.session_mode
       AND latest_h.purchase_category = h.purchase_category
       AND latest_h.amount = h.amount
+      AND latest_h.memo_number IS NOT DISTINCT FROM h.memo_number
   )
 `;
 
@@ -3014,6 +3016,10 @@ const getPurchaseEntries = async (req, res) => {
       } else {
         if (status === 'unsold') {
           conditions.push(`LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')`);
+          if (req.user.role !== 'admin' && (!sellerId || sellerId === Number(req.user.id))) {
+            params.push(req.user.id);
+            conditions.push(`(le.sent_to_parent = $${params.length} OR le.forwarded_by = $${params.length})`);
+          }
         } else {
           params.push(status);
           conditions.push(`LOWER(TRIM(le.status)) = $${params.length}`);
@@ -4324,17 +4330,21 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
     const allEntries = entriesResult.rows || [];
     const alreadySentEntries = allEntries.filter(isAlreadySentEntry);
     const alreadySentKeySet = new Set(alreadySentEntries.map(buildEntryKey));
-    const directCurrentUnsoldEntries = allEntries.filter(isCurrentUnsoldEntry);
-    const directCurrentUnsoldKeySet = new Set(directCurrentUnsoldEntries.map(buildEntryKey));
-    const manualUnsoldEntries = (manualUnsoldResult.rows || []).filter((entry) => {
-      const entryKey = buildEntryKey(entry);
-      return !alreadySentKeySet.has(entryKey) && !directCurrentUnsoldKeySet.has(entryKey);
+    const currentUnsoldByKey = new Map();
+    allEntries.filter(isCurrentUnsoldEntry).forEach((entry) => {
+      currentUnsoldByKey.set(buildEntryKey(entry), entry);
     });
-    const currentUnsoldEntries = [
-      ...directCurrentUnsoldEntries,
-      ...manualUnsoldEntries
-    ];
-    const pendingSendEntries = currentUnsoldEntries.filter((entry) => !alreadySentKeySet.has(buildEntryKey(entry)));
+    (manualUnsoldResult.rows || []).forEach((entry) => {
+      currentUnsoldByKey.set(buildEntryKey(entry), entry);
+    });
+    const currentUnsoldEntries = Array.from(currentUnsoldByKey.values());
+    const currentUnsoldKeySet = new Set(currentUnsoldByKey.keys());
+    const currentUnsoldChanged = currentUnsoldKeySet.size > 0
+      && (
+        currentUnsoldKeySet.size !== alreadySentKeySet.size
+        || [...currentUnsoldKeySet].some((entryKey) => !alreadySentKeySet.has(entryKey))
+      );
+    const pendingSendEntries = currentUnsoldChanged ? currentUnsoldEntries : [];
 
     const totalPiece = allEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
     const unsoldPiece = currentUnsoldEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
@@ -4477,7 +4487,7 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     }
 
     const manualSelectedResult = await query(
-      `SELECT DISTINCT le.*
+      `SELECT DISTINCT le.*, h.memo_number AS send_unsold_memo_number
        FROM lottery_entry_history h
        INNER JOIN lottery_entries le ON le.id = h.entry_id
        WHERE ${manualFilters.join(' AND ')}
@@ -4551,6 +4561,10 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     }));
     const targetStatus = shouldAutoAcceptToAdmin ? UNSOLD_ACCEPTED_STATUS : UNSOLD_SENT_STATUS;
     const selectedIds = selectedRows.map((row) => row.id);
+    const selectedMemoNumbers = selectedRows.map((row) => {
+      const memoNumber = Number(row.send_unsold_memo_number || row.memo_number || 0);
+      return Number.isInteger(memoNumber) && memoNumber > 0 ? memoNumber : null;
+    });
     const staleParams = [
       visibleUserIds,
       PURCHASE_ENTRY_SOURCE,
@@ -4589,14 +4603,20 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     );
 
     const updatedResult = await query(
-      `UPDATE lottery_entries
+      `UPDATE lottery_entries le
        SET status = $2,
            sent_to_parent = $3,
            forwarded_by = $4,
+           purchase_memo_number = COALESCE(le.purchase_memo_number, le.memo_number),
+           memo_number = COALESCE(selected_entries.memo_number, le.memo_number),
            sent_at = CURRENT_TIMESTAMP
-       WHERE id = ANY($1::int[])
-       RETURNING *`,
-      [selectedIds, targetStatus, req.user.parentId, req.user.id]
+       FROM (
+         SELECT *
+         FROM UNNEST($1::int[], $5::int[]) AS selected_entry(id, memo_number)
+       ) AS selected_entries
+       WHERE le.id = selected_entries.id
+       RETURNING le.*`,
+      [selectedIds, targetStatus, req.user.parentId, req.user.id, selectedMemoNumbers]
     );
 
     await insertHistoryRecords({

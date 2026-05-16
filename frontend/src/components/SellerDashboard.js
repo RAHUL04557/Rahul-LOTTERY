@@ -1142,6 +1142,8 @@ const SellerDashboard = ({
   const [saveConfirmOpen, setSaveConfirmOpen] = useState(false);
   const [saveConfirmSelected, setSaveConfirmSelected] = useState('no');
   const [saveConfirmMessage, setSaveConfirmMessage] = useState('Do you want to save?');
+  const [unsoldSendExitConfirmOpen, setUnsoldSendExitConfirmOpen] = useState(false);
+  const [unsoldSendExitConfirmSelected, setUnsoldSendExitConfirmSelected] = useState('no');
   const [exitReadyFromFirstControl, setExitReadyFromFirstControl] = useState(false);
   const blockingWarningActionRef = useRef(null);
   const saveConfirmActionRef = useRef(null);
@@ -1642,6 +1644,22 @@ const SellerDashboard = ({
     }
   };
 
+  const requestUnsoldSendExitConfirmation = () => {
+    setUnsoldSendExitConfirmSelected('no');
+    setUnsoldSendExitConfirmOpen(true);
+  };
+
+  const cancelUnsoldSendExitConfirmation = () => {
+    setUnsoldSendExitConfirmOpen(false);
+    setUnsoldSendExitConfirmSelected('no');
+  };
+
+  const confirmUnsoldSendExit = () => {
+    setUnsoldSendExitConfirmOpen(false);
+    setUnsoldSendExitConfirmSelected('no');
+    setUnsoldSendOpen(false);
+  };
+
   useEffect(() => {
     if (!pieceSummaryOpen) {
       return undefined;
@@ -1876,7 +1894,7 @@ const SellerDashboard = ({
   }, [activeTab, bookingError, error, blockingWarning]);
 
   useEffect(() => {
-    if (!activeTab) {
+    if (!activeTab && !unsoldSendOpen) {
       return undefined;
     }
 
@@ -1899,12 +1917,19 @@ const SellerDashboard = ({
         clearBlockingWarning();
         return;
       }
+      if (unsoldSendExitConfirmOpen) {
+        return;
+      }
+      if (unsoldSendOpen) {
+        requestUnsoldSendExitConfirmation();
+        return;
+      }
       requestExitConfirmation();
     };
 
     window.addEventListener('keydown', handleGlobalEscape, true);
     return () => window.removeEventListener('keydown', handleGlobalEscape, true);
-  }, [activeTab, billOnlyMode, blockingWarning]);
+  }, [activeTab, billOnlyMode, blockingWarning, unsoldSendOpen, unsoldSendExitConfirmOpen]);
 
   useEffect(() => {
     if (billOnlyMode) {
@@ -6356,6 +6381,13 @@ const SellerDashboard = ({
         onConfirm={confirmSaveRequest}
         onCancel={cancelSaveConfirmation}
       />
+      <ExitConfirmPrompt
+        open={unsoldSendExitConfirmOpen}
+        selected={unsoldSendExitConfirmSelected}
+        onSelectedChange={setUnsoldSendExitConfirmSelected}
+        onConfirm={confirmUnsoldSendExit}
+        onCancel={cancelUnsoldSendExitConfirmation}
+      />
       {pieceSummaryOpen && (
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1000, display: 'flex', padding: 0 }}>
           <div style={{ background: '#fff', width: '100%', height: '100%', borderRadius: 0, padding: '20px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
@@ -6421,7 +6453,7 @@ const SellerDashboard = ({
           <div style={{ background: '#fff', width: 'min(820px, 100%)', borderRadius: '8px', padding: '20px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
               <h2 style={{ margin: 0 }}>F11 Send Unsold</h2>
-              <button type="button" onClick={() => setUnsoldSendOpen(false)}>Close</button>
+              <button type="button" onClick={requestUnsoldSendExitConfirmation}>Exit (Esc)</button>
             </div>
             {unsoldSendLoading ? (
               <p>Loading...</p>
@@ -6431,7 +6463,8 @@ const SellerDashboard = ({
                   <strong>From:</strong> {unsoldSendSummary?.fromSeller || user?.username} |{' '}
                   <strong>To:</strong> {unsoldSendSummary?.toSeller || 'Parent'} |{' '}
                   <strong>Total Piece:</strong> {Number(unsoldSendSummary?.totalPiece || 0).toFixed(2)} |{' '}
-                  <strong>Send Unsold:</strong> {Number(unsoldSendSummary?.unsoldPiece || 0).toFixed(2)} |{' '}
+                  <strong>Already Sent:</strong> {Number(unsoldSendSummary?.alreadySentPiece || 0).toFixed(2)} |{' '}
+                  <strong>Unsold Piece:</strong> {Number(unsoldSendSummary?.unsoldPiece || 0).toFixed(2)} |{' '}
                   <strong>Sold:</strong> {Number(unsoldSendSummary?.soldPiece || 0).toFixed(2)}
                   {unsoldSendSummary?.autoAccept ? <div style={{ color: '#2f855a', fontWeight: 700 }}>Admin ko send hote hi auto accept hoga.</div> : null}
                   {Number(unsoldSendSummary?.alreadySentPiece || 0) > 0 ? (
@@ -6441,7 +6474,7 @@ const SellerDashboard = ({
                   ) : null}
                   {Number(unsoldSendSummary?.pendingSendPiece || 0) > 0 ? (
                     <div style={{ marginTop: '4px', color: '#2f855a', fontWeight: 700 }}>
-                      New unsold ready to send: {(Number(unsoldSendSummary.alreadySentPiece || 0) + Number(unsoldSendSummary.unsoldPiece || 0)).toFixed(2)} piece.
+                      New unsold ready to send: {Number(unsoldSendSummary.pendingSendPiece || 0).toFixed(2)} piece.
                     </div>
                   ) : null}
                 </div>
@@ -6450,8 +6483,8 @@ const SellerDashboard = ({
                     <tr>
                       <th>Seller Name</th>
                       <th>Total Piece</th>
-                      <th>Unsold Piece</th>
                       <th>Already Sent</th>
+                      <th>Unsold Piece</th>
                       <th>New Unsold</th>
                       <th>Sold Piece</th>
                     </tr>
@@ -6461,9 +6494,9 @@ const SellerDashboard = ({
                       <tr key={row.sellerId}>
                         <td>{row.sellerName}</td>
                         <td>{Number(row.totalPiece || 0).toFixed(2)}</td>
-                        <td>{(Number(row.alreadySentPiece || 0) + Number(row.unsoldPiece || 0)).toFixed(2)}</td>
                         <td>{Number(row.alreadySentPiece || 0).toFixed(2)}</td>
                         <td>{Number(row.unsoldPiece || 0).toFixed(2)}</td>
+                        <td>{Number(row.pendingSendPiece || 0).toFixed(2)}</td>
                         <td>{Number(row.soldPiece || 0).toFixed(2)}</td>
                       </tr>
                     ))}
