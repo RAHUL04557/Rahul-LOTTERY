@@ -1782,14 +1782,17 @@ const setupLocalDbIpc = (ipcMain) => {
           entry.boxValue,
           entry.number
         ].join('|')));
+        const selectedUserIds = [...new Set(selectedRows.map((entry) => Number(entry.userId)).filter(Boolean))];
         const staleParams = [];
         const staleConditions = [
           "entry_source = 'purchase'",
-          "LOWER(TRIM(status)) IN ('unsold_sent', 'unsold_accepted', 'unsold')",
-          'forwarded_by = ?'
+          "LOWER(TRIM(status)) IN ('unsold_saved', 'unsold_sent', 'unsold_accepted', 'unsold')"
         ];
-        staleParams.push(Number(userId || 0));
         addCommonPurchaseFilters(staleConditions, staleParams, payload);
+        if (selectedUserIds.length > 0) {
+          staleConditions.push(`user_id IN (${selectedUserIds.map(() => '?').join(', ')})`);
+          staleParams.push(...selectedUserIds);
+        }
 
         const staleRows = initLocalDb()
           .prepare(`SELECT * FROM local_purchase_entries WHERE ${staleConditions.join(' AND ')}`)
@@ -1819,7 +1822,33 @@ const setupLocalDbIpc = (ipcMain) => {
             .run(now, ...staleRows.map((row) => row.local_id));
         }
 
-        return { ok: true, reset: staleRows.length };
+        const manualParams = [Number(userId || 0)];
+        const manualConditions = ['actor_user_id = ?'];
+        addCommonPurchaseFilters(manualConditions, manualParams, payload);
+        if (selectedUserIds.length > 0) {
+          manualConditions.push(`user_id IN (${selectedUserIds.map(() => '?').join(', ')})`);
+          manualParams.push(...selectedUserIds);
+        }
+        const staleManualRows = initLocalDb()
+          .prepare(`SELECT * FROM local_manual_unsold_entries WHERE ${manualConditions.join(' AND ')}`)
+          .all(...manualParams)
+          .filter((row) => !selectedKeys.has([
+            row.user_id,
+            row.booking_date,
+            row.session_mode,
+            row.purchase_category,
+            row.amount,
+            row.box_value,
+            row.number
+          ].join('|')));
+
+        if (staleManualRows.length > 0) {
+          initLocalDb()
+            .prepare(`DELETE FROM local_manual_unsold_entries WHERE local_id IN (${staleManualRows.map(() => '?').join(', ')})`)
+            .run(...staleManualRows.map((row) => row.local_id));
+        }
+
+        return { ok: true, reset: staleRows.length, manualReset: staleManualRows.length };
       }
 
       initLocalDb()

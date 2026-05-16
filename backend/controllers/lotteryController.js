@@ -5153,9 +5153,10 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       'h.booking_date = $3::date',
       'h.session_mode = $4',
       '($5::text IS NULL OR h.purchase_category = $5)',
-      'h.actor_user_id = $6',
-      'h.to_user_id = $7',
-      "h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')"
+      `(
+        (h.actor_user_id = $6 AND h.to_user_id = $7 AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted'))
+        OR (h.to_user_id = $7 AND h.action_type = 'unsold_accepted')
+      )`
     ];
 
     if (normalizedAmount) {
@@ -6123,6 +6124,8 @@ const getReceivedEntries = async (req, res) => {
 };
 
 const updateReceivedEntryStatus = async (req, res) => {
+  const client = await getClient();
+
   try {
     const { entryId } = req.params;
     const { action } = req.body;
@@ -6164,7 +6167,9 @@ const updateReceivedEntryStatus = async (req, res) => {
     const isPurchaseUnsoldEntry = entry.entry_source === PURCHASE_ENTRY_SOURCE && entry.status === UNSOLD_SENT_STATUS;
 
     if (isPurchaseUnsoldEntry) {
-      const memoScopeResult = await query(
+      await client.query('BEGIN');
+
+      const memoScopeResult = await client.query(
         `SELECT *
          FROM lottery_entries
          WHERE user_id = $1
@@ -6191,22 +6196,7 @@ const updateReceivedEntryStatus = async (req, res) => {
       );
 
       const scopedIds = memoScopeResult.rows.map((row) => row.id);
-      const updatedResult = await query(
-        `UPDATE lottery_entries
-         SET status = $2,
-             sent_to_parent = $3,
-             forwarded_by = $4,
-             sent_at = CURRENT_TIMESTAMP
-         WHERE id = ANY($1::int[])
-         RETURNING *`,
-        [
-          scopedIds,
-          action === 'accept' ? UNSOLD_ACCEPTED_STATUS : 'accepted',
-          req.user.id,
-          action === 'accept' ? req.user.id : entry.forwarded_by
-        ]
-      );
-      const acceptedMemoResult = await query(
+      const acceptedMemoResult = await client.query(
         `SELECT DISTINCT ON (entry_id) entry_id, memo_number
          FROM lottery_entry_history
          WHERE entry_id = ANY($1::int[])
@@ -6222,6 +6212,47 @@ const updateReceivedEntryStatus = async (req, res) => {
         Number(row.memo_number)
       ]));
 
+      if (action === 'accept') {
+        await client.query(
+          `DELETE FROM lottery_entry_history h
+           USING lottery_entries le
+           WHERE h.entry_id = le.id
+             AND le.user_id = $1
+             AND le.entry_source = $2
+             AND h.booking_date = $3::date
+             AND h.session_mode = $4
+             AND h.purchase_category = $5
+             AND h.amount = $6::numeric
+             AND h.to_user_id = $7
+             AND h.action_type = 'unsold_accepted'`,
+          [
+            entry.user_id,
+            PURCHASE_ENTRY_SOURCE,
+            entry.booking_date,
+            entry.session_mode,
+            entry.purchase_category,
+            entry.amount,
+            req.user.id
+          ]
+        );
+      }
+
+      const updatedResult = await client.query(
+        `UPDATE lottery_entries
+         SET status = $2,
+             sent_to_parent = $3,
+             forwarded_by = $4,
+             sent_at = CURRENT_TIMESTAMP
+         WHERE id = ANY($1::int[])
+         RETURNING *`,
+        [
+          scopedIds,
+          action === 'accept' ? UNSOLD_ACCEPTED_STATUS : 'accepted',
+          req.user.id,
+          action === 'accept' ? req.user.id : entry.forwarded_by
+        ]
+      );
+
       await insertHistoryRecords({
         entries: updatedResult.rows.map((row) => ({
           ...row,
@@ -6233,12 +6264,16 @@ const updateReceivedEntryStatus = async (req, res) => {
         actorUserId: req.user.id,
         actorUsername: req.user.username,
         toUserId: req.user.id,
-        toUsername: req.user.username
+        toUsername: req.user.username,
+        client
       });
+
+      await client.query('COMMIT');
 
       return res.json({
         message: action === 'accept' ? 'Unsold accepted successfully' : 'Unsold rejected successfully',
-        entry: mapLotteryEntry(updatedResult.rows[0])
+        entry: mapLotteryEntry(updatedResult.rows[0]),
+        entries: updatedResult.rows.map(mapLotteryEntry)
       });
     }
 
@@ -6281,7 +6316,14 @@ const updateReceivedEntryStatus = async (req, res) => {
       entry: mapLotteryEntry(acceptedResult.rows[0])
     });
   } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      // Ignore rollback failures so the original error can be returned.
+    }
     res.status(500).json({ message: 'Server error', error: error.message });
+  } finally {
+    client.release();
   }
 };
 

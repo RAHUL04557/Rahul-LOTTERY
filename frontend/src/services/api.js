@@ -80,7 +80,10 @@ const requestWithOfflineQueue = async ({ method = 'POST', url, data, config = {}
       data
     });
     const localDb = getLocalDb();
-    const responseEntries = Array.isArray(response.data?.entries) ? response.data.entries : [];
+    const responseEntries = [
+      ...(Array.isArray(response.data?.entries) ? response.data.entries : []),
+      ...(response.data?.entry ? [response.data.entry] : [])
+    ];
     const responseResults = Array.isArray(response.data?.results) ? response.data.results : [];
     const responseUsers = [
       ...(response.data?.seller ? [response.data.seller] : []),
