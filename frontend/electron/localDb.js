@@ -2396,6 +2396,56 @@ const setupLocalDbIpc = (ipcMain) => {
           : row.range_to;
         groupedRows.set(key, current);
       });
+
+      const selfCurrentUnsoldParams = [currentUserId];
+      const selfCurrentUnsoldConditions = [
+        'user_id = ?',
+        "entry_source = 'purchase'",
+        `(
+          LOWER(TRIM(status)) = 'unsold_accepted'
+          OR (
+            LOWER(TRIM(status)) = 'unsold_sent'
+            AND forwarded_by = ?
+          )
+          OR (
+            LOWER(TRIM(status)) = 'unsold_saved'
+            AND (user_id = ? OR sent_to_parent = ?)
+          )
+        )`
+      ];
+      selfCurrentUnsoldParams.push(currentUserId, currentUserId, currentUserId);
+
+      if (fromDate && toDate) {
+        selfCurrentUnsoldParams.push(fromDate, toDate);
+        selfCurrentUnsoldConditions.push('booking_date BETWEEN ? AND ?');
+      }
+      addCommonPurchaseFilters(selfCurrentUnsoldConditions, selfCurrentUnsoldParams, filters);
+
+      const selfCurrentUnsoldRows = initLocalDb()
+        .prepare(`
+          SELECT user_id, session_mode, purchase_category, amount, box_value,
+                 SUM(CASE WHEN box_value GLOB '[0-9]*' THEN CAST(box_value AS REAL) ELSE 0 END) AS current_unsold_piece
+          FROM local_purchase_entries
+          WHERE ${selfCurrentUnsoldConditions.join(' AND ')}
+          GROUP BY user_id, session_mode, purchase_category, amount, box_value
+        `)
+        .all(...selfCurrentUnsoldParams);
+      const selfCurrentUnsoldMap = new Map(selfCurrentUnsoldRows.map((row) => ([
+        [Number(row.user_id), row.session_mode, row.purchase_category, row.amount, row.box_value].join('|'),
+        Number(row.current_unsold_piece || 0)
+      ])));
+
+      [...groupedRows.entries()].forEach(([rowKey, row]) => {
+        if (Number(row.user_id) !== currentUserId) {
+          return;
+        }
+
+        const selfKey = [Number(row.user_id), row.session_mode, row.purchase_category, row.amount, row.box_value].join('|');
+        groupedRows.set(rowKey, {
+          ...row,
+          unsold_piece: Number(selfCurrentUnsoldMap.get(selfKey) || 0)
+        });
+      });
     }
 
     return [...groupedRows.values()].map((row) => {

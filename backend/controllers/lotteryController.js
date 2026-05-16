@@ -5983,11 +5983,74 @@ const getPurchaseBillSummary = async (req, res) => {
       manualUnsoldMap.set(key, Number(manualUnsoldMap.get(key) || 0) + Number(row.manual_unsold_piece || 0));
     });
 
+    const selfCurrentUnsoldMap = new Map();
+    if (!currentUserIsAdmin) {
+      const selfUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
+      const selfUnsoldConditions = [
+        'le.user_id = $1',
+        'le.entry_source = $2',
+        `(
+          LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
+          OR (
+            LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}'
+            AND le.forwarded_by = $1
+          )
+          OR (
+            LOWER(TRIM(le.status)) = '${UNSOLD_LOCAL_STATUS}'
+            AND (le.user_id = $1 OR le.sent_to_parent = $1)
+          )
+        )`
+      ];
+
+      if (dateFilterResult.dateFilter) {
+        const selfDateFilter = buildDateFilter({ date, fromDate, toDate }, selfUnsoldParams, 'le.booking_date', true);
+        if (selfDateFilter.dateFilter) {
+          selfUnsoldConditions.push(selfDateFilter.dateFilter.replace(/^AND\s+/i, ''));
+        }
+      }
+
+      if (sessionMode) {
+        selfUnsoldParams.push(sessionMode);
+        selfUnsoldConditions.push(`le.session_mode = $${selfUnsoldParams.length}`);
+      }
+
+      if (normalizedPurchaseCategory) {
+        selfUnsoldParams.push(normalizedPurchaseCategory);
+        selfUnsoldConditions.push(`le.purchase_category = $${selfUnsoldParams.length}`);
+      }
+
+      if (normalizedAmount) {
+        selfUnsoldParams.push(normalizedAmount);
+        selfUnsoldConditions.push(`le.amount = $${selfUnsoldParams.length}::numeric`);
+      }
+
+      const selfCurrentUnsoldResult = await query(
+        `SELECT
+          le.user_id AS root_seller_id,
+          le.session_mode,
+          le.purchase_category,
+          le.amount,
+          le.box_value,
+          COALESCE(SUM(CASE WHEN le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS current_unsold_piece
+         FROM lottery_entries le
+         WHERE ${selfUnsoldConditions.join(' AND ')}
+         GROUP BY le.user_id, le.session_mode, le.purchase_category, le.amount, le.box_value`,
+        selfUnsoldParams
+      );
+
+      selfCurrentUnsoldResult.rows.forEach((row) => {
+        const key = [row.root_seller_id, row.session_mode, row.purchase_category, String(row.amount), row.box_value].join('|');
+        selfCurrentUnsoldMap.set(key, Number(row.current_unsold_piece || 0));
+      });
+    }
+
     res.json(result.rows.map((row) => {
       const totalPiece = Number(row.total_piece || 0);
       const manualKey = [row.root_seller_id, row.session_mode, row.purchase_category, String(row.amount), row.box_value].join('|');
       const manualUnsoldPiece = Number(manualUnsoldMap.get(manualKey) || 0);
-      const unsoldPiece = Number(row.unsold_piece || 0) + Number(sentUnsoldMap.get(manualKey) || 0) + manualUnsoldPiece;
+      const unsoldPiece = !currentUserIsAdmin && Number(row.root_seller_id) === Number(req.user.id)
+        ? Number(selfCurrentUnsoldMap.get(manualKey) || 0)
+        : Number(row.unsold_piece || 0) + Number(sentUnsoldMap.get(manualKey) || 0) + manualUnsoldPiece;
       const soldPiece = Math.max(totalPiece - unsoldPiece, 0);
       const appliedRate = Number(row.applied_rate || 0);
 
