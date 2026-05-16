@@ -5906,9 +5906,6 @@ const getPurchaseBillSummary = async (req, res) => {
       'h.actor_user_id = $4',
       latestSavedUnsoldHistoryCondition
     ];
-    if (!currentUserIsAdmin) {
-      manualConditions.push('le.user_id <> $1');
-    }
 
     if (dateFilterResult.dateFilter) {
       const manualDateFilter = buildDateFilter({ date, fromDate, toDate }, manualParams, 'h.booking_date', true);

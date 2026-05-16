@@ -2191,8 +2191,6 @@ const setupLocalDbIpc = (ipcMain) => {
     const currentUserId = Number(currentUser.id || filters.userId || 0);
     const users = getSavedVisibleUsers();
     const usersById = new Map(users.map((user) => [Number(user.id), user]));
-    const currentUserFromStore = usersById.get(currentUserId) || currentUser;
-    const isAdmin = String(currentUserFromStore.role || currentUser.role || '').toLowerCase() === 'admin';
 
     if (fromDate && toDate) {
       params.push(fromDate, toDate);
@@ -2339,10 +2337,6 @@ const setupLocalDbIpc = (ipcMain) => {
 
       const manualParams = [currentUserId];
       const manualConditions = ['actor_user_id = ?'];
-      if (!isAdmin) {
-        manualConditions.push('user_id <> ?');
-        manualParams.push(currentUserId);
-      }
 
       if (fromDate && toDate) {
         manualParams.push(fromDate, toDate);
