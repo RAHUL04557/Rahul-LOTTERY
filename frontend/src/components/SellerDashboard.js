@@ -6527,7 +6527,7 @@ const SellerDashboard = ({
                       You already send {Number(unsoldSendSummary.alreadySentPiece || 0).toFixed(2)} piece.
                     </div>
                   ) : null}
-                  {Number(unsoldSendSummary?.pendingSendPiece || 0) > 0 ? (
+                  {unsoldSendSummary?.hasPendingUpdate ? (
                     <div style={{ marginTop: '4px', color: '#2f855a', fontWeight: 700 }}>
                       New unsold ready to send: {Number(unsoldSendSummary.pendingSendPiece || 0).toFixed(2)} piece.
                     </div>
@@ -6562,7 +6562,7 @@ const SellerDashboard = ({
                   <button
                     type="button"
                     onClick={sendUnsoldToParent}
-                    disabled={unsoldSendSaving || Number(unsoldSendSummary?.pendingSendPiece || 0) <= 0}
+                    disabled={unsoldSendSaving || !unsoldSendSummary?.hasPendingUpdate}
                     style={{ backgroundColor: '#2f855a' }}
                   >
                     {unsoldSendSaving ? 'Sending...' : 'Send Unsold'}

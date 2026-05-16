@@ -2956,10 +2956,19 @@ const getPurchaseEntries = async (req, res) => {
     );
 
     if (shouldUseAcceptedSnapshotView) {
-      const [snapshotRows, localSavedResult] = await Promise.all([
+      const [snapshotRows, manualSavedRows, localSavedResult] = await Promise.all([
         getLatestAcceptedUnsoldSnapshotRows({
           targetSellerId: sellerId,
           viewerUserId: req.user.id,
+          bookingDate,
+          sessionMode,
+          purchaseCategory,
+          amount,
+          boxValue
+        }),
+        getManualSavedUnsoldRows({
+          targetSellerId: sellerId,
+          actorUserId: req.user.id,
           bookingDate,
           sessionMode,
           purchaseCategory,
@@ -2998,7 +3007,12 @@ const getPurchaseEntries = async (req, res) => {
         )
       ]);
 
-      const combinedRows = [...snapshotRows, ...localSavedResult.rows];
+      const combinedRows = [...manualSavedRows, ...snapshotRows, ...localSavedResult.rows].filter((row, index, rows) => {
+        const rowKey = [row.id, row.number, row.box_value].join('|');
+        return rows.findIndex((currentRow) => (
+          [currentRow.id, currentRow.number, currentRow.box_value].join('|') === rowKey
+        )) === index;
+      });
       res.json(combinedRows.map(mapLotteryEntry));
       return;
     }
@@ -3984,14 +3998,33 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
     if (targetSellerId !== Number(req.user.id)) {
       await client.query('BEGIN');
 
+      const existingSnapshotResult = await client.query(
+        `SELECT DISTINCT h.entry_id
+         FROM lottery_entry_history h
+         INNER JOIN lottery_entries le ON le.id = h.entry_id
+         WHERE le.user_id = $1
+           AND le.entry_source = $2
+           AND h.to_user_id = $3
+           AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')
+           AND h.memo_number = $4
+           AND h.booking_date = $5::date
+           AND h.session_mode = $6
+           AND h.purchase_category = $7
+           AND h.amount = $8::numeric
+           AND h.entry_id IS NOT NULL`,
+        [targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount]
+      );
+
       await client.query(
         `DELETE FROM lottery_entry_history h
          USING lottery_entries le
          WHERE h.entry_id = le.id
            AND le.user_id = $1
            AND le.entry_source = $2
-           AND h.actor_user_id = $3
-           AND h.action_type = 'saved_unsold'
+           AND (
+             (h.actor_user_id = $3 AND h.action_type = 'saved_unsold')
+             OR (h.to_user_id = $3 AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted'))
+           )
            AND h.memo_number = $4
            AND h.booking_date = $5::date
            AND h.session_mode = $6
@@ -4001,6 +4034,21 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
       );
 
       if (normalizedRows.length === 0) {
+        const existingSnapshotIds = existingSnapshotResult.rows
+          .map((row) => Number(row.entry_id))
+          .filter((entryId) => Number.isInteger(entryId) && entryId > 0);
+        if (existingSnapshotIds.length > 0) {
+          await client.query(
+            `UPDATE lottery_entries
+             SET status = 'accepted',
+                 sent_to_parent = $2,
+                 forwarded_by = $3,
+                 memo_number = COALESCE(purchase_memo_number, memo_number),
+                 sent_at = CURRENT_TIMESTAMP
+             WHERE id = ANY($1::int[])`,
+            [existingSnapshotIds, req.user.id, targetSeller.id]
+          );
+        }
         await client.query('COMMIT');
         return res.status(200).json({
           message: `Unsold memo ${normalizedMemoNumber} deleted successfully`,
@@ -4075,6 +4123,23 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
           memo_number: normalizedMemoNumber,
           memo_row_order: Number.isInteger(Number(row.memoRowOrder)) ? Number(row.memoRowOrder) : rowIndex
         })));
+      }
+
+      const keptEntryIds = new Set(historyEntries.map((entry) => Number(entry.id)));
+      const staleSnapshotIds = existingSnapshotResult.rows
+        .map((row) => Number(row.entry_id))
+        .filter((entryId) => Number.isInteger(entryId) && entryId > 0 && !keptEntryIds.has(entryId));
+      if (staleSnapshotIds.length > 0) {
+        await client.query(
+          `UPDATE lottery_entries
+           SET status = 'accepted',
+               sent_to_parent = $2,
+               forwarded_by = $3,
+               memo_number = COALESCE(purchase_memo_number, memo_number),
+               sent_at = CURRENT_TIMESTAMP
+           WHERE id = ANY($1::int[])`,
+          [staleSnapshotIds, req.user.id, targetSeller.id]
+        );
       }
 
       await insertHistoryRecords({
@@ -4430,11 +4495,8 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
     });
     const currentUnsoldEntries = Array.from(currentUnsoldByKey.values());
     const currentUnsoldKeySet = new Set(currentUnsoldByKey.keys());
-    const currentUnsoldChanged = currentUnsoldKeySet.size > 0
-      && (
-        currentUnsoldKeySet.size !== alreadySentKeySet.size
-        || [...currentUnsoldKeySet].some((entryKey) => !alreadySentKeySet.has(entryKey))
-      );
+    const currentUnsoldChanged = currentUnsoldKeySet.size !== alreadySentKeySet.size
+      || [...currentUnsoldKeySet].some((entryKey) => !alreadySentKeySet.has(entryKey));
     const pendingSendEntries = currentUnsoldChanged ? currentUnsoldEntries : [];
 
     const totalPiece = allEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
@@ -4451,7 +4513,8 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
         alreadySentPiece,
         pendingSendPiece,
         soldPiece: Math.max(totalPiece - unsoldPiece, 0),
-        unsoldCount
+        unsoldCount,
+        hasPendingUpdate: currentUnsoldChanged
       }]
       : [];
 
@@ -4470,6 +4533,7 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
       unsoldPiece,
       alreadySentPiece,
       pendingSendPiece,
+      hasPendingUpdate: currentUnsoldChanged,
       soldPiece: Math.max(totalPiece - unsoldPiece, 0),
       rows: aggregatedRow
     });
@@ -4591,10 +4655,6 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     manualSelectedResult.rows.forEach((row) => selectedRowsById.set(Number(row.id), row));
     const selectedRows = Array.from(selectedRowsById.values());
 
-    if (selectedRows.length === 0) {
-      return res.status(400).json({ message: 'Send karne ke liye unsold entry nahi hai' });
-    }
-
     const buildSendEntryKey = (entry) => ([
       entry.user_id,
       entry.booking_date instanceof Date ? entry.booking_date.toISOString().slice(0, 10) : String(entry.booking_date || ''),
@@ -4635,6 +4695,48 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
        WHERE ${alreadySentFilters.join(' AND ')}`,
       alreadySentParams
     );
+
+    if (selectedRows.length === 0) {
+      if ((alreadySentResult.rows || []).length === 0) {
+        return res.status(400).json({ message: 'Send karne ke liye unsold entry nahi hai' });
+      }
+
+      await query(
+        `DELETE FROM lottery_entry_history h
+         USING lottery_entries le
+         WHERE h.entry_id = le.id
+           AND le.user_id = ANY($1::int[])
+           AND le.entry_source = $2
+           AND h.booking_date = $3::date
+           AND h.session_mode = $4
+           AND ($5::text IS NULL OR h.purchase_category = $5)
+           AND h.actor_user_id = $6
+           AND h.to_user_id = $7
+           AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')
+           ${normalizedAmount ? `AND h.amount = $8::numeric` : ''}`,
+        normalizedAmount
+          ? [visibleUserIds, PURCHASE_ENTRY_SOURCE, bookingDate, sessionMode, purchaseCategory, req.user.id, req.user.parentId, normalizedAmount]
+          : [visibleUserIds, PURCHASE_ENTRY_SOURCE, bookingDate, sessionMode, purchaseCategory, req.user.id, req.user.parentId]
+      );
+
+      await query(
+        `UPDATE lottery_entries
+         SET status = 'accepted',
+             sent_to_parent = NULL,
+             forwarded_by = NULL,
+             memo_number = COALESCE(purchase_memo_number, memo_number),
+             sent_at = NULL
+         WHERE ${alreadySentFilters.join(' AND ')}`,
+        alreadySentParams
+      );
+
+      return res.json({
+        message: 'Unsold admin ko 0 update ho gaya',
+        entriesSent: 0,
+        autoAccepted: Boolean(parentUser && isAdminRole(parentUser.role)),
+        entries: []
+      });
+    }
     const selectedKeySet = new Set(selectedRows.map(buildSendEntryKey));
     const alreadySentKeySet = new Set((alreadySentResult.rows || []).map(buildSendEntryKey));
     const sameAsAlreadySent = selectedKeySet.size > 0
