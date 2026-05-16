@@ -5717,6 +5717,7 @@ const getPurchaseBillSummary = async (req, res) => {
     const sessionMode = normalizeSessionMode(shift);
     const normalizedAmount = String(amount || '').trim();
     const normalizedPurchaseCategory = normalizePurchaseCategory(purchaseCategory);
+    const currentUserIsAdmin = isAdminRole(req.user.role);
     const params = [req.user.id, PURCHASE_ENTRY_SOURCE];
     const dateFilterResult = buildDateFilter({ date, fromDate, toDate }, params, 'le.booking_date', true);
 
@@ -5905,6 +5906,9 @@ const getPurchaseBillSummary = async (req, res) => {
       'h.actor_user_id = $4',
       latestSavedUnsoldHistoryCondition
     ];
+    if (!currentUserIsAdmin) {
+      manualConditions.push('le.user_id <> $1');
+    }
 
     if (dateFilterResult.dateFilter) {
       const manualDateFilter = buildDateFilter({ date, fromDate, toDate }, manualParams, 'h.booking_date', true);
