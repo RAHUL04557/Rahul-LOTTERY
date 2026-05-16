@@ -2010,6 +2010,7 @@ const getAdminPurchaseEntries = async (req, res) => {
   try {
     const sessionMode = getOptionalSessionMode(req);
     const bookingDate = normalizeBookingDate(req.query.bookingDate);
+    const sellerId = Number(req.query.sellerId || 0);
     const amount = String(req.query.amount || '').trim();
     const boxValue = String(req.query.boxValue || '').trim();
     const purchaseCategory = normalizePurchaseCategory(req.query.purchaseCategory);
@@ -2064,6 +2065,7 @@ const getAdminPurchaseSentHistory = async (req, res) => {
 
     const sessionMode = getOptionalSessionMode(req);
     const bookingDate = normalizeBookingDate(req.query.bookingDate);
+    const sellerId = Number(req.query.sellerId);
     const amount = String(req.query.amount || '').trim();
     const boxValue = String(req.query.boxValue || '').trim();
     const purchaseCategory = normalizePurchaseCategory(req.query.purchaseCategory);
@@ -2088,6 +2090,15 @@ const getAdminPurchaseSentHistory = async (req, res) => {
       conditions.push(`h.purchase_category = $${params.length}`);
     }
 
+    if (Number.isFinite(sellerId) && sellerId > 0) {
+      const branchIds = await getDirectSellerBranchIds(req.user.id, sellerId);
+      if (branchIds.length === 0) {
+        return res.status(404).json({ message: 'Seller not found' });
+      }
+      params.push(branchIds);
+      conditions.push(`h.to_user_id = ANY($${params.length}::int[])`);
+    }
+
     if (amount) {
       params.push(amount);
       conditions.push(`h.amount = $${params.length}::numeric`);
@@ -2099,7 +2110,7 @@ const getAdminPurchaseSentHistory = async (req, res) => {
     }
 
     const result = await query(
-      `SELECT h.*,
+      `SELECT DISTINCT ON (h.entry_id) h.*,
               COALESCE(h.memo_number, le.purchase_memo_number, le.memo_number) AS memo_number,
               current_owner.username AS current_to_username
        FROM lottery_entry_history h
@@ -2107,12 +2118,18 @@ const getAdminPurchaseSentHistory = async (req, res) => {
        LEFT JOIN users current_owner ON current_owner.id = le.user_id
        WHERE ${conditions.join(' AND ')}
          AND le.entry_source = $${params.length + 1}
-         AND LOWER(TRIM(le.status)) IN ('accepted', 'unsold')
-       ORDER BY h.booking_date DESC, h.session_mode ASC, h.to_username ASC, h.memo_number ASC, h.number ASC`,
+       ORDER BY h.entry_id, h.created_at DESC, h.id DESC`,
       [...params, PURCHASE_ENTRY_SOURCE]
     );
 
-    res.json(result.rows.map(mapHistoryRecord));
+    res.json(result.rows.map(mapHistoryRecord)
+      .sort((a, b) => (
+        String(b.bookingDate || '').localeCompare(String(a.bookingDate || ''))
+        || String(a.sessionMode || '').localeCompare(String(b.sessionMode || ''))
+        || String(a.toUsername || '').localeCompare(String(b.toUsername || ''))
+        || Number(a.memoNumber || 0) - Number(b.memoNumber || 0)
+        || Number(a.number || 0) - Number(b.number || 0)
+      )));
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }

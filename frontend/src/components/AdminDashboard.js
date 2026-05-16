@@ -2677,15 +2677,14 @@ const AdminDashboard = ({
     try {
       const lookupEntries = isUnsoldRemoveLookup
         ? await getAdminUnsoldRemoveStockEntries(filter)
-        : ((await lotteryService.getPurchases({
+        : ((await lotteryService.getAdminPurchaseSentHistory({
           bookingDate: purchaseBookingDate,
           sessionMode: filter.sessionMode,
           sellerId: purchaseSellerId,
-          status: 'accepted',
           purchaseCategory: filter.purchaseCategory,
           amount: purchaseAmount,
           boxValue: filter.boxValue || undefined
-        })).data || []);
+        })).data || []).map(mapHistoryRecord);
       const details = buildAdminStockLookupDetails(lookupEntries, filter.label);
       const sellerLabel = getSelectedAdminUnsoldSellerName();
 

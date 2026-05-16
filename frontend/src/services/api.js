@@ -632,12 +632,13 @@ export const lotteryService = {
         ...(purchaseCategory && { purchaseCategory })
       }
     }),
-  getAdminPurchaseSentHistory: ({ bookingDate, sessionMode, amount, boxValue, purchaseCategory } = {}, requestOptions = {}) =>
+  getAdminPurchaseSentHistory: ({ bookingDate, sessionMode, sellerId, amount, boxValue, purchaseCategory } = {}, requestOptions = {}) =>
     api.get('/lottery/admin-purchases/sent-history', {
       ...requestOptions,
       params: {
         ...(bookingDate && { bookingDate }),
         ...(sessionMode && { sessionMode }),
+        ...(sellerId && { sellerId }),
         ...(amount && { amount }),
         ...(boxValue && { boxValue }),
         ...(purchaseCategory && { purchaseCategory })
