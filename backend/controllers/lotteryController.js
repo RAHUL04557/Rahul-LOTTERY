@@ -824,6 +824,11 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
        LEFT JOIN users parent_user ON parent_user.id = $${viewerParamIndex}
        LEFT JOIN users actor_user ON actor_user.id = h.actor_user_id
        WHERE h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')
+         AND LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
+         AND (
+           le.sent_to_parent = $${viewerParamIndex}
+           OR le.forwarded_by = $${viewerParamIndex}
+         )
      )
      SELECT *
      FROM snapshot

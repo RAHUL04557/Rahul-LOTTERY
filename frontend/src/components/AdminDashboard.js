@@ -4888,6 +4888,7 @@ const AdminDashboard = ({
 
   const directAdminSellers = (treeData?.children || []).filter((node) => node.role === 'seller');
   const activeAmountAdminSellers = directAdminSellers.filter((seller) => sellerSupportsAmount(seller, purchaseAmount || initialAmount));
+  const selectedAdminSendSeller = activeAmountAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId));
   const shouldShowAmountTreeNode = (node) => node?.role !== 'seller' || sellerSupportsAmount(node, initialAmount || purchaseAmount);
   const adminPrizeTrackerSellerOptions = [
     { id: '', username: 'All Sellers', keyword: 'ALL' },
@@ -5786,7 +5787,6 @@ const AdminDashboard = ({
   const adminSendVisibleQuantity = activePurchaseSendRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
   const adminSendVisibleAmount = activePurchaseSendRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
   const adminPurchaseGridRows = createRetroGridRows(activePurchaseSendRows, { drawDate: purchaseBookingDate });
-  const selectedAdminSendSeller = activeAmountAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId));
   const purchasePreviousRow = purchaseDraftRows[Math.min(purchaseActiveRowIndex, purchaseDraftRows.length) - 1] || null;
   const purchaseMetrics = getRetroRangeMetrics(
     purchaseCodeInput,
