@@ -89,7 +89,7 @@ const requestWithOfflineQueue = async ({ method = 'POST', url, data, config = {}
 
     if (
       localDb?.applyOfflinePurchaseMutation
-      && ['replace_purchase_send_memo', 'replace_unsold_memo', 'unsold_save', 'unsold_remove'].includes(operationType)
+      && ['replace_purchase_send_memo', 'replace_unsold_memo', 'unsold_save', 'unsold_remove', 'unsold_send'].includes(operationType)
     ) {
       await localDb.applyOfflinePurchaseMutation({
         operationType,

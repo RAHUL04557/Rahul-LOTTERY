@@ -3107,7 +3107,7 @@ const getPurchaseEntries = async (req, res) => {
       : [];
 
     let liveRows = result.rows;
-    if (status === UNSOLD_ACCEPTED_STATUS && req.user.role === 'admin' && sellerId && result.rows.length > 0) {
+    if ([UNSOLD_ACCEPTED_STATUS, 'unsold'].includes(status) && req.user.role === 'admin' && sellerId && result.rows.length > 0) {
       const liveEntryIds = result.rows
         .map((row) => Number(row.id))
         .filter((entryId) => Number.isInteger(entryId) && entryId > 0);
@@ -4523,6 +4523,10 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
         return Number(entry.user_id) === Number(req.user.id) || Number(entry.sent_to_parent) === Number(req.user.id);
       }
 
+      if (normalizedStatus === UNSOLD_SENT_STATUS) {
+        return Number(entry.forwarded_by || 0) === Number(req.user.id);
+      }
+
       if (normalizedStatus === UNSOLD_ACCEPTED_STATUS) {
         return (
           Number(entry.sent_to_parent || 0) === Number(req.user.id)
@@ -4653,6 +4657,10 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
           AND (user_id = $6 OR sent_to_parent = $6)
         )
         OR (
+          LOWER(TRIM(status)) = '${UNSOLD_SENT_STATUS}'
+          AND forwarded_by = $6
+        )
+        OR (
           LOWER(TRIM(status)) = '${UNSOLD_ACCEPTED_STATUS}'
           AND (
             sent_to_parent IS NULL
@@ -4764,45 +4772,7 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     );
 
     if (selectedRows.length === 0) {
-      if ((alreadySentResult.rows || []).length === 0) {
-        return res.status(400).json({ message: 'Send karne ke liye unsold entry nahi hai' });
-      }
-
-      await query(
-        `DELETE FROM lottery_entry_history h
-         USING lottery_entries le
-         WHERE h.entry_id = le.id
-           AND le.user_id = ANY($1::int[])
-           AND le.entry_source = $2
-           AND h.booking_date = $3::date
-           AND h.session_mode = $4
-           AND ($5::text IS NULL OR h.purchase_category = $5)
-           AND h.actor_user_id = $6
-           AND h.to_user_id = $7
-           AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')
-           ${normalizedAmount ? `AND h.amount = $8::numeric` : ''}`,
-        normalizedAmount
-          ? [visibleUserIds, PURCHASE_ENTRY_SOURCE, bookingDate, sessionMode, purchaseCategory, req.user.id, req.user.parentId, normalizedAmount]
-          : [visibleUserIds, PURCHASE_ENTRY_SOURCE, bookingDate, sessionMode, purchaseCategory, req.user.id, req.user.parentId]
-      );
-
-      await query(
-        `UPDATE lottery_entries
-         SET status = 'accepted',
-             sent_to_parent = NULL,
-             forwarded_by = NULL,
-             memo_number = COALESCE(purchase_memo_number, memo_number),
-             sent_at = NULL
-         WHERE ${alreadySentFilters.join(' AND ')}`,
-        alreadySentParams
-      );
-
-      return res.json({
-        message: 'Unsold admin ko 0 update ho gaya',
-        entriesSent: 0,
-        autoAccepted: Boolean(parentUser && isAdminRole(parentUser.role)),
-        entries: []
-      });
+      return res.status(400).json({ message: 'Send karne ke liye unsold entry nahi hai' });
     }
     const selectedKeySet = new Set(selectedRows.map(buildSendEntryKey));
     const alreadySentKeySet = new Set((alreadySentResult.rows || []).map(buildSendEntryKey));

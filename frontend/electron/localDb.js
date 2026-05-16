@@ -1774,11 +1774,11 @@ const setupLocalDbIpc = (ipcMain) => {
           SET status = 'unsold_sent',
               sent_to_parent = COALESCE(sent_to_parent, forwarded_by),
               updated_at = ?,
-              sync_status = 'pending'
+              sync_status = ?
           WHERE ${conditions.join(' AND ')}
             AND LOWER(TRIM(status)) IN ('unsold_saved', 'unsold')
         `)
-        .run(now, ...params);
+        .run(now, payload.serverSynced ? 'synced' : 'pending', ...params);
     }
 
     if (operationType === 'purchase_send') {

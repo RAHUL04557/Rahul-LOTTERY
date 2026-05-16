@@ -1584,7 +1584,7 @@ const SellerDashboard = ({
         sessionMode,
         purchaseCategory: activePurchaseCategory,
         amount
-      }, { skipLocalRead: true });
+      });
 
       const summaryRows = (response.data || []).map((row) => ({
         id: row.sellerId || row.seller_id,
@@ -3487,21 +3487,6 @@ const SellerDashboard = ({
     setUnsoldEditorVisible(true);
     resetUnsoldEditor({ keepCode: false });
   }, [activeTab, selectedUnsoldMemoOption?.isNew, unsoldDraftRows, unsoldMemoPopupOpen]);
-
-  useEffect(() => {
-    if (activeTab !== 'unsold-remove') {
-      return;
-    }
-
-    if (!unsoldDraftRows.some((row) => row.isExistingUnsoldRemoveMemoRow)) {
-      return;
-    }
-
-    setUnsoldDraftRows([]);
-    setUnsoldActiveRowIndex(0);
-    setUnsoldEditorVisible(true);
-    resetUnsoldEditor({ keepCode: false });
-  }, [activeTab, unsoldDraftRows]);
 
   useEffect(() => {
     const currentMemoOptions = activeTab === 'unsold-remove' ? unsoldRemoveMemoOptions : unsoldMemoOptions;
