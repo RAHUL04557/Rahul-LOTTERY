@@ -4760,6 +4760,33 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     const desiredEntryIds = [...new Set((Array.isArray(req.body.desiredEntryIds) ? req.body.desiredEntryIds : [])
       .map((entryId) => Number(entryId))
       .filter((entryId) => Number.isInteger(entryId) && entryId > 0))];
+    const desiredRows = (Array.isArray(req.body.desiredRows) ? req.body.desiredRows : [])
+      .map((row) => ({
+        entryId: Number(row.entryId || row.id || 0),
+        userId: Number(row.sellerId || row.userId || 0),
+        number: normalizeFiveDigitNumber(row.number),
+        boxValue: String(row.boxValue || row.sem || '').trim(),
+        amount: String(row.amount || normalizedAmount || '').trim(),
+        bookingDate: normalizeBookingDate(row.bookingDate) || bookingDate,
+        sessionMode: normalizeSessionMode(row.sessionMode) || sessionMode,
+        purchaseCategory: normalizePurchaseCategory(row.purchaseCategory) || purchaseCategory,
+        memoNumber: Number(row.memoNumber || row.memo_number || 0)
+      }))
+      .filter((row) => row.userId && row.number && row.boxValue && row.amount && row.bookingDate && row.sessionMode && row.purchaseCategory);
+    const desiredRowNumbers = [...new Set(desiredRows.map((row) => row.number))];
+    const desiredRowKeyMap = new Map(desiredRows.map((row) => ([
+      [
+        row.userId,
+        row.bookingDate,
+        row.sessionMode,
+        row.purchaseCategory,
+        String(Number(row.amount)),
+        row.boxValue,
+        row.number
+      ].join('|'),
+      row
+    ])));
+    const hasDesiredSelection = desiredEntryIds.length > 0 || desiredRows.length > 0;
 
     if (!sessionMode || !bookingDate) {
       if (!bookingDate) {
@@ -4782,14 +4809,15 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       sessionMode,
       purchaseCategory
     ];
-    const filters = desiredEntryIds.length > 0
+    const filters = hasDesiredSelection
       ? [
-        'id = ANY($6::int[])',
+        desiredEntryIds.length > 0 ? 'id = ANY($6::int[])' : 'number = ANY($6::varchar[])',
         'user_id = ANY($1::int[])',
         'entry_source = $2',
         'booking_date = $3::date',
         'session_mode = $4',
-        '($5::text IS NULL OR purchase_category = $5)'
+        '($5::text IS NULL OR purchase_category = $5)',
+        `LOWER(TRIM(status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')`
       ]
       : [
         'user_id = ANY($1::int[])',
@@ -4816,7 +4844,7 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
         )
       )`
       ];
-    params.push(desiredEntryIds.length > 0 ? desiredEntryIds : req.user.id);
+    params.push(desiredEntryIds.length > 0 ? desiredEntryIds : desiredRows.length > 0 ? desiredRowNumbers : req.user.id);
 
     if (normalizedAmount) {
       params.push(normalizedAmount);
@@ -4867,8 +4895,30 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       manualParams
     );
     const selectedRowsById = new Map();
-    selectedResult.rows.forEach((row) => selectedRowsById.set(Number(row.id), row));
-    if (desiredEntryIds.length === 0) {
+    selectedResult.rows.forEach((row) => {
+      if (desiredRows.length > 0) {
+        const rowKey = [
+          Number(row.user_id),
+          row.booking_date instanceof Date ? row.booking_date.toISOString().slice(0, 10) : String(row.booking_date || ''),
+          String(row.session_mode || ''),
+          String(row.purchase_category || ''),
+          String(Number(row.amount || 0)),
+          String(row.box_value || ''),
+          String(row.number || '')
+        ].join('|');
+        const desiredRow = desiredRowKeyMap.get(rowKey);
+        if (!desiredRow) {
+          return;
+        }
+        selectedRowsById.set(Number(row.id), {
+          ...row,
+          send_unsold_memo_number: desiredRow.memoNumber || row.memo_number
+        });
+        return;
+      }
+      selectedRowsById.set(Number(row.id), row);
+    });
+    if (!hasDesiredSelection) {
       manualSelectedResult.rows.forEach((row) => selectedRowsById.set(Number(row.id), row));
       const directChildSellersResult = await query(
         "SELECT id FROM users WHERE parent_id = $1 AND role = 'seller'",
