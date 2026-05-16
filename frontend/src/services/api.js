@@ -230,6 +230,40 @@ const getLocalUnsoldSendEntryIds = async (params = {}) => {
     .filter((entryId) => Number.isInteger(entryId) && entryId > 0))];
 };
 
+const getLocalUnsoldSendRows = async (params = {}) => {
+  const localDb = getLocalDb();
+  const currentUser = getCurrentUser();
+
+  if (!localDb?.listPurchases || !(await canUseLocalRead()) || !currentUser?.id) {
+    return [];
+  }
+
+  const rows = await localDb.listPurchases({
+    ...params,
+    status: 'unsold',
+    currentUserId: currentUser.id
+  });
+
+  return (Array.isArray(rows) ? rows : [])
+    .filter((row) => (
+      String(row.bookingDate || row.booking_date || '').slice(0, 10) === String(params.bookingDate || '').slice(0, 10)
+      && String(row.sessionMode || row.session_mode || '') === String(params.sessionMode || '')
+      && String(row.purchaseCategory || row.purchase_category || '') === String(params.purchaseCategory || '')
+      && String(row.amount || '') === String(params.amount || '')
+    ))
+    .map((row) => ({
+      entryId: row.id || row.entryId || row.entry_id || null,
+      sellerId: row.userId || row.user_id || currentUser.id,
+      number: row.number,
+      boxValue: row.boxValue || row.box_value || row.sem,
+      amount: row.amount,
+      bookingDate: row.bookingDate || row.booking_date,
+      sessionMode: row.sessionMode || row.session_mode,
+      purchaseCategory: row.purchaseCategory || row.purchase_category,
+      memoNumber: row.memoNumber || row.memo_number || null
+    }));
+};
+
 const mergeLocalVisibleUsers = async (users = []) => {
   const localDb = getLocalDb();
   const validUsers = (Array.isArray(users) ? users : []).filter((user) => user?.id);
@@ -765,15 +799,22 @@ export const lotteryService = {
   replacePurchaseUnsoldMemo: (payload) => requestWithOfflineQueue({ method: 'PUT', url: '/lottery/purchases/unsold-memo', data: payload }, 'replace_unsold_memo'),
   sendPurchaseUnsold: async (payload) => {
     let desiredEntryIds = [];
+    let desiredRows = [];
     try {
       desiredEntryIds = await getLocalUnsoldSendEntryIds(payload);
+      desiredRows = await getLocalUnsoldSendRows(payload);
     } catch (error) {
       console.warn('Local unsold send rows failed, falling back to server:', error.message);
     }
 
+    const payloadDesiredRows = Array.isArray(payload.desiredRows) && payload.desiredRows.length > 0
+      ? payload.desiredRows
+      : desiredRows;
+
     return postWithOfflineQueue('/lottery/purchases/send-unsold', {
       ...payload,
-      ...(desiredEntryIds.length > 0 && { desiredEntryIds })
+      ...(desiredEntryIds.length > 0 && { desiredEntryIds }),
+      ...(payloadDesiredRows.length > 0 && { desiredRows: payloadDesiredRows })
     }, 'unsold_send');
   },
   getPendingEntries: ({ bookingDate, amount } = {}) =>

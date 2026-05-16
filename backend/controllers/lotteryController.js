@@ -4811,7 +4811,7 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     ];
     const filters = hasDesiredSelection
       ? [
-        desiredEntryIds.length > 0 ? 'id = ANY($6::int[])' : 'number = ANY($6::varchar[])',
+        desiredRows.length > 0 ? 'number = ANY($6::varchar[])' : 'id = ANY($6::int[])',
         'user_id = ANY($1::int[])',
         'entry_source = $2',
         'booking_date = $3::date',
@@ -4844,7 +4844,7 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
         )
       )`
       ];
-    params.push(desiredEntryIds.length > 0 ? desiredEntryIds : desiredRows.length > 0 ? desiredRowNumbers : req.user.id);
+    params.push(desiredRows.length > 0 ? desiredRowNumbers : desiredEntryIds.length > 0 ? desiredEntryIds : req.user.id);
 
     if (normalizedAmount) {
       params.push(normalizedAmount);
