@@ -3091,32 +3091,41 @@ const getPurchaseEntries = async (req, res) => {
       params
     );
 
-    const adminAcceptedSnapshotRows = [UNSOLD_ACCEPTED_STATUS, 'unsold'].includes(status) && req.user.role === 'admin' && sellerId
-      ? await getLatestAcceptedUnsoldSnapshotRows({
-        targetSellerId: sellerId,
+    const adminSnapshotSellerIds = req.user.role === 'admin' && sellerId
+      ? (adminScopedBranchIds.length > 0 ? adminScopedBranchIds : [sellerId])
+      : [];
+    const adminAcceptedSnapshotRows = [UNSOLD_ACCEPTED_STATUS, 'unsold'].includes(status) && adminSnapshotSellerIds.length > 0
+      ? (await Promise.all(adminSnapshotSellerIds.map((targetId) => getLatestAcceptedUnsoldSnapshotRows({
+        targetSellerId: targetId,
         viewerUserId: req.user.id,
         bookingDate,
         sessionMode,
         purchaseCategory,
         amount,
         boxValue
-      })
+      })))).flat()
       : [];
 
     const manualSavedRows = [UNSOLD_ACCEPTED_STATUS, 'unsold', UNSOLD_LOCAL_STATUS].includes(status) && sellerId && sellerId !== Number(req.user.id)
-      ? await getManualSavedUnsoldRows({
-        targetSellerId: sellerId,
+      ? (await Promise.all((adminSnapshotSellerIds.length > 0 ? adminSnapshotSellerIds : [sellerId]).map((targetId) => getManualSavedUnsoldRows({
+        targetSellerId: targetId,
         actorUserId: req.user.id,
         bookingDate,
         sessionMode,
         purchaseCategory,
         amount,
         boxValue
-      })
+      })))).flat()
       : [];
 
     if (latestSentOnly && req.user.role === 'admin' && sellerId && status === 'unsold') {
-      res.json(adminAcceptedSnapshotRows.map(mapLotteryEntry));
+      const latestRows = [...adminAcceptedSnapshotRows, ...manualSavedRows].filter((row, index, rows) => {
+        const rowKey = [row.id || row.entry_id, row.number, row.box_value].join('|');
+        return rows.findIndex((currentRow) => (
+          [currentRow.id || currentRow.entry_id, currentRow.number, currentRow.box_value].join('|') === rowKey
+        )) === index;
+      });
+      res.json(latestRows.map(mapLotteryEntry));
       return;
     }
 
@@ -3439,6 +3448,26 @@ const markPurchaseEntriesUnsold = async (req, res) => {
         ? `${missingNumbers.slice(0, 5).join(', ')} +${missingNumbers.length - 5} more`
         : missingNumbers.join(', ');
       return res.status(400).json({ message: `Ye number selected party ke purchase stock me nahi hai: ${missingLabel}` });
+    }
+
+    if (isAdminRole(req.user.role) && targetSellerId !== Number(req.user.id)) {
+      const sentUnsoldRows = await getLatestAcceptedUnsoldSnapshotRows({
+        targetSellerId,
+        viewerUserId: req.user.id,
+        bookingDate,
+        sessionMode,
+        purchaseCategory,
+        amount: normalizedAmount,
+        boxValue: normalizedBoxValue
+      });
+      const sentNumberSet = new Set(sentUnsoldRows.map((row) => String(row.number || '').padStart(5, '0')));
+      const duplicateSentNumbers = numbersToMark.numbers.filter((currentNumber) => sentNumberSet.has(String(currentNumber).padStart(5, '0')));
+
+      if (duplicateSentNumbers.length > 0) {
+        return res.status(400).json({
+          message: `Seller already send you this unsold number: ${formatMissingNumberLabel(duplicateSentNumbers)}`
+        });
+      }
     }
 
     let resolvedMemoNumber = normalizedMemoNumber;

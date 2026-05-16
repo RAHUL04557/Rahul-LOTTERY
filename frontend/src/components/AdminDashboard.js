@@ -2486,7 +2486,10 @@ const AdminDashboard = ({
 
     return entries.map((entry) => {
       const mappedEntry = mapApiEntry(entry);
-      const resolvedSellerName = selectedSellerName || mappedEntry.displaySeller || mappedEntry.username;
+      const isSelectedSellerEntry = !mappedEntry.userId || String(mappedEntry.userId) === String(selectedSellerId);
+      const resolvedSellerName = isSelectedSellerEntry
+        ? (selectedSellerName || mappedEntry.displaySeller || mappedEntry.username)
+        : (mappedEntry.displaySeller || mappedEntry.username || selectedSellerName);
 
       return {
         ...mappedEntry,
@@ -2678,11 +2681,10 @@ const AdminDashboard = ({
           bookingDate: purchaseBookingDate,
           sessionMode: filter.sessionMode,
           sellerId: purchaseSellerId,
-          status: 'unsold',
+          status: 'accepted',
           purchaseCategory: filter.purchaseCategory,
           amount: purchaseAmount,
-          boxValue: filter.boxValue || undefined,
-          latestSentOnly: true
+          boxValue: filter.boxValue || undefined
         })).data || []);
       const details = buildAdminStockLookupDetails(lookupEntries, filter.label);
       const sellerLabel = getSelectedAdminUnsoldSellerName();
@@ -3600,6 +3602,32 @@ const AdminDashboard = ({
         error: memoNumbers.length > 0
           ? `Ye number already unsold at memo number ${memoNumbers.join(', ')}`
           : `Ye number pehle se unsold me save hai: ${formatMissingNumberLabel(duplicateUnsoldEntries.map((entry) => String(entry.number || '').padStart(5, '0')))}`
+      };
+    }
+
+    const sentUnsoldResponse = await lotteryService.getPurchases({
+      bookingDate: row.drawDate || purchaseBookingDate,
+      sessionMode: row.resolvedSessionMode || purchaseSessionMode,
+      sellerId: purchaseSellerId,
+      status: 'unsold',
+      purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
+      amount: row.bookingAmount || purchaseAmount,
+      boxValue: row.semValue,
+      latestSentOnly: true
+    });
+    const sentUnsoldEntries = normalizeAdminSelectedSellerEntries(sentUnsoldResponse.data || [], purchaseSellerId);
+    const duplicateSentEntries = sentUnsoldEntries.filter((entry) => (
+      String(entry.sem || '') === String(row.semValue || '')
+      && String(entry.amount || '') === String(row.bookingAmount || purchaseAmount || '')
+      && String(entry.sessionMode || '') === String(row.resolvedSessionMode || purchaseSessionMode || '')
+      && String(entry.purchaseCategory || '') === String(row.resolvedPurchaseCategory || purchaseCategory || '')
+      && getDateOnlyValue(entry.bookingDate) === getDateOnlyValue(row.drawDate || purchaseBookingDate)
+      && requestedNumbers.numbers.includes(String(entry.number || '').padStart(5, '0'))
+    ));
+
+    if (duplicateSentEntries.length > 0) {
+      return {
+        error: `Seller already send you this unsold number: ${formatMissingNumberLabel(duplicateSentEntries.map((entry) => String(entry.number || '').padStart(5, '0')))}`
       };
     }
 
