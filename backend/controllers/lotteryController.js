@@ -4027,7 +4027,12 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
            AND le.entry_source = $2
            AND h.to_user_id = $3
            AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')
-           AND (h.memo_number = $4 OR h.entry_id = ANY($9::int[]))
+           AND (
+             h.memo_number = $4
+             OR le.memo_number = $4
+             OR le.purchase_memo_number = $4
+             OR h.entry_id = ANY($9::int[])
+           )
            AND h.booking_date = $5::date
            AND h.session_mode = $6
            AND h.purchase_category = $7
@@ -4046,7 +4051,12 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
              (h.actor_user_id = $3 AND h.action_type = 'saved_unsold')
              OR (h.to_user_id = $3 AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted'))
            )
-           AND (h.memo_number = $4 OR h.entry_id = ANY($9::int[]))
+           AND (
+             h.memo_number = $4
+             OR le.memo_number = $4
+             OR le.purchase_memo_number = $4
+             OR h.entry_id = ANY($9::int[])
+           )
            AND h.booking_date = $5::date
            AND h.session_mode = $6
            AND h.purchase_category = $7
@@ -4058,7 +4068,28 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
         const existingSnapshotIds = existingSnapshotResult.rows
           .map((row) => Number(row.entry_id))
           .filter((entryId) => Number.isInteger(entryId) && entryId > 0);
-        if (existingSnapshotIds.length > 0) {
+        const liveMemoResult = await client.query(
+          `SELECT id
+           FROM lottery_entries
+           WHERE user_id = $1
+             AND entry_source = $2
+             AND booking_date = $3::date
+             AND session_mode = $4
+             AND purchase_category = $5
+             AND amount = $6::numeric
+             AND (
+               memo_number = $7
+               OR purchase_memo_number = $7
+               OR id = ANY($8::int[])
+             )
+             AND LOWER(TRIM(status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold', 'unsold_accepted')`,
+          [targetSeller.id, PURCHASE_ENTRY_SOURCE, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount, normalizedMemoNumber, existingSnapshotIds]
+        );
+        const idsToRestore = [...new Set([
+          ...existingSnapshotIds,
+          ...liveMemoResult.rows.map((row) => Number(row.id))
+        ].filter((entryId) => Number.isInteger(entryId) && entryId > 0))];
+        if (idsToRestore.length > 0) {
           await client.query(
             `UPDATE lottery_entries
              SET status = 'accepted',
@@ -4067,7 +4098,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
                  memo_number = COALESCE(purchase_memo_number, memo_number),
                  sent_at = CURRENT_TIMESTAMP
              WHERE id = ANY($1::int[])`,
-            [existingSnapshotIds, req.user.id, targetSeller.id]
+            [idsToRestore, req.user.id, targetSeller.id]
           );
         }
         await client.query('COMMIT');

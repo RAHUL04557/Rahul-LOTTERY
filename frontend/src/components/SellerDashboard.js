@@ -4745,8 +4745,18 @@ const SellerDashboard = ({
       if (editingExistingUnsoldMemo && rowsToSave.length > 0) {
         setUnsoldMemoNumber(effectiveMemoNumber);
         clearDraftRows(sellerLocalDraftKey);
-        setUnsoldDraftRows([]);
-        setUnsoldActiveRowIndex(0);
+        const refreshedMemoRows = buildPurchaseSendDraftRowsFromEntries(
+          (refreshedUnsoldEntries || []).filter((entry) => (
+            getUnsoldEntryMemoNumber(entry) === Number(effectiveMemoNumber)
+          )),
+          amount,
+          {
+            existingUnsoldMemo: true,
+            existingUnsoldRemoveMemo: true
+          }
+        );
+        setUnsoldDraftRows(refreshedMemoRows);
+        setUnsoldActiveRowIndex(refreshedMemoRows.length);
         setUnsoldEditorVisible(true);
         setUnsoldCodeInput('');
         setUnsoldTableFromInput('');
@@ -4756,11 +4766,21 @@ const SellerDashboard = ({
         focusActiveSellerSelect();
       } else {
         const refreshedUnsoldMemoSummaries = buildUnsoldMemoSummaries(
-          refreshedUnsoldEntries || []
+          editingExistingUnsoldMemo
+            ? (refreshedUnsoldEntries || []).filter((entry) => (
+              getUnsoldEntryMemoNumber(entry) !== Number(effectiveMemoNumber)
+            ))
+            : refreshedUnsoldEntries || []
         );
         const nextMemoNumber = refreshedUnsoldMemoSummaries.length > 0
           ? Math.max(...refreshedUnsoldMemoSummaries.map((memo) => memo.memoNumber)) + 1
           : 1;
+        if (editingExistingUnsoldMemo) {
+          setSuccess(`Unsold memo ${effectiveMemoNumber} deleted successfully`);
+          setUnsoldMemoEntries((currentEntries) => currentEntries.filter((entry) => (
+            getUnsoldEntryMemoNumber(entry) !== Number(effectiveMemoNumber)
+          )));
+        }
         clearDraftRows(sellerLocalDraftKey);
         setUnsoldMemoNumber(nextMemoNumber);
         setUnsoldMemoSelectionIndex(0);
