@@ -4532,10 +4532,6 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
           Number(entry.sent_to_parent || 0) === Number(req.user.id)
           || Number(entry.user_id) === Number(req.user.id)
           || !entry.sent_to_parent
-        ) && !(
-          Number(entry.forwarded_by || 0) === Number(req.user.id)
-          && entry.sent_to_parent
-          && Number(entry.sent_to_parent) !== Number(req.user.id)
         );
       }
 
@@ -4698,11 +4694,6 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
             sent_to_parent IS NULL
             OR sent_to_parent = $6
             OR user_id = $6
-          )
-          AND NOT (
-            forwarded_by = $6
-            AND sent_to_parent IS NOT NULL
-            AND sent_to_parent <> $6
           )
         )
       )`
