@@ -1403,6 +1403,8 @@ const SellerDashboard = ({
       });
       setLocalPurchaseMemoDrafts(drafts.filter((draft) => (
         Number(draft.targetSellerId || 0) === Number(purchaseSendSellerId || 0)
+        && Array.isArray(draft.rows)
+        && draft.rows.length > 0
         && String(draft.bookingDate || '') === String(bookingDate || '')
         && String(draft.sessionMode || '') === String(sessionMode || '')
         && String(draft.purchaseCategory || '') === String(activePurchaseCategory || '')
@@ -1438,6 +1440,8 @@ const SellerDashboard = ({
       setSendPurchaseDrafts(drafts
         .filter((draft) => (
           Number(draft.memoNumber || 0) > 0
+          && Array.isArray(draft.rows)
+          && draft.rows.length > 0
           && String(draft.bookingDate || '') === String(bookingDate || '')
           && String(draft.sessionMode || '') === String(sessionMode || '')
           && String(draft.purchaseCategory || '') === String(activePurchaseCategory || '')
@@ -3113,6 +3117,10 @@ const SellerDashboard = ({
       return;
     }
 
+    const nextMemoNumber = option.isNew ? null : option.memoNumber;
+    const nextDraftKey = buildSellerPurchaseDraftKey(nextMemoNumber);
+    sellerPurchaseDraftRestoreKeyRef.current = nextDraftKey;
+    sellerPurchaseSkipSaveKeyRef.current = nextDraftKey;
     setPurchaseSendMemoNumber(option.memoNumber);
     setPurchaseSendMemoSelectionIndex(Math.max(
       purchaseSendMemoOptions.findIndex((currentOption) => currentOption.key === option.key),
@@ -3721,7 +3729,7 @@ const SellerDashboard = ({
 
     const rowsToSave = rowsForSaveResult.rows || [];
 
-    if (rowsToSave.length === 0 && !isEditingExistingPurchaseSendMemo) {
+    if (rowsToSave.length === 0) {
       openBlockingWarning('Save karne ke liye kam se kam ek row add karo');
       return;
     }

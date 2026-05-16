@@ -3262,7 +3262,7 @@ const markPurchaseEntriesUnsold = async (req, res) => {
       if (!isAdminRole(req.user.role)) {
         ownerStockFilter = `AND le.forwarded_by = $${selectedEntriesParams.push(req.user.id)}`;
       }
-    } else {
+    } else if (!isAdminRole(req.user.role)) {
       ownerStockFilter = `AND (
            le.sent_to_parent = $${selectedEntriesParams.push(req.user.id)}
            OR (
