@@ -5073,7 +5073,7 @@ const getPurchaseBillSummary = async (req, res) => {
           rate_amount_6 AS root_rate_amount_6,
           rate_amount_12 AS root_rate_amount_12
         FROM users
-        WHERE parent_id = $1 AND role = 'seller'
+        WHERE (id = $1 AND role = 'seller') OR (parent_id = $1 AND role = 'seller')
         UNION ALL
         SELECT
           u.id,
@@ -5084,6 +5084,7 @@ const getPurchaseBillSummary = async (req, res) => {
           bu.root_rate_amount_12
         FROM users u
         INNER JOIN branch_users bu ON u.parent_id = bu.id
+        WHERE bu.id <> $1
       )
       SELECT
         bu.root_seller_id,
@@ -5154,7 +5155,7 @@ const getPurchaseBillSummary = async (req, res) => {
           id AS root_seller_id,
           username AS root_seller_name
         FROM users
-        WHERE parent_id = $1 AND role = 'seller'
+        WHERE (id = $1 AND role = 'seller') OR (parent_id = $1 AND role = 'seller')
         UNION ALL
         SELECT
           u.id,
@@ -5163,6 +5164,7 @@ const getPurchaseBillSummary = async (req, res) => {
           bu.root_seller_name
         FROM users u
         INNER JOIN branch_users bu ON u.parent_id = bu.id
+        WHERE bu.id <> $1
       )
       SELECT
         bu.root_seller_id,

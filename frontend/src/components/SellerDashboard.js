@@ -4842,10 +4842,12 @@ const SellerDashboard = ({
 
     return amountMatches && categoryMatches;
   });
+  const billSellerOptions = [
+    selfPartyOption ? { ...selfPartyOption, sellerType: user?.sellerType, isSelf: true } : null,
+    ...directChildSellers
+  ].filter((seller) => seller && sellerSupportsAmount(seller, historyAmountFilter || amount));
   const eligibleBillSellerNameSet = new Set(
-    directChildSellers
-      .filter((seller) => sellerSupportsAmount(seller, historyAmountFilter || amount))
-      .map((seller) => seller.username)
+    billSellerOptions.map((seller) => seller.username)
   );
   const selectedBillSellerNamesRaw = Array.isArray(historySellerFilter)
     ? historySellerFilter
@@ -7856,7 +7858,7 @@ const SellerDashboard = ({
                       />
                       <span>ALL All Direct Sellers</span>
                     </label>
-                    {directChildSellers.filter((seller) => sellerSupportsAmount(seller, historyAmountFilter || amount)).map((seller) => {
+                    {billSellerOptions.map((seller) => {
                       const isSelected = selectedBillSellerNames.includes(seller.username);
                       return (
                         <label key={seller.id || seller.username} className={`bill-seller-option ${isSelected ? 'selected' : ''}`.trim()}>
@@ -7865,7 +7867,7 @@ const SellerDashboard = ({
                             checked={isSelected}
                             onChange={() => toggleBillSellerFilter(seller.username)}
                           />
-                          <span>{`${getPartyKeyword(seller)} ${seller.username} [${getPartyKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}</span>
+                          <span>{`${getPartyKeyword(seller)} ${seller.username}${seller.isSelf ? ' (Self)' : ''} [${getPartyKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}</span>
                         </label>
                       );
                     })}
