@@ -4713,7 +4713,8 @@ const SellerDashboard = ({
             bookingDate: row.drawDate || bookingDate,
             sessionMode: row.resolvedSessionMode || sessionMode,
             purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
-            memoRowOrder: row.memoRowOrder ?? index
+            memoRowOrder: row.memoRowOrder ?? index,
+            entryIds: row.entryIds || []
           }))
         });
       } else {

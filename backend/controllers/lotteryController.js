@@ -3007,7 +3007,23 @@ const getPurchaseEntries = async (req, res) => {
         )
       ]);
 
-      const combinedRows = [...manualSavedRows, ...snapshotRows, ...localSavedResult.rows].filter((row, index, rows) => {
+      const buildUnsoldMemoScopeKey = (row = {}) => ([
+        row.memo_number ?? row.purchase_memo_number ?? '',
+        row.booking_date instanceof Date ? row.booking_date.toISOString().slice(0, 10) : String(row.booking_date || '').slice(0, 10),
+        row.session_mode || '',
+        row.purchase_category || '',
+        String(row.amount || '')
+      ].join('|'));
+      const manuallyReplacedMemoScopes = new Set(manualSavedRows.map(buildUnsoldMemoScopeKey));
+      const shouldKeepSnapshotRow = (row = {}) => (
+        manuallyReplacedMemoScopes.size === 0
+        || !manuallyReplacedMemoScopes.has(buildUnsoldMemoScopeKey(row))
+      );
+      const combinedRows = [
+        ...manualSavedRows,
+        ...snapshotRows.filter(shouldKeepSnapshotRow),
+        ...localSavedResult.rows.filter(shouldKeepSnapshotRow)
+      ].filter((row, index, rows) => {
         const rowKey = [row.id, row.number, row.box_value].join('|');
         return rows.findIndex((currentRow) => (
           [currentRow.id, currentRow.number, currentRow.box_value].join('|') === rowKey
@@ -3927,6 +3943,11 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
     const targetSellerId = Number(sellerId || sellerUserId || req.user.id);
     const normalizedMemoNumber = Number(memoNumber);
     const normalizedRows = Array.isArray(rows) ? rows : [];
+    const existingRowEntryIds = [...new Set(
+      normalizedRows.flatMap((row) => Array.isArray(row.entryIds) ? row.entryIds : [])
+        .map((entryId) => Number(entryId))
+        .filter((entryId) => Number.isInteger(entryId) && entryId > 0)
+    )];
 
     if (!sessionMode || !bookingDate) {
       if (!bookingDate) {
@@ -4006,13 +4027,13 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
            AND le.entry_source = $2
            AND h.to_user_id = $3
            AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')
-           AND h.memo_number = $4
+           AND (h.memo_number = $4 OR h.entry_id = ANY($9::int[]))
            AND h.booking_date = $5::date
            AND h.session_mode = $6
            AND h.purchase_category = $7
            AND h.amount = $8::numeric
            AND h.entry_id IS NOT NULL`,
-        [targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount]
+        [targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount, existingRowEntryIds]
       );
 
       await client.query(
@@ -4025,12 +4046,12 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
              (h.actor_user_id = $3 AND h.action_type = 'saved_unsold')
              OR (h.to_user_id = $3 AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted'))
            )
-           AND h.memo_number = $4
+           AND (h.memo_number = $4 OR h.entry_id = ANY($9::int[]))
            AND h.booking_date = $5::date
            AND h.session_mode = $6
            AND h.purchase_category = $7
            AND h.amount = $8::numeric`,
-        [targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount]
+        [targetSeller.id, PURCHASE_ENTRY_SOURCE, req.user.id, normalizedMemoNumber, bookingDate, sessionMode, normalizedPurchaseCategory, normalizedAmount, existingRowEntryIds]
       );
 
       if (normalizedRows.length === 0) {
