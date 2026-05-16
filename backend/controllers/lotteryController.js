@@ -4899,10 +4899,7 @@ const getPurchasePieceSummary = async (req, res) => {
         )
         SELECT bu.root_seller_id AS user_id,
                COALESCE(SUM(CASE WHEN le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS total_piece,
-               COALESCE(SUM(CASE WHEN LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
-                 AND (le.forwarded_by = $1 OR le.sent_to_parent = $1)
-                 AND le.box_value ~ '^\\d+(\\.\\d+)?$'
-                 THEN le.box_value::numeric ELSE 0 END), 0) AS unsold_piece
+               0 AS unsold_piece
         FROM lottery_entries le
         INNER JOIN branch_users bu ON bu.id = le.user_id
         WHERE ${adminConditions.join(' AND ')}
@@ -4972,6 +4969,82 @@ const getPurchasePieceSummary = async (req, res) => {
     const summaryMap = new Map(summaryResult.rows.map((row) => [Number(row.user_id), row]));
 
     if (currentUserIsAdmin) {
+      const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
+      const sentUnsoldConditions = [
+        'le.entry_source = $2',
+        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')",
+        'h.to_user_id = $1'
+      ];
+
+      if (bookingDate) {
+        sentUnsoldParams.push(bookingDate);
+        sentUnsoldConditions.push(`h.booking_date = $${sentUnsoldParams.length}::date`);
+      }
+
+      if (sessionMode) {
+        sentUnsoldParams.push(sessionMode);
+        sentUnsoldConditions.push(`h.session_mode = $${sentUnsoldParams.length}`);
+      }
+
+      if (purchaseCategory) {
+        sentUnsoldParams.push(purchaseCategory);
+        sentUnsoldConditions.push(`h.purchase_category = $${sentUnsoldParams.length}`);
+      }
+
+      if (normalizedAmount) {
+        sentUnsoldParams.push(normalizedAmount);
+        sentUnsoldConditions.push(`h.amount = $${sentUnsoldParams.length}::numeric`);
+      }
+
+      const sentUnsoldResult = await query(
+        `WITH RECURSIVE branch_users AS (
+          SELECT id, id AS root_seller_id
+          FROM users
+          WHERE parent_id = $1 AND role = 'seller'
+          UNION ALL
+          SELECT u.id, bu.root_seller_id
+          FROM users u
+          INNER JOIN branch_users bu ON u.parent_id = bu.id
+        ),
+        latest_memo_batches AS (
+          SELECT
+            le.user_id,
+            h.memo_number,
+            h.booking_date,
+            h.session_mode,
+            h.purchase_category,
+            h.amount,
+            MAX(h.created_at) AS latest_created_at
+          FROM lottery_entry_history h
+          INNER JOIN lottery_entries le ON le.id = h.entry_id
+          WHERE ${sentUnsoldConditions.join(' AND ')}
+          GROUP BY le.user_id, h.memo_number, h.booking_date, h.session_mode, h.purchase_category, h.amount
+        )
+        SELECT bu.root_seller_id AS user_id,
+               COALESCE(SUM(CASE WHEN h.box_value ~ '^\\d+(\\.\\d+)?$' THEN h.box_value::numeric ELSE 0 END), 0) AS sent_unsold_piece
+        FROM lottery_entry_history h
+        INNER JOIN lottery_entries le ON le.id = h.entry_id
+        INNER JOIN latest_memo_batches batch
+          ON batch.user_id = le.user_id
+         AND batch.memo_number = h.memo_number
+         AND batch.booking_date = h.booking_date
+         AND batch.session_mode = h.session_mode
+         AND batch.purchase_category = h.purchase_category
+         AND batch.amount = h.amount
+         AND batch.latest_created_at = h.created_at
+        INNER JOIN branch_users bu ON bu.id = le.user_id
+        WHERE ${sentUnsoldConditions.join(' AND ')}
+        GROUP BY bu.root_seller_id`,
+        sentUnsoldParams
+      );
+
+      sentUnsoldResult.rows.forEach((row) => {
+        const sellerId = Number(row.user_id);
+        const existing = summaryMap.get(sellerId) || { user_id: sellerId, total_piece: 0, unsold_piece: 0 };
+        existing.unsold_piece = Number(existing.unsold_piece || 0) + Number(row.sent_unsold_piece || 0);
+        summaryMap.set(sellerId, existing);
+      });
+
       const manualParams = [req.user.id, PURCHASE_ENTRY_SOURCE, 'saved_unsold'];
       const manualConditions = [
         'h.actor_user_id = $1',
@@ -5241,10 +5314,7 @@ const getPurchaseBillSummary = async (req, res) => {
         le.box_value,
         CASE WHEN le.amount = 7 THEN bu.root_rate_amount_6 ELSE bu.root_rate_amount_12 END AS applied_rate,
         COALESCE(SUM(CASE WHEN le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS total_piece,
-        COALESCE(SUM(CASE WHEN LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
-          AND (le.forwarded_by = $1 OR le.sent_to_parent = $1)
-          AND le.box_value ~ '^\\d+(\\.\\d+)?$'
-          THEN le.box_value::numeric ELSE 0 END), 0) AS unsold_piece,
+        0 AS unsold_piece,
         COUNT(*) AS entry_count,
         MIN(le.number) AS range_from,
         MAX(le.number) AS range_to
@@ -5263,6 +5333,96 @@ const getPurchaseBillSummary = async (req, res) => {
       ORDER BY bu.root_seller_name ASC, le.session_mode ASC, le.amount ASC, le.box_value ASC`,
       params
     );
+
+    const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
+    const sentUnsoldConditions = [
+      'le.entry_source = $2',
+      "h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')",
+      'h.to_user_id = $1'
+    ];
+
+    if (dateFilterResult.dateFilter) {
+      const sentDateFilter = buildDateFilter({ date, fromDate, toDate }, sentUnsoldParams, 'h.booking_date', true);
+      if (sentDateFilter.dateFilter) {
+        sentUnsoldConditions.push(sentDateFilter.dateFilter.replace(/^AND\s+/i, ''));
+      }
+    }
+
+    if (sessionMode) {
+      sentUnsoldParams.push(sessionMode);
+      sentUnsoldConditions.push(`h.session_mode = $${sentUnsoldParams.length}`);
+    }
+
+    if (normalizedPurchaseCategory) {
+      sentUnsoldParams.push(normalizedPurchaseCategory);
+      sentUnsoldConditions.push(`h.purchase_category = $${sentUnsoldParams.length}`);
+    }
+
+    if (normalizedAmount) {
+      sentUnsoldParams.push(normalizedAmount);
+      sentUnsoldConditions.push(`h.amount = $${sentUnsoldParams.length}::numeric`);
+    }
+
+    const sentUnsoldResult = await query(
+      `WITH RECURSIVE branch_users AS (
+        SELECT
+          id,
+          username,
+          id AS root_seller_id,
+          username AS root_seller_name
+        FROM users
+        WHERE (id = $1 AND role = 'seller') OR (parent_id = $1 AND role = 'seller')
+        UNION ALL
+        SELECT
+          u.id,
+          u.username,
+          bu.root_seller_id,
+          bu.root_seller_name
+        FROM users u
+        INNER JOIN branch_users bu ON u.parent_id = bu.id
+        WHERE bu.id <> $1
+      ),
+      latest_memo_batches AS (
+        SELECT
+          le.user_id,
+          h.memo_number,
+          h.booking_date,
+          h.session_mode,
+          h.purchase_category,
+          h.amount,
+          MAX(h.created_at) AS latest_created_at
+        FROM lottery_entry_history h
+        INNER JOIN lottery_entries le ON le.id = h.entry_id
+        WHERE ${sentUnsoldConditions.join(' AND ')}
+        GROUP BY le.user_id, h.memo_number, h.booking_date, h.session_mode, h.purchase_category, h.amount
+      )
+      SELECT
+        bu.root_seller_id,
+        h.session_mode,
+        h.purchase_category,
+        h.amount,
+        h.box_value,
+        COALESCE(SUM(CASE WHEN h.box_value ~ '^\\d+(\\.\\d+)?$' THEN h.box_value::numeric ELSE 0 END), 0) AS sent_unsold_piece
+      FROM lottery_entry_history h
+      INNER JOIN lottery_entries le ON le.id = h.entry_id
+      INNER JOIN latest_memo_batches batch
+        ON batch.user_id = le.user_id
+       AND batch.memo_number = h.memo_number
+       AND batch.booking_date = h.booking_date
+       AND batch.session_mode = h.session_mode
+       AND batch.purchase_category = h.purchase_category
+       AND batch.amount = h.amount
+       AND batch.latest_created_at = h.created_at
+      INNER JOIN branch_users bu ON bu.id = le.user_id
+      WHERE ${sentUnsoldConditions.join(' AND ')}
+      GROUP BY bu.root_seller_id, h.session_mode, h.purchase_category, h.amount, h.box_value`,
+      sentUnsoldParams
+    );
+
+    const sentUnsoldMap = new Map(sentUnsoldResult.rows.map((row) => ([
+      [row.root_seller_id, row.session_mode, row.purchase_category, String(row.amount), row.box_value].join('|'),
+      Number(row.sent_unsold_piece || 0)
+    ])));
 
     const manualParams = [req.user.id, PURCHASE_ENTRY_SOURCE, 'saved_unsold', req.user.id];
     const manualConditions = [
@@ -5335,7 +5495,7 @@ const getPurchaseBillSummary = async (req, res) => {
     res.json(result.rows.map((row) => {
       const totalPiece = Number(row.total_piece || 0);
       const manualKey = [row.root_seller_id, row.session_mode, row.purchase_category, String(row.amount), row.box_value].join('|');
-      const unsoldPiece = Number(row.unsold_piece || 0) + Number(manualUnsoldMap.get(manualKey) || 0);
+      const unsoldPiece = Number(row.unsold_piece || 0) + Number(sentUnsoldMap.get(manualKey) || 0) + Number(manualUnsoldMap.get(manualKey) || 0);
       const soldPiece = Math.max(totalPiece - unsoldPiece, 0);
       const appliedRate = Number(row.applied_rate || 0);
 
