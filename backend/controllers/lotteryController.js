@@ -5110,8 +5110,6 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       bookingDate,
       sessionMode,
       purchaseCategory,
-      req.user.id,
-      req.user.parentId,
       selectedIds
     ];
     const staleFilters = [
@@ -5120,10 +5118,8 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       'booking_date = $3::date',
       'session_mode = $4',
       '($5::text IS NULL OR purchase_category = $5)',
-      `LOWER(TRIM(status)) IN ('${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`,
-      'forwarded_by = $6',
-      'sent_to_parent = $7',
-      'NOT (id = ANY($8::int[]))'
+      `LOWER(TRIM(status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')`,
+      'NOT (id = ANY($6::int[]))'
     ];
 
     if (normalizedAmount) {

@@ -4947,7 +4947,7 @@ const AdminDashboard = ({
         sessionMode: summarySessionValue,
         purchaseCategory: summaryCategoryValue,
         amount: summaryAmountValue
-      });
+      }, { skipLocalRead: true });
 
       const summaryRows = (response.data || []).map((row) => ({
         id: row.sellerId || row.seller_id,
