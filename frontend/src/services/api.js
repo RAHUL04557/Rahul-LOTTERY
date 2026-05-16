@@ -807,14 +807,12 @@ export const lotteryService = {
       console.warn('Local unsold send rows failed, falling back to server:', error.message);
     }
 
-    const payloadDesiredRows = Array.isArray(payload.desiredRows) && payload.desiredRows.length > 0
-      ? payload.desiredRows
-      : desiredRows;
+    const { desiredRows: _ignoredDesiredRows, desiredEntryIds: _ignoredDesiredEntryIds, ...basePayload } = payload || {};
 
     return postWithOfflineQueue('/lottery/purchases/send-unsold', {
-      ...payload,
+      ...basePayload,
       ...(desiredEntryIds.length > 0 && { desiredEntryIds }),
-      ...(payloadDesiredRows.length > 0 && { desiredRows: payloadDesiredRows })
+      ...(desiredRows.length > 0 && { desiredRows })
     }, 'unsold_send');
   },
   getPendingEntries: ({ bookingDate, amount } = {}) =>
