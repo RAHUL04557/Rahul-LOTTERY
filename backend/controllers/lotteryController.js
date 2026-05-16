@@ -2503,7 +2503,7 @@ const replacePurchaseSendMemoEntries = async (req, res) => {
 
     const historyActionTypes = currentUserIsAdmin
       ? ['purchase_sent', 'purchase_memo_updated']
-      : ['purchase_forwarded', 'purchase_forward_memo_updated'];
+      : ['purchase_forwarded', 'purchase_forward_memo_updated', 'purchase_self_memo_created'];
     const shouldLookupMemoByEntryIds = normalizedRows.length > 0 && uniqueMemoEntryIds.length > 0;
     const existingMemoResult = shouldLookupMemoByEntryIds
       ? await client.query(
