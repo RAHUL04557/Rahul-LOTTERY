@@ -3617,10 +3617,45 @@ const SellerDashboard = ({
           boxValue: filter.boxValue || undefined,
           remaining: (isUnsoldLookup || isUnsoldRemoveLookup) ? undefined : true
         });
+      const buildUnsoldStockKey = (entry = {}) => ([
+        getDateOnlyValue(entry.bookingDate || entry.booking_date || ''),
+        String(entry.sessionMode || entry.session_mode || ''),
+        String(entry.purchaseCategory || entry.purchase_category || ((entry.sessionMode || entry.session_mode) === 'NIGHT' ? 'E' : 'M')),
+        String(entry.amount || ''),
+        String(entry.boxValue || entry.box_value || entry.sem || ''),
+        String(entry.number || '').padStart(5, '0')
+      ].join('|'));
+      const savedUnsoldNumberKeys = new Set([
+        ...visibleUnsoldMemoEntries.map(buildUnsoldStockKey),
+        ...unsoldDraftRows.flatMap((row) => {
+          const rangeResult = buildConsecutiveNumbers(row.numberStart || row.from, row.numberEnd || row.to || row.from);
+          if (rangeResult.error) {
+            return [];
+          }
+
+          return rangeResult.numbers.map((numberValue) => buildUnsoldStockKey({
+            bookingDate: row.drawDate || bookingDate,
+            sessionMode: row.resolvedSessionMode || sessionMode,
+            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+            amount: row.bookingAmount || amount,
+            boxValue: row.semValue,
+            number: numberValue
+          }));
+        })
+      ]);
       const lookupEntries = isUnsoldRemoveLookup
         ? (response.data || []).map(mapApiEntry).filter(isRemovableUnsoldEntry)
         : isUnsoldLookup
         ? (response.data || []).filter((entry) => {
+          const normalizedStatus = String(entry.status || '').trim().toLowerCase();
+          if (normalizedStatus && normalizedStatus !== 'accepted') {
+            return false;
+          }
+
+          if (savedUnsoldNumberKeys.has(buildUnsoldStockKey(entry))) {
+            return false;
+          }
+
           const hasMemo = entry.memoNumber !== null && entry.memoNumber !== undefined && String(entry.memoNumber).trim() !== '';
           if (!hasMemo) {
             return false;

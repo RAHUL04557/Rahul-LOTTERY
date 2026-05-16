@@ -824,6 +824,14 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
        LEFT JOIN users parent_user ON parent_user.id = $${viewerParamIndex}
        LEFT JOIN users actor_user ON actor_user.id = h.actor_user_id
        WHERE h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')
+         AND NOT EXISTS (
+           SELECT 1
+           FROM lottery_entry_history removed_h
+           WHERE removed_h.entry_id = h.entry_id
+             AND removed_h.action_type = 'unsold_removed'
+             AND removed_h.actor_user_id = $${viewerParamIndex}
+             AND removed_h.created_at >= h.created_at
+         )
      )
      SELECT *
      FROM snapshot
