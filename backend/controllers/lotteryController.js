@@ -5119,13 +5119,26 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       nextAdminMemoNumber += 1;
     });
 
-    const selectedIds = selectedRows
-      .map((row) => Number(row.id || row.entry_id || 0))
-      .filter((entryId) => Number.isInteger(entryId) && entryId > 0);
-    if (selectedIds.length === 0) {
+    const getSelectedEntryId = (row = {}) => {
+      const directId = Number(row.id || 0);
+      if (Number.isInteger(directId) && directId > 0) {
+        return directId;
+      }
+
+      const entryId = Number(row.entry_id || row.entryId || 0);
+      return Number.isInteger(entryId) && entryId > 0 ? entryId : 0;
+    };
+    const validSelectedRows = selectedRows
+      .map((row) => ({
+        ...row,
+        resolvedEntryId: getSelectedEntryId(row)
+      }))
+      .filter((row) => row.resolvedEntryId > 0);
+    const selectedIds = validSelectedRows.map((row) => row.resolvedEntryId);
+    if (validSelectedRows.length === 0) {
       return res.status(400).json({ message: 'Send karne ke liye valid unsold entry nahi mili' });
     }
-    const selectedMemoNumbers = selectedRows.map((row) => {
+    const selectedMemoNumbers = validSelectedRows.map((row) => {
       const memoNumber = Number(row.send_unsold_memo_number || row.memo_number || 0);
       return Number.isInteger(memoNumber) && memoNumber > 0 ? memoNumber : null;
     });
