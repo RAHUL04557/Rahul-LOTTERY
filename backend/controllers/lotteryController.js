@@ -4320,6 +4320,7 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
     const manualParams = [visibleUserIds, req.user.id, PURCHASE_ENTRY_SOURCE, 'saved_unsold'];
     const manualFilters = [
       'le.user_id = ANY($1::int[])',
+      'le.user_id <> $2',
       'h.actor_user_id = $2',
       'le.entry_source = $3',
       'h.action_type = $4',
@@ -4563,6 +4564,7 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     ];
     const manualFilters = [
       'le.user_id = ANY($1::int[])',
+      'le.user_id <> $2',
       'h.actor_user_id = $2',
       'le.entry_source = $3',
       'h.action_type = $4',
