@@ -4123,10 +4123,10 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
     const existingMemoResult = await client.query(
       `SELECT *
        FROM lottery_entries
-       WHERE user_id = $1
+         WHERE user_id = $1
          AND entry_source = $2
          AND forwarded_by = $3
-         AND (memo_number = $4 OR purchase_memo_number = $4)
+         AND memo_number = $4
          AND booking_date = $5::date
          AND session_mode = $6
          AND purchase_category = $7

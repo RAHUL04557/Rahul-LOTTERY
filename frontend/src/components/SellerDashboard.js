@@ -1128,6 +1128,7 @@ const SellerDashboard = ({
   const unsoldMemoRef = useRef(null);
   const unsoldMemoLoadSeqRef = useRef(0);
   const unsoldRemoveMemoLoadSeqRef = useRef(0);
+  const skipUnsoldMemoAutoHydrateRef = useRef(false);
   const purchaseCodeInputRef = useRef(null);
   const purchaseFromInputRef = useRef(null);
   const purchaseToInputRef = useRef(null);
@@ -3378,6 +3379,7 @@ const SellerDashboard = ({
     if (activeTab === 'unsold-remove') {
       setUnsoldRemoveMemoNumber(option.memoNumber);
     } else {
+      skipUnsoldMemoAutoHydrateRef.current = false;
       preferNextUnsoldMemoRef.current = false;
       setUnsoldMemoNumber(option.memoNumber);
     }
@@ -3455,6 +3457,10 @@ const SellerDashboard = ({
       return;
     }
 
+    if (skipUnsoldMemoAutoHydrateRef.current) {
+      return;
+    }
+
     const selectedMemoExists = visibleUnsoldMemoEntries.some((entry) => (
       getUnsoldEntryMemoNumber(entry) === Number(unsoldMemoNumber)
     ));
@@ -3468,6 +3474,7 @@ const SellerDashboard = ({
       return;
     }
 
+    skipUnsoldMemoAutoHydrateRef.current = false;
     if (!unsoldDraftRows.some((row) => row.isExistingUnsoldMemoRow)) {
       return;
     }
@@ -3890,6 +3897,18 @@ const SellerDashboard = ({
   }
 
   function deleteUnsoldDraftRow() {
+    if (unsoldActiveRowIndex >= unsoldDraftRows.length && hasPendingUnsoldEditorValues()) {
+      resetUnsoldEditor({ keepCode: false });
+      setUnsoldEditorVisible(true);
+      setError('');
+      setSuccess('');
+      window.requestAnimationFrame(() => {
+        unsoldCodeInputRef.current?.focus();
+        unsoldCodeInputRef.current?.select?.();
+      });
+      return;
+    }
+
     if (unsoldDraftRows.length === 0) {
       resetUnsoldEditor({ keepCode: false });
       setUnsoldEditorVisible(false);
@@ -3901,7 +3920,7 @@ const SellerDashboard = ({
       ? unsoldActiveRowIndex
       : unsoldDraftRows.length - 1;
     const nextRows = unsoldDraftRows.filter((_, index) => index !== deleteIndex);
-
+    skipUnsoldMemoAutoHydrateRef.current = activeTab === 'unsold' && Boolean(selectedUnsoldMemoOption && !selectedUnsoldMemoOption.isNew);
     setUnsoldDraftRows(nextRows);
     setError('');
     setSuccess('');
@@ -4267,29 +4286,37 @@ const SellerDashboard = ({
     )
   );
 
-  const validateUnsoldRowInStock = async (row) => {
+  const validateUnsoldRowInStock = async (row, options = {}) => {
+    const currentMemoNumber = Number(options.currentMemoNumber || 0);
     const requestedNumbers = buildConsecutiveNumbers(row.numberStart || row.from, row.numberEnd || row.to);
     if (requestedNumbers.error) {
       return { error: requestedNumbers.error };
     }
 
-    const existingUnsoldNumbers = new Set(
-      unsoldMemoEntries
-        .filter((entry) => (
+    const matchingUnsoldEntries = unsoldMemoEntries
+      .filter((entry) => (
           String(entry.userId || '') === String(row.partyId || selectedUnsoldParty?.id || user?.id || '')
           && String(entry.sem || '') === String(row.semValue || '')
           && String(entry.amount || '') === String(row.bookingAmount || amount || '')
           && String(entry.sessionMode || '') === String(row.resolvedSessionMode || sessionMode || '')
           && String(entry.purchaseCategory || '') === String(row.resolvedPurchaseCategory || activePurchaseCategory || '')
           && getDateOnlyValue(entry.bookingDate) === getDateOnlyValue(row.drawDate || bookingDate)
-        ))
-        .map((entry) => String(entry.number || '').padStart(5, '0'))
-    );
-    const duplicateUnsoldNumbers = requestedNumbers.numbers.filter((currentNumber) => existingUnsoldNumbers.has(currentNumber));
+      ));
+    const duplicateUnsoldEntries = matchingUnsoldEntries.filter((entry) => (
+      Number(getUnsoldEntryMemoNumber(entry) || 0) !== currentMemoNumber
+      && requestedNumbers.numbers.includes(String(entry.number || '').padStart(5, '0'))
+    ));
 
-    if (duplicateUnsoldNumbers.length > 0) {
+    if (duplicateUnsoldEntries.length > 0) {
+      const memoNumbers = [...new Set(
+        duplicateUnsoldEntries
+          .map((entry) => Number(getUnsoldEntryMemoNumber(entry) || 0))
+          .filter((memoNumber) => Number.isInteger(memoNumber) && memoNumber > 0)
+      )];
       return {
-        error: `Ye number pehle se unsold me save hai: ${formatMissingNumberLabel(duplicateUnsoldNumbers)}`
+        error: memoNumbers.length > 0
+          ? `Ye number already unsold at memo number ${memoNumbers.join(', ')}`
+          : `Ye number pehle se unsold me save hai: ${formatMissingNumberLabel(duplicateUnsoldEntries.map((entry) => String(entry.number || '').padStart(5, '0')))}`
       };
     }
 
@@ -4317,7 +4344,15 @@ const SellerDashboard = ({
 
       return true;
     });
-    const availableNumbers = new Set(memoStockEntries.map((entry) => String(entry.number || '').padStart(5, '0')));
+    const currentMemoNumbers = currentMemoNumber > 0
+      ? matchingUnsoldEntries
+        .filter((entry) => Number(getUnsoldEntryMemoNumber(entry) || 0) === currentMemoNumber)
+        .map((entry) => String(entry.number || '').padStart(5, '0'))
+      : [];
+    const availableNumbers = new Set([
+      ...memoStockEntries.map((entry) => String(entry.number || '').padStart(5, '0')),
+      ...currentMemoNumbers
+    ]);
     const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !availableNumbers.has(currentNumber));
 
     if (missingNumbers.length > 0) {
@@ -4386,13 +4421,17 @@ const SellerDashboard = ({
 
     const isUnsoldRemoveMode = activeTab === 'unsold-remove';
     const editingExistingUnsoldRow = Boolean(unsoldDraftRows[unsoldActiveRowIndex]?.isExistingUnsoldMemoRow);
+    const editingExistingUnsoldMemo = !isUnsoldRemoveMode && Boolean(selectedUnsoldMemoOption && !selectedUnsoldMemoOption.isNew);
+    const currentUnsoldMemoNumber = Number(unsoldMemoNumber || selectedUnsoldMemoOption?.memoNumber || 0);
 
     try {
-      const stockValidation = editingExistingUnsoldRow
+      const stockValidation = editingExistingUnsoldRow && !editingExistingUnsoldMemo
         ? { ok: true }
         : isUnsoldRemoveMode
           ? await validateUnsoldRowInRemovableStock(result.row)
-          : await validateUnsoldRowInStock(result.row);
+          : await validateUnsoldRowInStock(result.row, {
+            currentMemoNumber: currentUnsoldMemoNumber
+          });
       if (stockValidation.error) {
         openBlockingWarning(
           stockValidation.error,
@@ -4466,13 +4505,17 @@ const SellerDashboard = ({
 
     const isUnsoldRemoveMode = activeTab === 'unsold-remove';
     const editingExistingUnsoldRow = Boolean(unsoldDraftRows[unsoldActiveRowIndex]?.isExistingUnsoldMemoRow);
+    const editingExistingUnsoldMemo = !isUnsoldRemoveMode && Boolean(selectedUnsoldMemoOption && !selectedUnsoldMemoOption.isNew);
+    const currentUnsoldMemoNumber = Number(unsoldMemoNumber || selectedUnsoldMemoOption?.memoNumber || 0);
 
     try {
-      const stockValidation = editingExistingUnsoldRow
+      const stockValidation = editingExistingUnsoldRow && !editingExistingUnsoldMemo
         ? { ok: true }
         : isUnsoldRemoveMode
           ? await validateUnsoldRowInRemovableStock(result.row)
-          : await validateUnsoldRowInStock(result.row);
+          : await validateUnsoldRowInStock(result.row, {
+            currentMemoNumber: currentUnsoldMemoNumber
+          });
 
       if (stockValidation.error) {
         openBlockingWarning(
@@ -4636,7 +4679,9 @@ const SellerDashboard = ({
     if (!editingExistingUnsoldMemo) {
       try {
         for (const row of rowsToSave) {
-          const stockValidation = await validateUnsoldRowInStock(row);
+          const stockValidation = await validateUnsoldRowInStock(row, {
+            currentMemoNumber: 0
+          });
           if (stockValidation.error) {
             openBlockingWarning(stockValidation.error, [], 'Stock Missing', focusUnsoldFromInput);
             return;
