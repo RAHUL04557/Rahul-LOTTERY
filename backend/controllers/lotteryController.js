@@ -4564,6 +4564,38 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
     (manualUnsoldResult.rows || []).forEach((entry) => {
       currentUnsoldByKey.set(buildEntryKey(entry), entry);
     });
+    const directChildSellersResult = await query(
+      "SELECT id FROM users WHERE parent_id = $1 AND role = 'seller'",
+      [req.user.id]
+    );
+    await Promise.all(
+      directChildSellersResult.rows.map(async (seller) => {
+        const [snapshotRows, manualRows] = await Promise.all([
+          getLatestAcceptedUnsoldSnapshotRows({
+            targetSellerId: seller.id,
+            viewerUserId: req.user.id,
+            bookingDate,
+            sessionMode,
+            purchaseCategory,
+            amount: normalizedAmount,
+            boxValue: ''
+          }),
+          getManualSavedUnsoldRows({
+            targetSellerId: seller.id,
+            actorUserId: req.user.id,
+            bookingDate,
+            sessionMode,
+            purchaseCategory,
+            amount: normalizedAmount,
+            boxValue: ''
+          })
+        ]);
+
+        [...snapshotRows, ...manualRows].forEach((entry) => {
+          currentUnsoldByKey.set(buildEntryKey(entry), entry);
+        });
+      })
+    );
     const currentUnsoldEntries = Array.from(currentUnsoldByKey.values());
     const currentUnsoldKeySet = new Set(currentUnsoldByKey.keys());
     const currentUnsoldChanged = currentUnsoldKeySet.size !== alreadySentKeySet.size
@@ -4728,6 +4760,38 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     const selectedRowsById = new Map();
     selectedResult.rows.forEach((row) => selectedRowsById.set(Number(row.id), row));
     manualSelectedResult.rows.forEach((row) => selectedRowsById.set(Number(row.id), row));
+    const directChildSellersResult = await query(
+      "SELECT id FROM users WHERE parent_id = $1 AND role = 'seller'",
+      [req.user.id]
+    );
+    await Promise.all(
+      directChildSellersResult.rows.map(async (seller) => {
+        const [snapshotRows, manualRows] = await Promise.all([
+          getLatestAcceptedUnsoldSnapshotRows({
+            targetSellerId: seller.id,
+            viewerUserId: req.user.id,
+            bookingDate,
+            sessionMode,
+            purchaseCategory,
+            amount: normalizedAmount,
+            boxValue: ''
+          }),
+          getManualSavedUnsoldRows({
+            targetSellerId: seller.id,
+            actorUserId: req.user.id,
+            bookingDate,
+            sessionMode,
+            purchaseCategory,
+            amount: normalizedAmount,
+            boxValue: ''
+          })
+        ]);
+
+        [...snapshotRows, ...manualRows].forEach((row) => {
+          selectedRowsById.set(Number(row.entry_id || row.id), row);
+        });
+      })
+    );
     const selectedRows = Array.from(selectedRowsById.values());
 
     const buildSendEntryKey = (entry) => ([
@@ -4911,9 +4975,43 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
        SET status = 'accepted',
            sent_to_parent = NULL,
            forwarded_by = NULL,
+           memo_number = COALESCE(purchase_memo_number, memo_number),
            sent_at = NULL
        WHERE ${staleFilters.join(' AND ')}`,
       staleParams
+    );
+
+    const sentHistoryDeleteParams = [
+      visibleUserIds,
+      PURCHASE_ENTRY_SOURCE,
+      bookingDate,
+      sessionMode,
+      purchaseCategory,
+      req.user.id,
+      req.user.parentId
+    ];
+    const sentHistoryDeleteConditions = [
+      'le.user_id = ANY($1::int[])',
+      'le.entry_source = $2',
+      'h.booking_date = $3::date',
+      'h.session_mode = $4',
+      '($5::text IS NULL OR h.purchase_category = $5)',
+      'h.actor_user_id = $6',
+      'h.to_user_id = $7',
+      "h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')"
+    ];
+
+    if (normalizedAmount) {
+      sentHistoryDeleteParams.push(normalizedAmount);
+      sentHistoryDeleteConditions.push(`h.amount = $${sentHistoryDeleteParams.length}::numeric`);
+    }
+
+    await query(
+      `DELETE FROM lottery_entry_history h
+       USING lottery_entries le
+       WHERE h.entry_id = le.id
+         AND ${sentHistoryDeleteConditions.join('\n         AND ')}`,
+      sentHistoryDeleteParams
     );
 
     const updatedResult = await query(
