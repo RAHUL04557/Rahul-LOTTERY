@@ -3936,6 +3936,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
       amount,
       purchaseCategory: rawPurchaseCategory,
       rows,
+      deletedEntryIds,
       bookingDate: rawBookingDate
     } = req.body;
     const sessionMode = getRequiredSessionMode(req, res);
@@ -3944,7 +3945,10 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
     const normalizedMemoNumber = Number(memoNumber);
     const normalizedRows = Array.isArray(rows) ? rows : [];
     const existingRowEntryIds = [...new Set(
-      normalizedRows.flatMap((row) => Array.isArray(row.entryIds) ? row.entryIds : [])
+      [
+        ...normalizedRows.flatMap((row) => Array.isArray(row.entryIds) ? row.entryIds : []),
+        ...(Array.isArray(deletedEntryIds) ? deletedEntryIds : [])
+      ]
         .map((entryId) => Number(entryId))
         .filter((entryId) => Number.isInteger(entryId) && entryId > 0)
     )];

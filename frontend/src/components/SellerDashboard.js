@@ -1129,6 +1129,7 @@ const SellerDashboard = ({
   const unsoldMemoLoadSeqRef = useRef(0);
   const unsoldRemoveMemoLoadSeqRef = useRef(0);
   const skipUnsoldMemoAutoHydrateRef = useRef(false);
+  const deletedUnsoldMemoEntryIdsRef = useRef([]);
   const purchaseCodeInputRef = useRef(null);
   const purchaseFromInputRef = useRef(null);
   const purchaseToInputRef = useRef(null);
@@ -3381,6 +3382,7 @@ const SellerDashboard = ({
     } else {
       skipUnsoldMemoAutoHydrateRef.current = false;
       preferNextUnsoldMemoRef.current = false;
+      deletedUnsoldMemoEntryIdsRef.current = [];
       setUnsoldMemoNumber(option.memoNumber);
     }
     setUnsoldMemoSelectionIndex(Math.max(
@@ -3919,6 +3921,15 @@ const SellerDashboard = ({
     const deleteIndex = unsoldActiveRowIndex < unsoldDraftRows.length
       ? unsoldActiveRowIndex
       : unsoldDraftRows.length - 1;
+    const deletedRow = unsoldDraftRows[deleteIndex];
+    if (activeTab === 'unsold' && deletedRow?.isExistingUnsoldMemoRow) {
+      deletedUnsoldMemoEntryIdsRef.current = [
+        ...new Set([
+          ...deletedUnsoldMemoEntryIdsRef.current,
+          ...(deletedRow.entryIds || [])
+        ].map((entryId) => Number(entryId)).filter((entryId) => Number.isInteger(entryId) && entryId > 0))
+      ];
+    }
     const nextRows = unsoldDraftRows.filter((_, index) => index !== deleteIndex);
     skipUnsoldMemoAutoHydrateRef.current = activeTab === 'unsold' && Boolean(selectedUnsoldMemoOption && !selectedUnsoldMemoOption.isNew);
     setUnsoldDraftRows(nextRows);
@@ -4705,6 +4716,7 @@ const SellerDashboard = ({
           sessionMode,
           amount,
           purchaseCategory: activePurchaseCategory,
+          deletedEntryIds: deletedUnsoldMemoEntryIdsRef.current,
           rows: rowsToSave.map((row, index) => ({
             rangeStart: row.numberStart || row.from,
             rangeEnd: row.numberEnd || row.to,
@@ -4735,6 +4747,7 @@ const SellerDashboard = ({
       }
 
       setSuccess(`Unsold marked successfully in memo ${effectiveMemoNumber}`);
+      deletedUnsoldMemoEntryIdsRef.current = [];
       const [, refreshedUnsoldEntries] = await Promise.all([
         loadPurchaseEntries(),
         loadUnsoldMemoEntries(unsoldPartyId, bookingDate),
