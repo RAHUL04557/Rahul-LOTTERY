@@ -732,7 +732,7 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
 }) => {
   const params = [targetSellerId];
   const historyConditions = [
-    "h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')",
+    "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
     'le.user_id = $1'
   ];
   const rowConditions = ['snapshot.user_id = $1'];
@@ -824,7 +824,7 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
        LEFT JOIN users seller_user ON seller_user.id = le.user_id
        LEFT JOIN users parent_user ON parent_user.id = $${viewerParamIndex}
        LEFT JOIN users actor_user ON actor_user.id = h.actor_user_id
-       WHERE h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')
+       WHERE h.action_type IN ('unsold_sent', 'unsold_auto_accepted')
          AND h.to_user_id = $${viewerParamIndex}
          AND NOT EXISTS (
            SELECT 1
@@ -4605,7 +4605,7 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
       'le.entry_source = $2',
       'h.actor_user_id = $3',
       'h.to_user_id = $4',
-      "h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')"
+      "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')"
     ];
 
     if (bookingDate) {
@@ -5370,7 +5370,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const sentUnsoldConditions = [
         'le.entry_source = $2',
-        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')",
+        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
         'h.to_user_id = $1'
       ];
 
@@ -5734,7 +5734,7 @@ const getPurchaseBillSummary = async (req, res) => {
     const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
     const sentUnsoldConditions = [
       'le.entry_source = $2',
-      "h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')",
+      "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
       'h.to_user_id = $1'
     ];
 
