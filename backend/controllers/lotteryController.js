@@ -4964,7 +4964,7 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       String(entry.box_value || ''),
       String(entry.number || '')
     ].join('|'));
-    const alreadySentParams = [
+    const alreadySentHistoryParams = [
       visibleUserIds,
       PURCHASE_ENTRY_SOURCE,
       bookingDate,
@@ -4973,27 +4973,46 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       req.user.id,
       req.user.parentId
     ];
-    const alreadySentFilters = [
-      'user_id = ANY($1::int[])',
-      'entry_source = $2',
-      'booking_date = $3::date',
-      'session_mode = $4',
-      '($5::text IS NULL OR purchase_category = $5)',
-      `LOWER(TRIM(status)) IN ('${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`,
-      'forwarded_by = $6',
-      'sent_to_parent = $7'
+    const alreadySentHistoryFilters = [
+      'le.user_id = ANY($1::int[])',
+      'le.entry_source = $2',
+      'h.booking_date = $3::date',
+      'h.session_mode = $4',
+      '($5::text IS NULL OR h.purchase_category = $5)',
+      'h.actor_user_id = $6',
+      'h.to_user_id = $7',
+      "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')"
     ];
 
     if (normalizedAmount) {
-      alreadySentParams.push(normalizedAmount);
-      alreadySentFilters.push(`amount = $${alreadySentParams.length}::numeric`);
+      alreadySentHistoryParams.push(normalizedAmount);
+      alreadySentHistoryFilters.push(`h.amount = $${alreadySentHistoryParams.length}::numeric`);
     }
 
     const alreadySentResult = await query(
-      `SELECT *
-       FROM lottery_entries
-       WHERE ${alreadySentFilters.join(' AND ')}`,
-      alreadySentParams
+      `WITH latest_send_batch AS (
+        SELECT MAX(h.created_at) AS latest_created_at
+        FROM lottery_entry_history h
+        INNER JOIN lottery_entries le ON le.id = h.entry_id
+        WHERE ${alreadySentHistoryFilters.join(' AND ')}
+      )
+      SELECT DISTINCT ON (h.entry_id)
+         h.entry_id AS id,
+         le.user_id,
+         h.number,
+         h.box_value,
+         h.amount,
+         h.session_mode,
+         h.booking_date,
+         h.purchase_category
+       FROM lottery_entry_history h
+       INNER JOIN lottery_entries le ON le.id = h.entry_id
+       CROSS JOIN latest_send_batch batch
+       WHERE ${alreadySentHistoryFilters.join(' AND ')}
+         AND batch.latest_created_at IS NOT NULL
+         AND h.created_at = batch.latest_created_at
+       ORDER BY h.entry_id, h.created_at DESC, h.id DESC`,
+      alreadySentHistoryParams
     );
 
     if (selectedRows.length === 0) {
