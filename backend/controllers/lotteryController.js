@@ -5051,7 +5051,8 @@ const getPurchasePieceSummary = async (req, res) => {
       const manualConditions = [
         'h.actor_user_id = $1',
         'le.entry_source = $2',
-        'h.action_type = $3'
+        'h.action_type = $3',
+        latestSavedUnsoldHistoryCondition
       ];
 
       if (bookingDate) {
@@ -5430,7 +5431,8 @@ const getPurchaseBillSummary = async (req, res) => {
     const manualConditions = [
       'le.entry_source = $2',
       'h.action_type = $3',
-      'h.actor_user_id = $4'
+      'h.actor_user_id = $4',
+      latestSavedUnsoldHistoryCondition
     ];
 
     if (dateFilterResult.dateFilter) {
