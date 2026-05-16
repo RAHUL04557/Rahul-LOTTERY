@@ -770,20 +770,18 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
 
   const result = await query(
     `WITH latest_memo_batches AS (
-       SELECT
+     SELECT
          le.user_id,
          h.memo_number,
          h.booking_date,
          h.session_mode,
          h.purchase_category,
          h.amount,
-         h.number,
-         h.box_value,
          MAX(h.created_at) AS latest_created_at
        FROM lottery_entry_history h
        INNER JOIN lottery_entries le ON le.id = h.entry_id
        WHERE ${historyConditions.join(' AND ')}
-       GROUP BY le.user_id, h.memo_number, h.booking_date, h.session_mode, h.purchase_category, h.amount, h.number, h.box_value
+       GROUP BY le.user_id, h.memo_number, h.booking_date, h.session_mode, h.purchase_category, h.amount
      ),
      snapshot AS (
        SELECT
@@ -817,18 +815,11 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
        AND batch.session_mode = h.session_mode
        AND batch.purchase_category = h.purchase_category
        AND batch.amount = h.amount
-       AND batch.number = h.number
-       AND batch.box_value IS NOT DISTINCT FROM h.box_value
        AND batch.latest_created_at = h.created_at
        LEFT JOIN users seller_user ON seller_user.id = le.user_id
        LEFT JOIN users parent_user ON parent_user.id = $${viewerParamIndex}
        LEFT JOIN users actor_user ON actor_user.id = h.actor_user_id
        WHERE h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')
-         AND LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
-         AND (
-           le.sent_to_parent = $${viewerParamIndex}
-           OR le.forwarded_by = $${viewerParamIndex}
-         )
      )
      SELECT *
      FROM snapshot
