@@ -727,7 +727,8 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
   sessionMode = null,
   purchaseCategory = null,
   amount = '',
-  boxValue = ''
+  boxValue = '',
+  respectLiveMemoState = false
 }) => {
   const params = [targetSellerId];
   const historyConditions = [
@@ -764,6 +765,10 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
     params.push(boxValue);
     historyConditions.push(`h.box_value = $${params.length}`);
     rowConditions.push(`snapshot.box_value = $${params.length}`);
+  }
+
+  if (respectLiveMemoState) {
+    historyConditions.push(`LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')`);
   }
 
   params.push(viewerUserId);
@@ -2966,7 +2971,8 @@ const getPurchaseEntries = async (req, res) => {
           sessionMode,
           purchaseCategory,
           amount,
-          boxValue
+          boxValue,
+          respectLiveMemoState: true
         }),
         getManualSavedUnsoldRows({
           targetSellerId: sellerId,
