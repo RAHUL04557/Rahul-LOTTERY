@@ -229,6 +229,11 @@ const getLocalUnsoldSendEntryIds = async (params = {}) => {
   });
 
   return [...new Set((Array.isArray(rows) ? rows : [])
+    .filter((row) => (
+      Number(row.userId || row.user_id || 0) === Number(currentUser.id)
+      || Number(row.forwardedBy || row.forwarded_by || 0) === Number(currentUser.id)
+      || Number(row.sentToParent || row.sent_to_parent || 0) === Number(currentUser.id)
+    ))
     .map((row) => Number(row.id || row.entryId || row.entry_id || 0))
     .filter((entryId) => Number.isInteger(entryId) && entryId > 0))];
 };
@@ -253,6 +258,11 @@ const getLocalUnsoldSendRows = async (params = {}) => {
       && String(row.sessionMode || row.session_mode || '') === String(params.sessionMode || '')
       && String(row.purchaseCategory || row.purchase_category || '') === String(params.purchaseCategory || '')
       && String(row.amount || '') === String(params.amount || '')
+      && (
+        Number(row.userId || row.user_id || 0) === Number(currentUser.id)
+        || Number(row.forwardedBy || row.forwarded_by || 0) === Number(currentUser.id)
+        || Number(row.sentToParent || row.sent_to_parent || 0) === Number(currentUser.id)
+      )
     ))
     .map((row) => ({
       entryId: row.id || row.entryId || row.entry_id || null,

@@ -4958,7 +4958,7 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
         })
       );
     }
-    const selectedRows = Array.from(selectedRowsById.values());
+    let selectedRows = Array.from(selectedRowsById.values());
 
     const buildSendEntryKey = (entry) => ([
       entry.user_id,
@@ -5009,7 +5009,9 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
          h.amount,
          h.session_mode,
          h.booking_date,
-         h.purchase_category
+         h.purchase_category,
+         le.memo_number,
+         le.purchase_memo_number
        FROM lottery_entry_history h
        INNER JOIN lottery_entries le ON le.id = h.entry_id
        CROSS JOIN latest_send_batch batch
@@ -5019,6 +5021,16 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
        ORDER BY h.entry_id, h.created_at DESC, h.id DESC`,
       alreadySentHistoryParams
     );
+
+    if (hasDesiredSelection && alreadySentResult.rows.length > 0) {
+      alreadySentResult.rows.forEach((row) => {
+        const entryId = Number(row.id || 0);
+        if (entryId > 0 && !selectedRowsById.has(entryId)) {
+          selectedRowsById.set(entryId, row);
+        }
+      });
+      selectedRows = Array.from(selectedRowsById.values());
+    }
 
     if (selectedRows.length === 0) {
       return res.status(400).json({ message: 'Send karne ke liye unsold entry nahi hai' });

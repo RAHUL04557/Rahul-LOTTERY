@@ -936,6 +936,10 @@ const getLocalPieceSummary = (filters = {}) => {
   const untransferredStatus = isAdmin ? 'available' : 'accepted';
   const untransferredParams = [currentUserId, untransferredSource, untransferredStatus];
   const untransferredConditions = ['user_id = ?', 'entry_source = ?', 'status = ?'];
+  if (!isAdmin) {
+    untransferredConditions.push('(forwarded_by IS NULL OR forwarded_by <> ? OR memo_number IS NULL)');
+    untransferredParams.push(currentUserId);
+  }
   addCommonPurchaseFilters(untransferredConditions, untransferredParams, filters);
   const untransferredRow = initLocalDb()
     .prepare(`
