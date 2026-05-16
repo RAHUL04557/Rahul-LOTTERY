@@ -5853,6 +5853,12 @@ const getPurchaseBillSummary = async (req, res) => {
       [row.root_seller_id, row.session_mode, row.purchase_category, String(row.amount), row.box_value].join('|'),
       Number(row.sent_unsold_piece || 0)
     ])));
+    const sentUnsoldScopeSet = new Set(sentUnsoldResult.rows.map((row) => ([
+      row.root_seller_id,
+      row.session_mode,
+      row.purchase_category,
+      String(row.amount)
+    ].join('|'))));
 
     const manualParams = [req.user.id, PURCHASE_ENTRY_SOURCE, 'saved_unsold', req.user.id];
     const manualConditions = [
@@ -5926,7 +5932,11 @@ const getPurchaseBillSummary = async (req, res) => {
     res.json(result.rows.map((row) => {
       const totalPiece = Number(row.total_piece || 0);
       const manualKey = [row.root_seller_id, row.session_mode, row.purchase_category, String(row.amount), row.box_value].join('|');
-      const unsoldPiece = Number(row.unsold_piece || 0) + Number(sentUnsoldMap.get(manualKey) || 0) + Number(manualUnsoldMap.get(manualKey) || 0);
+      const sentScopeKey = [row.root_seller_id, row.session_mode, row.purchase_category, String(row.amount)].join('|');
+      const manualUnsoldPiece = sentUnsoldScopeSet.has(sentScopeKey)
+        ? 0
+        : Number(manualUnsoldMap.get(manualKey) || 0);
+      const unsoldPiece = Number(row.unsold_piece || 0) + Number(sentUnsoldMap.get(manualKey) || 0) + manualUnsoldPiece;
       const soldPiece = Math.max(totalPiece - unsoldPiece, 0);
       const appliedRate = Number(row.applied_rate || 0);
 
