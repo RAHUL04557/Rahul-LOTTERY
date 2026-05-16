@@ -1548,7 +1548,8 @@ const addLotteryEntry = async (req, res) => {
       entries: insertedEntries.map(mapLotteryEntry)
     });
   } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
+    console.error('sendPurchaseUnsoldToParent error:', error.message);
+    res.status(500).json({ message: error.message || 'Server error', error: error.message });
   }
 };
 
@@ -5118,7 +5119,12 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       nextAdminMemoNumber += 1;
     });
 
-    const selectedIds = selectedRows.map((row) => row.id);
+    const selectedIds = selectedRows
+      .map((row) => Number(row.id || row.entry_id || 0))
+      .filter((entryId) => Number.isInteger(entryId) && entryId > 0);
+    if (selectedIds.length === 0) {
+      return res.status(400).json({ message: 'Send karne ke liye valid unsold entry nahi mili' });
+    }
     const selectedMemoNumbers = selectedRows.map((row) => {
       const memoNumber = Number(row.send_unsold_memo_number || row.memo_number || 0);
       return Number.isInteger(memoNumber) && memoNumber > 0 ? memoNumber : null;
