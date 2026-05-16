@@ -769,10 +769,9 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
   const viewerParamIndex = params.length;
 
   const result = await query(
-    `WITH latest_memo_batches AS (
+    `WITH latest_send_batches AS (
      SELECT
          le.user_id,
-         h.memo_number,
          h.booking_date,
          h.session_mode,
          h.purchase_category,
@@ -781,7 +780,7 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
        FROM lottery_entry_history h
        INNER JOIN lottery_entries le ON le.id = h.entry_id
        WHERE ${historyConditions.join(' AND ')}
-       GROUP BY le.user_id, h.memo_number, h.booking_date, h.session_mode, h.purchase_category, h.amount
+       GROUP BY le.user_id, h.booking_date, h.session_mode, h.purchase_category, h.amount
      ),
      snapshot AS (
        SELECT
@@ -808,9 +807,8 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
          h.created_at AS sent_at
        FROM lottery_entry_history h
        INNER JOIN lottery_entries le ON le.id = h.entry_id
-       INNER JOIN latest_memo_batches batch
+       INNER JOIN latest_send_batches batch
         ON batch.user_id = le.user_id
-       AND batch.memo_number = h.memo_number
        AND batch.booking_date = h.booking_date
        AND batch.session_mode = h.session_mode
        AND batch.purchase_category = h.purchase_category
@@ -5008,10 +5006,9 @@ const getPurchasePieceSummary = async (req, res) => {
           FROM users u
           INNER JOIN branch_users bu ON u.parent_id = bu.id
         ),
-        latest_memo_batches AS (
+        latest_send_batches AS (
           SELECT
             le.user_id,
-            h.memo_number,
             h.booking_date,
             h.session_mode,
             h.purchase_category,
@@ -5020,15 +5017,14 @@ const getPurchasePieceSummary = async (req, res) => {
           FROM lottery_entry_history h
           INNER JOIN lottery_entries le ON le.id = h.entry_id
           WHERE ${sentUnsoldConditions.join(' AND ')}
-          GROUP BY le.user_id, h.memo_number, h.booking_date, h.session_mode, h.purchase_category, h.amount
+          GROUP BY le.user_id, h.booking_date, h.session_mode, h.purchase_category, h.amount
         )
         SELECT bu.root_seller_id AS user_id,
                COALESCE(SUM(CASE WHEN h.box_value ~ '^\\d+(\\.\\d+)?$' THEN h.box_value::numeric ELSE 0 END), 0) AS sent_unsold_piece
         FROM lottery_entry_history h
         INNER JOIN lottery_entries le ON le.id = h.entry_id
-        INNER JOIN latest_memo_batches batch
+        INNER JOIN latest_send_batches batch
           ON batch.user_id = le.user_id
-         AND batch.memo_number = h.memo_number
          AND batch.booking_date = h.booking_date
          AND batch.session_mode = h.session_mode
          AND batch.purchase_category = h.purchase_category
@@ -5385,10 +5381,9 @@ const getPurchaseBillSummary = async (req, res) => {
         INNER JOIN branch_users bu ON u.parent_id = bu.id
         WHERE bu.id <> $1
       ),
-      latest_memo_batches AS (
+      latest_send_batches AS (
         SELECT
           le.user_id,
-          h.memo_number,
           h.booking_date,
           h.session_mode,
           h.purchase_category,
@@ -5397,7 +5392,7 @@ const getPurchaseBillSummary = async (req, res) => {
         FROM lottery_entry_history h
         INNER JOIN lottery_entries le ON le.id = h.entry_id
         WHERE ${sentUnsoldConditions.join(' AND ')}
-        GROUP BY le.user_id, h.memo_number, h.booking_date, h.session_mode, h.purchase_category, h.amount
+        GROUP BY le.user_id, h.booking_date, h.session_mode, h.purchase_category, h.amount
       )
       SELECT
         bu.root_seller_id,
@@ -5408,9 +5403,8 @@ const getPurchaseBillSummary = async (req, res) => {
         COALESCE(SUM(CASE WHEN h.box_value ~ '^\\d+(\\.\\d+)?$' THEN h.box_value::numeric ELSE 0 END), 0) AS sent_unsold_piece
       FROM lottery_entry_history h
       INNER JOIN lottery_entries le ON le.id = h.entry_id
-      INNER JOIN latest_memo_batches batch
+      INNER JOIN latest_send_batches batch
         ON batch.user_id = le.user_id
-       AND batch.memo_number = h.memo_number
        AND batch.booking_date = h.booking_date
        AND batch.session_mode = h.session_mode
        AND batch.purchase_category = h.purchase_category
