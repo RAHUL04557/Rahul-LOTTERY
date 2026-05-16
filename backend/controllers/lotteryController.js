@@ -877,8 +877,8 @@ const getManualSavedUnsoldRows = async ({
   const result = await query(
     `SELECT
        ('manual-unsold-' || h.id)::varchar AS id,
-       le.user_id,
-       seller_user.username,
+       CASE WHEN h.to_user_id <> h.actor_user_id THEN h.to_user_id ELSE le.user_id END AS user_id,
+       COALESCE(target_user.username, seller_user.username) AS username,
        actor_user.username AS parent_username,
        h.actor_user_id AS forwarded_by,
        actor_user.username AS forwarded_by_username,
@@ -901,6 +901,7 @@ const getManualSavedUnsoldRows = async ({
      FROM lottery_entry_history h
      INNER JOIN lottery_entries le ON le.id = h.entry_id
      LEFT JOIN users seller_user ON seller_user.id = le.user_id
+     LEFT JOIN users target_user ON target_user.id = CASE WHEN h.to_user_id <> h.actor_user_id THEN h.to_user_id ELSE le.user_id END
      LEFT JOIN users actor_user ON actor_user.id = h.actor_user_id
      WHERE ${conditions.join(' AND ')}
      ORDER BY h.memo_number ASC NULLS LAST, h.created_at ASC, h.number ASC`,
@@ -924,6 +925,8 @@ const latestSavedUnsoldHistoryCondition = `
       AND latest_h.purchase_category = h.purchase_category
       AND latest_h.amount = h.amount
       AND latest_h.memo_number IS NOT DISTINCT FROM h.memo_number
+      AND latest_h.number = h.number
+      AND latest_h.box_value IS NOT DISTINCT FROM h.box_value
   )
 `;
 
