@@ -5833,6 +5833,7 @@ const getPurchaseBillSummary = async (req, res) => {
         h.purchase_category,
         h.amount,
         h.box_value,
+        h.number,
         COALESCE(SUM(CASE WHEN h.box_value ~ '^\\d+(\\.\\d+)?$' THEN h.box_value::numeric ELSE 0 END), 0) AS sent_unsold_piece
       FROM lottery_entry_history h
       INNER JOIN lottery_entries le ON le.id = h.entry_id
@@ -5845,19 +5846,22 @@ const getPurchaseBillSummary = async (req, res) => {
        AND batch.latest_created_at = h.created_at
       INNER JOIN branch_users bu ON bu.id = le.user_id
       WHERE ${sentUnsoldConditions.join(' AND ')}
-      GROUP BY bu.root_seller_id, h.session_mode, h.purchase_category, h.amount, h.box_value`,
+      GROUP BY bu.root_seller_id, h.session_mode, h.purchase_category, h.amount, h.box_value, h.number`,
       sentUnsoldParams
     );
 
-    const sentUnsoldMap = new Map(sentUnsoldResult.rows.map((row) => ([
-      [row.root_seller_id, row.session_mode, row.purchase_category, String(row.amount), row.box_value].join('|'),
-      Number(row.sent_unsold_piece || 0)
-    ])));
-    const sentUnsoldScopeSet = new Set(sentUnsoldResult.rows.map((row) => ([
+    const sentUnsoldMap = new Map();
+    sentUnsoldResult.rows.forEach((row) => {
+      const key = [row.root_seller_id, row.session_mode, row.purchase_category, String(row.amount), row.box_value].join('|');
+      sentUnsoldMap.set(key, Number(sentUnsoldMap.get(key) || 0) + Number(row.sent_unsold_piece || 0));
+    });
+    const sentUnsoldNumberSet = new Set(sentUnsoldResult.rows.map((row) => ([
       row.root_seller_id,
       row.session_mode,
       row.purchase_category,
-      String(row.amount)
+      String(row.amount),
+      row.box_value,
+      row.number
     ].join('|'))));
 
     const manualParams = [req.user.id, PURCHASE_ENTRY_SOURCE, 'saved_unsold', req.user.id];
@@ -5915,27 +5919,39 @@ const getPurchaseBillSummary = async (req, res) => {
         h.purchase_category,
         h.amount,
         h.box_value,
+        h.number,
         COALESCE(SUM(CASE WHEN h.box_value ~ '^\\d+(\\.\\d+)?$' THEN h.box_value::numeric ELSE 0 END), 0) AS manual_unsold_piece
       FROM lottery_entry_history h
       INNER JOIN lottery_entries le ON le.id = h.entry_id
       INNER JOIN branch_users bu ON bu.id = le.user_id
       WHERE ${manualConditions.join(' AND ')}
-      GROUP BY bu.root_seller_id, h.session_mode, h.purchase_category, h.amount, h.box_value`,
+      GROUP BY bu.root_seller_id, h.session_mode, h.purchase_category, h.amount, h.box_value, h.number`,
       manualParams
     );
 
-    const manualUnsoldMap = new Map(manualUnsoldResult.rows.map((row) => ([
-      [row.root_seller_id, row.session_mode, row.purchase_category, String(row.amount), row.box_value].join('|'),
-      Number(row.manual_unsold_piece || 0)
-    ])));
+    const manualUnsoldMap = new Map();
+    manualUnsoldResult.rows.forEach((row) => {
+      const numberKey = [
+        row.root_seller_id,
+        row.session_mode,
+        row.purchase_category,
+        String(row.amount),
+        row.box_value,
+        row.number
+      ].join('|');
+
+      if (sentUnsoldNumberSet.has(numberKey)) {
+        return;
+      }
+
+      const key = [row.root_seller_id, row.session_mode, row.purchase_category, String(row.amount), row.box_value].join('|');
+      manualUnsoldMap.set(key, Number(manualUnsoldMap.get(key) || 0) + Number(row.manual_unsold_piece || 0));
+    });
 
     res.json(result.rows.map((row) => {
       const totalPiece = Number(row.total_piece || 0);
       const manualKey = [row.root_seller_id, row.session_mode, row.purchase_category, String(row.amount), row.box_value].join('|');
-      const sentScopeKey = [row.root_seller_id, row.session_mode, row.purchase_category, String(row.amount)].join('|');
-      const manualUnsoldPiece = sentUnsoldScopeSet.has(sentScopeKey)
-        ? 0
-        : Number(manualUnsoldMap.get(manualKey) || 0);
+      const manualUnsoldPiece = Number(manualUnsoldMap.get(manualKey) || 0);
       const unsoldPiece = Number(row.unsold_piece || 0) + Number(sentUnsoldMap.get(manualKey) || 0) + manualUnsoldPiece;
       const soldPiece = Math.max(totalPiece - unsoldPiece, 0);
       const appliedRate = Number(row.applied_rate || 0);

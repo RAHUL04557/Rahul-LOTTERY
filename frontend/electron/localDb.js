@@ -2182,9 +2182,7 @@ const setupLocalDbIpc = (ipcMain) => {
           amount,
           box_value,
           SUM(CASE WHEN box_value GLOB '[0-9]*' THEN CAST(box_value AS REAL) ELSE 0 END) AS total_piece,
-          SUM(CASE WHEN LOWER(TRIM(status)) IN ('unsold_saved', 'unsold_sent', 'unsold_accepted', 'unsold')
-            AND box_value GLOB '[0-9]*'
-            THEN CAST(box_value AS REAL) ELSE 0 END) AS unsold_piece,
+          0 AS unsold_piece,
           COUNT(*) AS entry_count,
           MIN(number) AS range_from,
           MAX(number) AS range_to
@@ -2280,13 +2278,17 @@ const setupLocalDbIpc = (ipcMain) => {
       addCommonPurchaseFilters(rawUnsoldConditions, rawUnsoldParams, filters);
       const rawUnsoldRows = initLocalDb()
         .prepare(`
-          SELECT user_id, session_mode, purchase_category, amount, box_value,
+          SELECT user_id, session_mode, purchase_category, amount, box_value, number,
                  SUM(CASE WHEN box_value GLOB '[0-9]*' THEN CAST(box_value AS REAL) ELSE 0 END) AS unsold_piece
           FROM local_purchase_entries
           WHERE ${rawUnsoldConditions.join(' AND ')}
-          GROUP BY user_id, session_mode, purchase_category, amount, box_value
+          GROUP BY user_id, session_mode, purchase_category, amount, box_value, number
         `)
         .all(...rawUnsoldParams);
+      const sentNumberSet = new Set(rawUnsoldRows.map((row) => {
+        const groupUserId = getDirectChildRootId(row.user_id, currentUserId, usersById);
+        return [groupUserId, row.session_mode, row.purchase_category, row.amount, row.box_value, row.number].join('|');
+      }));
 
       rawUnsoldRows.forEach((row) => {
         const groupUserId = getDirectChildRootId(row.user_id, currentUserId, usersById);
@@ -2324,13 +2326,14 @@ const setupLocalDbIpc = (ipcMain) => {
             purchase_category,
             amount,
             box_value,
+            number,
             SUM(CASE WHEN box_value GLOB '[0-9]*' THEN CAST(box_value AS REAL) ELSE 0 END) AS manual_unsold_piece,
             COUNT(*) AS entry_count,
             MIN(number) AS range_from,
             MAX(number) AS range_to
           FROM local_manual_unsold_entries
           WHERE ${manualConditions.join(' AND ')}
-          GROUP BY user_id, session_mode, purchase_category, amount, box_value
+          GROUP BY user_id, session_mode, purchase_category, amount, box_value, number
         `)
         .all(...manualParams);
 
@@ -2341,8 +2344,8 @@ const setupLocalDbIpc = (ipcMain) => {
           return;
         }
 
-        const scopeKey = [groupUserId, row.session_mode, row.purchase_category, row.amount].join('|');
-        if (sentScopeSet.has(scopeKey)) {
+        const numberKey = [groupUserId, row.session_mode, row.purchase_category, row.amount, row.box_value, row.number].join('|');
+        if (sentNumberSet.has(numberKey)) {
           return;
         }
 
