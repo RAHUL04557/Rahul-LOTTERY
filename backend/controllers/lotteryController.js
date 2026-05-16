@@ -4757,6 +4757,9 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       || getDefaultPurchaseCategory(sessionMode);
     const amount = String(req.body.amount || req.query.amount || '').trim();
     const normalizedAmount = /^\d+(\.\d+)?$/.test(amount) ? amount : '';
+    const desiredEntryIds = [...new Set((Array.isArray(req.body.desiredEntryIds) ? req.body.desiredEntryIds : [])
+      .map((entryId) => Number(entryId))
+      .filter((entryId) => Number.isInteger(entryId) && entryId > 0))];
 
     if (!sessionMode || !bookingDate) {
       if (!bookingDate) {
@@ -4779,13 +4782,22 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       sessionMode,
       purchaseCategory
     ];
-    const filters = [
-      'user_id = ANY($1::int[])',
-      'entry_source = $2',
-      'booking_date = $3::date',
-      'session_mode = $4',
-      '($5::text IS NULL OR purchase_category = $5)',
-      `(
+    const filters = desiredEntryIds.length > 0
+      ? [
+        'id = ANY($6::int[])',
+        'user_id = ANY($1::int[])',
+        'entry_source = $2',
+        'booking_date = $3::date',
+        'session_mode = $4',
+        '($5::text IS NULL OR purchase_category = $5)'
+      ]
+      : [
+        'user_id = ANY($1::int[])',
+        'entry_source = $2',
+        'booking_date = $3::date',
+        'session_mode = $4',
+        '($5::text IS NULL OR purchase_category = $5)',
+        `(
         (
           LOWER(TRIM(status)) = '${UNSOLD_LOCAL_STATUS}'
           AND (user_id = $6 OR sent_to_parent = $6)
@@ -4803,8 +4815,8 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
           )
         )
       )`
-    ];
-    params.push(req.user.id);
+      ];
+    params.push(desiredEntryIds.length > 0 ? desiredEntryIds : req.user.id);
 
     if (normalizedAmount) {
       params.push(normalizedAmount);
@@ -4856,39 +4868,41 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     );
     const selectedRowsById = new Map();
     selectedResult.rows.forEach((row) => selectedRowsById.set(Number(row.id), row));
-    manualSelectedResult.rows.forEach((row) => selectedRowsById.set(Number(row.id), row));
-    const directChildSellersResult = await query(
-      "SELECT id FROM users WHERE parent_id = $1 AND role = 'seller'",
-      [req.user.id]
-    );
-    await Promise.all(
-      directChildSellersResult.rows.map(async (seller) => {
-        const [snapshotRows, manualRows] = await Promise.all([
-          getLatestAcceptedUnsoldSnapshotRows({
-            targetSellerId: seller.id,
-            viewerUserId: req.user.id,
-            bookingDate,
-            sessionMode,
-            purchaseCategory,
-            amount: normalizedAmount,
-            boxValue: ''
-          }),
-          getManualSavedUnsoldRows({
-            targetSellerId: seller.id,
-            actorUserId: req.user.id,
-            bookingDate,
-            sessionMode,
-            purchaseCategory,
-            amount: normalizedAmount,
-            boxValue: ''
-          })
-        ]);
+    if (desiredEntryIds.length === 0) {
+      manualSelectedResult.rows.forEach((row) => selectedRowsById.set(Number(row.id), row));
+      const directChildSellersResult = await query(
+        "SELECT id FROM users WHERE parent_id = $1 AND role = 'seller'",
+        [req.user.id]
+      );
+      await Promise.all(
+        directChildSellersResult.rows.map(async (seller) => {
+          const [snapshotRows, manualRows] = await Promise.all([
+            getLatestAcceptedUnsoldSnapshotRows({
+              targetSellerId: seller.id,
+              viewerUserId: req.user.id,
+              bookingDate,
+              sessionMode,
+              purchaseCategory,
+              amount: normalizedAmount,
+              boxValue: ''
+            }),
+            getManualSavedUnsoldRows({
+              targetSellerId: seller.id,
+              actorUserId: req.user.id,
+              bookingDate,
+              sessionMode,
+              purchaseCategory,
+              amount: normalizedAmount,
+              boxValue: ''
+            })
+          ]);
 
-        [...snapshotRows, ...manualRows].forEach((row) => {
-          selectedRowsById.set(Number(row.entry_id || row.id), row);
-        });
-      })
-    );
+          [...snapshotRows, ...manualRows].forEach((row) => {
+            selectedRowsById.set(Number(row.entry_id || row.id), row);
+          });
+        })
+      );
+    }
     const selectedRows = Array.from(selectedRowsById.values());
 
     const buildSendEntryKey = (entry) => ([

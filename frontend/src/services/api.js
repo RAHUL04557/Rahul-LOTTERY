@@ -211,6 +211,25 @@ const getLocalPurchasePieceSummary = async (params = {}) => {
   };
 };
 
+const getLocalUnsoldSendEntryIds = async (params = {}) => {
+  const localDb = getLocalDb();
+  const currentUser = getCurrentUser();
+
+  if (!localDb?.listPurchases || !(await canUseLocalRead()) || !currentUser?.id) {
+    return [];
+  }
+
+  const rows = await localDb.listPurchases({
+    ...params,
+    status: 'unsold',
+    currentUserId: currentUser.id
+  });
+
+  return [...new Set((Array.isArray(rows) ? rows : [])
+    .map((row) => Number(row.id || row.entryId || row.entry_id || 0))
+    .filter((entryId) => Number.isInteger(entryId) && entryId > 0))];
+};
+
 const mergeLocalVisibleUsers = async (users = []) => {
   const localDb = getLocalDb();
   const validUsers = (Array.isArray(users) ? users : []).filter((user) => user?.id);
@@ -744,7 +763,19 @@ export const lotteryService = {
   removePurchaseUnsold: (payload) => postWithOfflineQueue('/lottery/purchases/remove-unsold', payload, 'unsold_remove'),
   checkPurchaseUnsoldRemove: (payload) => api.post('/lottery/purchases/remove-unsold/check', payload),
   replacePurchaseUnsoldMemo: (payload) => requestWithOfflineQueue({ method: 'PUT', url: '/lottery/purchases/unsold-memo', data: payload }, 'replace_unsold_memo'),
-  sendPurchaseUnsold: (payload) => postWithOfflineQueue('/lottery/purchases/send-unsold', payload, 'unsold_send'),
+  sendPurchaseUnsold: async (payload) => {
+    let desiredEntryIds = [];
+    try {
+      desiredEntryIds = await getLocalUnsoldSendEntryIds(payload);
+    } catch (error) {
+      console.warn('Local unsold send rows failed, falling back to server:', error.message);
+    }
+
+    return postWithOfflineQueue('/lottery/purchases/send-unsold', {
+      ...payload,
+      ...(desiredEntryIds.length > 0 && { desiredEntryIds })
+    }, 'unsold_send');
+  },
   getPendingEntries: ({ bookingDate, amount } = {}) =>
     api.get('/lottery/pending-entries', {
       params: {

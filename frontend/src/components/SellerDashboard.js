@@ -1640,6 +1640,7 @@ const SellerDashboard = ({
       setSuccess(response.data?.message || 'Unsold sent successfully');
       await Promise.all([
         loadUnsoldSendSummary(),
+        loadPieceSummary(bookingDate, { open: false }),
         loadPurchaseEntries(),
         loadUnsoldMemoEntries(),
         loadReceivedEntries()
