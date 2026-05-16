@@ -123,24 +123,28 @@ const EntriesTableView = ({
                   )}
                   <td>{row.sellerName} to {currentUsername || '-'}</td>
                   <td className="grouped-action-cell">
-                    <div className="grouped-action-buttons">
-                      <button
-                        type="button"
-                        onClick={() => onAccept && onAccept(row.rows)}
-                        disabled={actionLoadingId === (row.rows[0]?.id || row.id)}
-                        style={{ padding: '8px 12px', backgroundColor: '#4caf50' }}
-                      >
-                        Accept
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onReject && onReject(row.rows)}
-                        disabled={actionLoadingId === (row.rows[0]?.id || row.id)}
-                        style={{ padding: '8px 12px', backgroundColor: '#f44336' }}
-                      >
-                        Reject
-                      </button>
-                    </div>
+                    {String(row.status || '').trim().toLowerCase() === 'accepted' ? (
+                      <span className="status-badge status-accepted">Accepted</span>
+                    ) : (
+                      <div className="grouped-action-buttons">
+                        <button
+                          type="button"
+                          onClick={() => onAccept && onAccept(row.rows)}
+                          disabled={actionLoadingId === (row.rows[0]?.id || row.id)}
+                          style={{ padding: '8px 12px', backgroundColor: '#4caf50' }}
+                        >
+                          Accept
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onReject && onReject(row.rows)}
+                          disabled={actionLoadingId === (row.rows[0]?.id || row.id)}
+                          style={{ padding: '8px 12px', backgroundColor: '#f44336' }}
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -220,24 +224,28 @@ const EntriesTableView = ({
                     <td>{representativeEntry.sentAt ? new Date(representativeEntry.sentAt).toLocaleString('en-IN') : '-'}</td>
                     {actionMode === 'seller-review' && (
                       <td className="grouped-action-cell">
-                        <div className="grouped-action-buttons">
-                          <button
-                            type="button"
-                            onClick={() => onAccept && onAccept(group.rows)}
-                            disabled={actionLoadingId === (group.rows[0]?.id || representativeEntry.id)}
-                            style={{ padding: '8px 12px', backgroundColor: '#4caf50' }}
-                          >
-                            Accept
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onReject && onReject(group.rows)}
-                            disabled={actionLoadingId === (group.rows[0]?.id || representativeEntry.id)}
-                            style={{ padding: '8px 12px', backgroundColor: '#f44336' }}
-                          >
-                            Reject
-                          </button>
-                        </div>
+                        {String(representativeEntry.status || '').trim().toLowerCase() === 'accepted' ? (
+                          <span className="status-badge status-accepted">Accepted</span>
+                        ) : (
+                          <div className="grouped-action-buttons">
+                            <button
+                              type="button"
+                              onClick={() => onAccept && onAccept(group.rows)}
+                              disabled={actionLoadingId === (group.rows[0]?.id || representativeEntry.id)}
+                              style={{ padding: '8px 12px', backgroundColor: '#4caf50' }}
+                            >
+                              Accept
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onReject && onReject(group.rows)}
+                              disabled={actionLoadingId === (group.rows[0]?.id || representativeEntry.id)}
+                              style={{ padding: '8px 12px', backgroundColor: '#f44336' }}
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        )}
                       </td>
                     )}
                   </tr>

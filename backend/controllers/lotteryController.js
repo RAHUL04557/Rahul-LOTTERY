@@ -777,11 +777,13 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
          h.session_mode,
          h.purchase_category,
          h.amount,
+         h.number,
+         h.box_value,
          MAX(h.created_at) AS latest_created_at
        FROM lottery_entry_history h
        INNER JOIN lottery_entries le ON le.id = h.entry_id
        WHERE ${historyConditions.join(' AND ')}
-       GROUP BY le.user_id, h.memo_number, h.booking_date, h.session_mode, h.purchase_category, h.amount
+       GROUP BY le.user_id, h.memo_number, h.booking_date, h.session_mode, h.purchase_category, h.amount, h.number, h.box_value
      ),
      snapshot AS (
        SELECT
@@ -815,6 +817,8 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
        AND batch.session_mode = h.session_mode
        AND batch.purchase_category = h.purchase_category
        AND batch.amount = h.amount
+       AND batch.number = h.number
+       AND batch.box_value IS NOT DISTINCT FROM h.box_value
        AND batch.latest_created_at = h.created_at
        LEFT JOIN users seller_user ON seller_user.id = le.user_id
        LEFT JOIN users parent_user ON parent_user.id = $${viewerParamIndex}
@@ -1247,7 +1251,7 @@ const insertHistoryRecords = async ({
         statusAfter,
         entry.session_mode || 'MORNING',
         entry.booking_date || getTodayDateValue(),
-        memoNumber || entry.memo_number || null,
+        entry.history_memo_number || memoNumber || entry.memo_number || null,
         entry.purchase_category || getDefaultPurchaseCategory(entry.session_mode)
       );
 
@@ -3046,6 +3050,18 @@ const getPurchaseEntries = async (req, res) => {
       params
     );
 
+    const adminAcceptedSnapshotRows = status === UNSOLD_ACCEPTED_STATUS && req.user.role === 'admin' && sellerId
+      ? await getLatestAcceptedUnsoldSnapshotRows({
+        targetSellerId: sellerId,
+        viewerUserId: req.user.id,
+        bookingDate,
+        sessionMode,
+        purchaseCategory,
+        amount,
+        boxValue
+      })
+      : [];
+
     const manualSavedRows = [UNSOLD_ACCEPTED_STATUS, 'unsold', UNSOLD_LOCAL_STATUS].includes(status) && sellerId && sellerId !== Number(req.user.id)
       ? await getManualSavedUnsoldRows({
         targetSellerId: sellerId,
@@ -3058,7 +3074,14 @@ const getPurchaseEntries = async (req, res) => {
       })
       : [];
 
-    res.json([...result.rows, ...manualSavedRows].map(mapLotteryEntry));
+    const uniqueRows = [...adminAcceptedSnapshotRows, ...manualSavedRows, ...result.rows].filter((row, index, rows) => {
+      const rowKey = [row.id, row.number, row.box_value].join('|');
+      return rows.findIndex((currentRow) => (
+        [currentRow.id, currentRow.number, currentRow.box_value].join('|') === rowKey
+      )) === index;
+    });
+
+    res.json(uniqueRows.map(mapLotteryEntry));
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -4605,6 +4628,89 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       purchaseCategory
     }));
     const targetStatus = shouldAutoAcceptToAdmin ? UNSOLD_ACCEPTED_STATUS : UNSOLD_SENT_STATUS;
+    const sendGroupMap = new Map();
+    selectedRows.forEach((row) => {
+      const sellerMemoNumber = Number(row.send_unsold_memo_number || row.memo_number || 0);
+      const groupKey = [
+        row.user_id,
+        sellerMemoNumber,
+        row.booking_date instanceof Date ? row.booking_date.toISOString().slice(0, 10) : String(row.booking_date || ''),
+        row.session_mode,
+        row.purchase_category,
+        String(row.amount)
+      ].join('|');
+      if (!sendGroupMap.has(groupKey)) {
+        sendGroupMap.set(groupKey, {
+          userId: row.user_id,
+          sellerMemoNumber,
+          bookingDate: row.booking_date instanceof Date ? row.booking_date.toISOString().slice(0, 10) : String(row.booking_date || ''),
+          sessionMode: row.session_mode,
+          purchaseCategory: row.purchase_category,
+          amount: row.amount,
+          rows: []
+        });
+      }
+      sendGroupMap.get(groupKey).rows.push(row);
+    });
+
+    const existingAdminMemoResult = await query(
+      `SELECT
+         le.user_id,
+         le.memo_number AS seller_memo_number,
+         h.booking_date,
+         h.session_mode,
+         h.purchase_category,
+         h.amount,
+         MIN(h.memo_number) AS admin_memo_number
+       FROM lottery_entry_history h
+       INNER JOIN lottery_entries le ON le.id = h.entry_id
+       WHERE h.actor_user_id = $1
+         AND h.to_user_id = $2
+         AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')
+         AND h.memo_number IS NOT NULL
+       GROUP BY le.user_id, le.memo_number, h.booking_date, h.session_mode, h.purchase_category, h.amount`,
+      [req.user.id, req.user.parentId]
+    );
+    const existingAdminMemoMap = new Map(existingAdminMemoResult.rows.map((row) => ([
+      [
+        row.user_id,
+        Number(row.seller_memo_number || 0),
+        row.booking_date instanceof Date ? row.booking_date.toISOString().slice(0, 10) : String(row.booking_date || ''),
+        row.session_mode,
+        row.purchase_category,
+        String(row.amount)
+      ].join('|'),
+      Number(row.admin_memo_number || 0)
+    ])));
+
+    const maxAdminMemoResult = await query(
+      `SELECT COALESCE(MAX(h.memo_number), 0) AS max_memo_number
+       FROM lottery_entry_history h
+       WHERE h.memo_number IS NOT NULL
+         AND h.booking_date = $1::date
+         AND h.session_mode = $2
+         AND h.purchase_category = $3
+         AND h.amount = $4::numeric
+         AND (
+           h.actor_user_id = $5
+           OR h.to_user_id = $5
+           OR (h.actor_user_id = $6 AND h.to_user_id = $5)
+         )
+         AND h.action_type IN ('saved_unsold', 'unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')`,
+      [bookingDate, sessionMode, purchaseCategory, normalizedAmount || selectedRows[0].amount, req.user.parentId, req.user.id]
+    );
+    let nextAdminMemoNumber = Number(maxAdminMemoResult.rows[0]?.max_memo_number || 0) + 1;
+    const adminMemoByGroup = new Map();
+    Array.from(sendGroupMap.entries()).forEach(([groupKey]) => {
+      const existingMemoNumber = existingAdminMemoMap.get(groupKey);
+      if (Number.isInteger(existingMemoNumber) && existingMemoNumber > 0) {
+        adminMemoByGroup.set(groupKey, existingMemoNumber);
+        return;
+      }
+      adminMemoByGroup.set(groupKey, nextAdminMemoNumber);
+      nextAdminMemoNumber += 1;
+    });
+
     const selectedIds = selectedRows.map((row) => row.id);
     const selectedMemoNumbers = selectedRows.map((row) => {
       const memoNumber = Number(row.send_unsold_memo_number || row.memo_number || 0);
@@ -4665,7 +4771,20 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     );
 
     await insertHistoryRecords({
-      entries: updatedResult.rows,
+      entries: updatedResult.rows.map((row) => {
+        const groupKey = [
+          row.user_id,
+          Number(row.memo_number || 0),
+          row.booking_date instanceof Date ? row.booking_date.toISOString().slice(0, 10) : String(row.booking_date || ''),
+          row.session_mode,
+          row.purchase_category,
+          String(row.amount)
+        ].join('|');
+        return {
+          ...row,
+          history_memo_number: adminMemoByGroup.get(groupKey) || row.memo_number
+        };
+      }),
       actionType: targetStatus === UNSOLD_ACCEPTED_STATUS ? 'unsold_auto_accepted' : 'unsold_sent',
       statusBefore: 'unsold',
       statusAfter: targetStatus,
@@ -5409,14 +5528,19 @@ const getReceivedEntries = async (req, res) => {
          AND le.booking_date = CURRENT_DATE
          AND (
            le.status = 'sent'
-           OR (le.entry_source = $3 AND le.status = $4)
+           OR (le.entry_source = $3 AND le.status IN ($4, '${UNSOLD_ACCEPTED_STATUS}'))
          )
          ${amountFilter}
        ORDER BY le.sent_at DESC NULLS LAST`,
       params
     );
 
-    res.json(entriesResult.rows.map(mapLotteryEntry));
+    res.json(entriesResult.rows.map((row) => mapLotteryEntry({
+      ...row,
+      status: row.entry_source === PURCHASE_ENTRY_SOURCE && row.status === UNSOLD_ACCEPTED_STATUS
+        ? 'accepted'
+        : row.status
+    })));
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
@@ -5506,9 +5630,27 @@ const updateReceivedEntryStatus = async (req, res) => {
           action === 'accept' ? req.user.id : entry.forwarded_by
         ]
       );
+      const acceptedMemoResult = await query(
+        `SELECT DISTINCT ON (entry_id) entry_id, memo_number
+         FROM lottery_entry_history
+         WHERE entry_id = ANY($1::int[])
+           AND action_type = 'unsold_sent'
+           AND actor_user_id = $2
+           AND to_user_id = $3
+           AND memo_number IS NOT NULL
+         ORDER BY entry_id, created_at DESC`,
+        [scopedIds, entry.forwarded_by, req.user.id]
+      );
+      const acceptedMemoMap = new Map(acceptedMemoResult.rows.map((row) => [
+        Number(row.entry_id),
+        Number(row.memo_number)
+      ]));
 
       await insertHistoryRecords({
-        entries: updatedResult.rows,
+        entries: updatedResult.rows.map((row) => ({
+          ...row,
+          history_memo_number: acceptedMemoMap.get(Number(row.id)) || row.memo_number
+        })),
         actionType: action === 'accept' ? 'unsold_accepted' : 'unsold_rejected',
         statusBefore: UNSOLD_SENT_STATUS,
         statusAfter: action === 'accept' ? UNSOLD_ACCEPTED_STATUS : 'accepted',
