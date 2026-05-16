@@ -4710,10 +4710,15 @@ const SellerDashboard = ({
     try {
       const effectiveMemoNumber = unsoldMemoNumber || selectedUnsoldMemoOption?.memoNumber || nextUnsoldMemoNumber;
       if (editingExistingUnsoldMemo) {
+        const entryIds = [
+          ...deletedUnsoldMemoEntryIdsRef.current,
+          ...rowsToSave.flatMap((row) => Array.isArray(row.entryIds) ? row.entryIds : [])
+        ].filter(Boolean);
         await lotteryService.replacePurchaseUnsoldMemo({
           sellerId: String(unsoldPartyId || '') === String(user?.id) ? undefined : unsoldPartyId,
           bookingDate: rowsToSave[0]?.drawDate || bookingDate,
           memoNumber: effectiveMemoNumber,
+          entryIds,
           sessionMode,
           amount,
           purchaseCategory: activePurchaseCategory,

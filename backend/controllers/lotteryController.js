@@ -3937,6 +3937,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
       memoNumber,
       amount,
       purchaseCategory: rawPurchaseCategory,
+      entryIds,
       rows,
       deletedEntryIds,
       bookingDate: rawBookingDate
@@ -3948,6 +3949,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
     const normalizedRows = Array.isArray(rows) ? rows : [];
     const existingRowEntryIds = [...new Set(
       [
+        ...(Array.isArray(entryIds) ? entryIds : []),
         ...normalizedRows.flatMap((row) => Array.isArray(row.entryIds) ? row.entryIds : []),
         ...(Array.isArray(deletedEntryIds) ? deletedEntryIds : [])
       ]
@@ -4102,6 +4104,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
                  sent_to_parent = $2,
                  forwarded_by = $3,
                  memo_number = COALESCE(purchase_memo_number, memo_number),
+                 purchase_memo_number = NULL,
                  sent_at = CURRENT_TIMESTAMP
              WHERE id = ANY($1::int[])`,
             [idsToRestore, req.user.id, targetSeller.id]
