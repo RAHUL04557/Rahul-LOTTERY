@@ -842,7 +842,7 @@ const getManualSavedUnsoldRows = async ({
 }) => {
   const params = [targetSellerId, actorUserId, PURCHASE_ENTRY_SOURCE, 'saved_unsold'];
   const conditions = [
-    'le.user_id = $1',
+    '(le.user_id = $1 OR (h.to_user_id = $1 AND h.to_user_id <> h.actor_user_id))',
     'h.actor_user_id = $2',
     'le.entry_source = $3',
     'h.action_type = $4',
@@ -3272,22 +3272,61 @@ const markPurchaseEntriesUnsold = async (req, res) => {
          )`;
     }
 
-    const selectedEntriesResult = await query(
-      `SELECT le.*
-       FROM lottery_entries le
-       WHERE le.user_id = $1
-         AND le.entry_source = $2
-         AND le.status = 'accepted'
-         AND le.session_mode = $3
-         AND le.purchase_category = $4
-         AND le.booking_date = $5::date
-         AND le.number = ANY($6::varchar[])
-         ${isAdminRole(req.user.role) ? '' : 'AND le.memo_number IS NOT NULL'}
-         ${stockFilters.join('\n         ')}
-         ${ownerStockFilter}
-       ORDER BY le.number ASC`,
-      selectedEntriesParams
-    );
+    let selectedEntriesResult;
+    if (isAdminRole(req.user.role) && targetSellerId !== Number(req.user.id)) {
+      const adminSentParams = [
+        req.user.id,
+        targetSellerId,
+        PURCHASE_ENTRY_SOURCE,
+        'purchase_sent',
+        sessionMode,
+        purchaseCategory,
+        bookingDate,
+        numbersToMark.numbers
+      ];
+      const adminSentFilters = [];
+      if (normalizedAmount) {
+        adminSentFilters.push(`AND h.amount = $${adminSentParams.push(normalizedAmount)}::numeric`);
+      }
+      if (normalizedBoxValue) {
+        adminSentFilters.push(`AND h.box_value = $${adminSentParams.push(normalizedBoxValue)}`);
+      }
+
+      selectedEntriesResult = await query(
+        `SELECT DISTINCT ON (le.id) le.*
+         FROM lottery_entry_history h
+         INNER JOIN lottery_entries le ON le.id = h.entry_id
+         WHERE h.actor_user_id = $1
+           AND h.to_user_id = $2
+           AND le.entry_source = $3
+           AND h.action_type = $4
+           AND h.session_mode = $5
+           AND h.purchase_category = $6
+           AND h.booking_date = $7::date
+           AND h.number = ANY($8::varchar[])
+           AND LOWER(TRIM(le.status)) = 'accepted'
+           ${adminSentFilters.join('\n           ')}
+         ORDER BY le.id, h.created_at DESC`,
+        adminSentParams
+      );
+    } else {
+      selectedEntriesResult = await query(
+        `SELECT le.*
+         FROM lottery_entries le
+         WHERE le.user_id = $1
+           AND le.entry_source = $2
+           AND LOWER(TRIM(le.status)) = 'accepted'
+           AND le.session_mode = $3
+           AND le.purchase_category = $4
+           AND le.booking_date = $5::date
+           AND le.number = ANY($6::varchar[])
+           ${isAdminRole(req.user.role) ? '' : 'AND le.memo_number IS NOT NULL'}
+           ${stockFilters.join('\n           ')}
+           ${ownerStockFilter}
+         ORDER BY le.number ASC`,
+        selectedEntriesParams
+      );
+    }
 
     if (selectedEntriesResult.rows.length === 0) {
       return res.status(404).json({ message: 'Not found' });
@@ -3323,6 +3362,9 @@ const markPurchaseEntriesUnsold = async (req, res) => {
     }
 
     if (targetSellerId !== Number(req.user.id)) {
+      const manualUnsoldToUserId = isAdminRole(req.user.role) ? targetSellerId : req.user.id;
+      const manualUnsoldToUsername = isAdminRole(req.user.role) ? targetSeller.username : req.user.username;
+
       await insertHistoryRecords({
         entries: selectedEntriesResult.rows.map((row) => ({
           ...row,
@@ -3335,8 +3377,8 @@ const markPurchaseEntriesUnsold = async (req, res) => {
         statusAfter: UNSOLD_LOCAL_STATUS,
         actorUserId: req.user.id,
         actorUsername: req.user.username,
-        toUserId: req.user.id,
-        toUsername: req.user.username,
+        toUserId: manualUnsoldToUserId,
+        toUsername: manualUnsoldToUsername,
         memoNumber: resolvedMemoNumber
       });
 
