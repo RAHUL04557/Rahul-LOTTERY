@@ -656,6 +656,16 @@ const mapHistoryRecord = (row) => ({
   createdAt: row.created_at
 });
 
+const buildUnsoldIdentityKey = (row = {}) => ([
+  Number(row.user_id || row.userId || row.to_user_id || row.toUserId || 0),
+  row.booking_date instanceof Date ? row.booking_date.toISOString().slice(0, 10) : String(row.booking_date || row.bookingDate || '').slice(0, 10),
+  String(row.session_mode || row.sessionMode || ''),
+  String(row.purchase_category || row.purchaseCategory || ''),
+  String(row.amount || ''),
+  String(row.box_value || row.boxValue || row.sem || ''),
+  String(row.number || '').padStart(5, '0')
+].join('|'));
+
 const repairMissingPurchaseMemoNumbers = async (db = { query }) => {
   await db.query(`
     UPDATE lottery_entries le
@@ -3061,10 +3071,8 @@ const getPurchaseEntries = async (req, res) => {
         ...snapshotRows.filter(shouldKeepSnapshotRow),
         ...localSavedResult.rows.filter(shouldKeepSnapshotRow)
       ].filter((row, index, rows) => {
-        const rowKey = [row.id, row.number, row.box_value].join('|');
-        return rows.findIndex((currentRow) => (
-          [currentRow.id, currentRow.number, currentRow.box_value].join('|') === rowKey
-        )) === index;
+        const rowKey = buildUnsoldIdentityKey(row);
+        return rows.findIndex((currentRow) => buildUnsoldIdentityKey(currentRow) === rowKey) === index;
       });
       res.json(combinedRows.map(mapLotteryEntry));
       return;
@@ -3140,10 +3148,8 @@ const getPurchaseEntries = async (req, res) => {
 
     if (latestSentOnly && req.user.role === 'admin' && sellerId && status === 'unsold') {
       const latestRows = [...adminAcceptedSnapshotRows, ...manualSavedRows].filter((row, index, rows) => {
-        const rowKey = [row.id || row.entry_id, row.number, row.box_value].join('|');
-        return rows.findIndex((currentRow) => (
-          [currentRow.id || currentRow.entry_id, currentRow.number, currentRow.box_value].join('|') === rowKey
-        )) === index;
+        const rowKey = buildUnsoldIdentityKey(row);
+        return rows.findIndex((currentRow) => buildUnsoldIdentityKey(currentRow) === rowKey) === index;
       });
       res.json(latestRows.map(mapLotteryEntry));
       return;
@@ -3178,10 +3184,8 @@ const getPurchaseEntries = async (req, res) => {
     }
 
     const uniqueRows = [...adminAcceptedSnapshotRows, ...manualSavedRows, ...liveRows].filter((row, index, rows) => {
-      const rowKey = [row.id, row.number, row.box_value].join('|');
-      return rows.findIndex((currentRow) => (
-        [currentRow.id, currentRow.number, currentRow.box_value].join('|') === rowKey
-      )) === index;
+      const rowKey = buildUnsoldIdentityKey(row);
+      return rows.findIndex((currentRow) => buildUnsoldIdentityKey(currentRow) === rowKey) === index;
     });
 
     res.json(uniqueRows.map(mapLotteryEntry));
@@ -5453,6 +5457,11 @@ const getPurchasePieceSummary = async (req, res) => {
           GROUP BY le.user_id, h.booking_date, h.session_mode, h.purchase_category, h.amount
         )
         SELECT bu.root_seller_id AS user_id,
+               h.session_mode,
+               h.purchase_category,
+               h.amount,
+               h.box_value,
+               h.number,
                COALESCE(SUM(CASE WHEN h.box_value ~ '^\\d+(\\.\\d+)?$' THEN h.box_value::numeric ELSE 0 END), 0) AS sent_unsold_piece
         FROM lottery_entry_history h
         INNER JOIN lottery_entries le ON le.id = h.entry_id
@@ -5465,10 +5474,18 @@ const getPurchasePieceSummary = async (req, res) => {
          AND batch.latest_created_at = h.created_at
         INNER JOIN branch_users bu ON bu.id = le.user_id
         WHERE ${sentUnsoldConditions.join(' AND ')}
-        GROUP BY bu.root_seller_id`,
+        GROUP BY bu.root_seller_id, h.session_mode, h.purchase_category, h.amount, h.box_value, h.number`,
         sentUnsoldParams
       );
 
+      const sentUnsoldNumberSet = new Set(sentUnsoldResult.rows.map((row) => ([
+        row.user_id,
+        row.session_mode,
+        row.purchase_category,
+        String(row.amount),
+        row.box_value,
+        row.number
+      ].join('|'))));
       sentUnsoldResult.rows.forEach((row) => {
         const sellerId = Number(row.user_id);
         const existing = summaryMap.get(sellerId) || { user_id: sellerId, total_piece: 0, unsold_piece: 0 };
@@ -5515,16 +5532,33 @@ const getPurchasePieceSummary = async (req, res) => {
           INNER JOIN branch_users bu ON u.parent_id = bu.id
         )
         SELECT bu.root_seller_id AS user_id,
+               h.session_mode,
+               h.purchase_category,
+               h.amount,
+               h.box_value,
+               h.number,
                COALESCE(SUM(CASE WHEN h.box_value ~ '^\\d+(\\.\\d+)?$' THEN h.box_value::numeric ELSE 0 END), 0) AS manual_unsold_piece
         FROM lottery_entry_history h
         INNER JOIN lottery_entries le ON le.id = h.entry_id
         INNER JOIN branch_users bu ON bu.id = le.user_id
         WHERE ${manualConditions.join(' AND ')}
-        GROUP BY bu.root_seller_id`,
+        GROUP BY bu.root_seller_id, h.session_mode, h.purchase_category, h.amount, h.box_value, h.number`,
         manualParams
       );
 
       manualUnsoldResult.rows.forEach((row) => {
+        const numberKey = [
+          row.user_id,
+          row.session_mode,
+          row.purchase_category,
+          String(row.amount),
+          row.box_value,
+          row.number
+        ].join('|');
+        if (sentUnsoldNumberSet.has(numberKey)) {
+          return;
+        }
+
         const sellerId = Number(row.user_id);
         const existing = summaryMap.get(sellerId) || { user_id: sellerId, total_piece: 0, unsold_piece: 0 };
         existing.unsold_piece = Number(existing.unsold_piece || 0) + Number(row.manual_unsold_piece || 0);

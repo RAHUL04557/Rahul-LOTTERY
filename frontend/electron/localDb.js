@@ -887,6 +887,7 @@ const getLocalPieceSummary = (filters = {}) => {
 
   const sellerIds = new Set(sellers.map((seller) => Number(seller.id)));
   const summaryMap = new Map();
+  const unsoldIdentitySet = new Set();
   rows.forEach((row) => {
     const rowUserId = Number(row.user_id);
     const summaryUserId = isAdmin ? getDirectChildRootId(rowUserId, currentUserId, usersById) : rowUserId;
@@ -914,7 +915,19 @@ const getLocalPieceSummary = (filters = {}) => {
     const summary = summaryMap.get(Number(summaryUserId)) || { totalPiece: 0, unsoldPiece: 0 };
     summary.totalPiece += piece;
     if (isUnsold) {
-      summary.unsoldPiece += piece;
+      const unsoldKey = [
+        Number(summaryUserId),
+        row.booking_date,
+        row.session_mode,
+        row.purchase_category,
+        row.amount,
+        row.box_value,
+        row.number
+      ].join('|');
+      if (!unsoldIdentitySet.has(unsoldKey)) {
+        summary.unsoldPiece += piece;
+        unsoldIdentitySet.add(unsoldKey);
+      }
     }
     summaryMap.set(Number(summaryUserId), summary);
   });
@@ -1160,6 +1173,16 @@ const addCommonPurchaseFilters = (conditions, params, filters) => {
     conditions.push('box_value = ?');
   }
 };
+
+const buildLocalUnsoldIdentityKey = (row = {}) => ([
+  Number(row.userId || row.user_id || row.sellerId || row.seller_id || 0),
+  toLocalDate(row.bookingDate || row.booking_date || ''),
+  String(row.sessionMode || row.session_mode || ''),
+  String(row.purchaseCategory || row.purchase_category || ''),
+  String(row.amount || ''),
+  String(row.boxValue || row.box_value || row.sem || ''),
+  String(row.number || '').padStart(5, '0')
+].join('|'));
 
 const getDateRange = (filters) => ({
   fromDate: toLocalDate(filters.fromDate || filters.date || filters.bookingDate),
@@ -1493,7 +1516,10 @@ const setupLocalDbIpc = (ipcMain) => {
         .all(...manualParams)
         .map(mapLocalManualUnsoldEntry);
 
-      return [...mappedRows, ...manualRows];
+      return [...mappedRows, ...manualRows].filter((row, index, allRows) => {
+        const rowKey = buildLocalUnsoldIdentityKey(row);
+        return allRows.findIndex((currentRow) => buildLocalUnsoldIdentityKey(currentRow) === rowKey) === index;
+      });
     }
 
     return mappedRows;
