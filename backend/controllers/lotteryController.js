@@ -786,6 +786,7 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
        FROM lottery_entry_history h
        INNER JOIN lottery_entries le ON le.id = h.entry_id
        WHERE ${historyConditions.join(' AND ')}
+        AND h.to_user_id = $${viewerParamIndex}
        GROUP BY le.user_id, h.booking_date, h.session_mode, h.purchase_category, h.amount
      ),
      snapshot AS (
@@ -824,6 +825,7 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
        LEFT JOIN users parent_user ON parent_user.id = $${viewerParamIndex}
        LEFT JOIN users actor_user ON actor_user.id = h.actor_user_id
        WHERE h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')
+         AND h.to_user_id = $${viewerParamIndex}
          AND NOT EXISTS (
            SELECT 1
            FROM lottery_entry_history removed_h
@@ -4627,7 +4629,13 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
     }
 
     const alreadySentHistoryResult = await query(
-      `SELECT DISTINCT ON (h.entry_id)
+      `WITH latest_send_batch AS (
+        SELECT MAX(h.created_at) AS latest_created_at
+        FROM lottery_entry_history h
+        INNER JOIN lottery_entries le ON le.id = h.entry_id
+        WHERE ${alreadySentConditions.join(' AND ')}
+      )
+      SELECT DISTINCT ON (h.entry_id)
          h.entry_id AS id,
          le.user_id,
          h.number,
@@ -4640,7 +4648,10 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
          h.created_at
        FROM lottery_entry_history h
        INNER JOIN lottery_entries le ON le.id = h.entry_id
+       CROSS JOIN latest_send_batch batch
        WHERE ${alreadySentConditions.join(' AND ')}
+         AND batch.latest_created_at IS NOT NULL
+         AND h.created_at = batch.latest_created_at
        ORDER BY h.entry_id, h.created_at DESC, h.id DESC`,
       alreadySentParams
     );

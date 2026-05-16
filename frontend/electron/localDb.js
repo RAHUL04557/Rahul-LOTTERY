@@ -1768,6 +1768,60 @@ const setupLocalDbIpc = (ipcMain) => {
     }
 
     if (operationType === 'unsold_send') {
+      const serverEntries = Array.isArray(payload.serverEntries) ? payload.serverEntries : [];
+      if (payload.serverSynced && serverEntries.length > 0) {
+        const selectedRows = serverEntries
+          .map(normalizePurchaseEntry)
+          .filter((entry) => entry.userId && entry.number && entry.boxValue && entry.amount && entry.bookingDate && entry.sessionMode);
+        const selectedKeys = new Set(selectedRows.map((entry) => [
+          entry.userId,
+          entry.bookingDate,
+          entry.sessionMode,
+          entry.purchaseCategory,
+          entry.amount,
+          entry.boxValue,
+          entry.number
+        ].join('|')));
+        const staleParams = [];
+        const staleConditions = [
+          "entry_source = 'purchase'",
+          "LOWER(TRIM(status)) IN ('unsold_sent', 'unsold_accepted', 'unsold')",
+          'forwarded_by = ?'
+        ];
+        staleParams.push(Number(userId || 0));
+        addCommonPurchaseFilters(staleConditions, staleParams, payload);
+
+        const staleRows = initLocalDb()
+          .prepare(`SELECT * FROM local_purchase_entries WHERE ${staleConditions.join(' AND ')}`)
+          .all(...staleParams)
+          .filter((row) => !selectedKeys.has([
+            row.user_id,
+            row.booking_date,
+            row.session_mode,
+            row.purchase_category,
+            row.amount,
+            row.box_value,
+            row.number
+          ].join('|')));
+
+        if (staleRows.length > 0) {
+          initLocalDb()
+            .prepare(`
+              UPDATE local_purchase_entries
+              SET status = 'accepted',
+                  sent_to_parent = NULL,
+                  forwarded_by = NULL,
+                  memo_number = COALESCE(purchase_memo_number, memo_number),
+                  updated_at = ?,
+                  sync_status = 'synced'
+              WHERE local_id IN (${staleRows.map(() => '?').join(', ')})
+            `)
+            .run(now, ...staleRows.map((row) => row.local_id));
+        }
+
+        return { ok: true, reset: staleRows.length };
+      }
+
       initLocalDb()
         .prepare(`
           UPDATE local_purchase_entries

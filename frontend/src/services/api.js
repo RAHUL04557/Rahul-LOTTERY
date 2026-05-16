@@ -96,6 +96,7 @@ const requestWithOfflineQueue = async ({ method = 'POST', url, data, config = {}
         payload: {
           ...(data || {}),
           deletedMemoNumber: response.data?.deletedMemoNumber || data?.memoNumber,
+          serverEntries: responseEntries,
           serverSynced: true
         },
         userId: getCurrentUser()?.id
