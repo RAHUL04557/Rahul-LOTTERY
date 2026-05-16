@@ -909,7 +909,11 @@ const getLocalPieceSummary = (filters = {}) => {
       ? ['unsold_saved', 'unsold_sent', 'unsold_accepted', 'unsold'].includes(status)
       : (
         status === 'unsold_accepted'
-        || (status === 'unsold_saved' && (rowUserId === currentUserId || Number(row.sent_to_parent) === currentUserId))
+        || (status === 'unsold_saved' && (
+          rowUserId === currentUserId
+          || Number(row.sent_to_parent) === currentUserId
+          || Number(row.forwarded_by) === currentUserId
+        ))
         || (status === 'unsold_sent' && Number(row.forwarded_by) === currentUserId)
       );
     const summary = summaryMap.get(Number(summaryUserId)) || { totalPiece: 0, unsoldPiece: 0 };
@@ -930,6 +934,45 @@ const getLocalPieceSummary = (filters = {}) => {
       }
     }
     summaryMap.set(Number(summaryUserId), summary);
+  });
+
+  const manualParams = [currentUserId];
+  const manualConditions = ['actor_user_id = ?'];
+  addCommonPurchaseFilters(manualConditions, manualParams, filters);
+  const manualRows = initLocalDb()
+    .prepare(`
+      SELECT *
+      FROM local_manual_unsold_entries
+      WHERE ${manualConditions.join(' AND ')}
+    `)
+    .all(...manualParams);
+
+  manualRows.forEach((row) => {
+    const rowUserId = Number(row.user_id);
+    const summaryUserId = isAdmin ? getDirectChildRootId(rowUserId, currentUserId, usersById) : rowUserId;
+    if (!summaryUserId || !sellerIds.has(Number(summaryUserId))) {
+      return;
+    }
+
+    const piece = /^\d+(\.\d+)?$/.test(String(row.box_value || '')) ? Number(row.box_value) : 0;
+    const unsoldKey = [
+      Number(summaryUserId),
+      row.booking_date,
+      row.session_mode,
+      row.purchase_category,
+      row.amount,
+      row.box_value,
+      row.number
+    ].join('|');
+
+    if (unsoldIdentitySet.has(unsoldKey)) {
+      return;
+    }
+
+    const summary = summaryMap.get(Number(summaryUserId)) || { totalPiece: 0, unsoldPiece: 0 };
+    summary.unsoldPiece += piece;
+    summaryMap.set(Number(summaryUserId), summary);
+    unsoldIdentitySet.add(unsoldKey);
   });
 
   const untransferredSource = isAdmin ? 'admin_purchase' : 'purchase';
