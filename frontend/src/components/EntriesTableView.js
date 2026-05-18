@@ -66,11 +66,11 @@ const EntriesTableView = ({
     if (actionMode === 'seller-review' && summaryReviewMode) {
       const summaryRows = Object.values(sortedTableEntries.reduce((groups, entry) => {
         const sellerName = entry.displaySeller || entry.username || '-';
+        const sentTimeKey = Math.floor(new Date(entry.sentAt || entry.createdAt || 0).getTime() / 1000) || '';
         const key = [
           sellerName,
-          entry.sentAt || entry.createdAt || '',
+          sentTimeKey,
           entry.bookingDate || '',
-          entry.memoNumber || '',
           entry.amount,
           entry.status || ''
         ].join('|');

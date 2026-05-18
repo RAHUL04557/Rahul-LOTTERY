@@ -161,12 +161,12 @@ const REMOVABLE_UNSOLD_STATUSES = new Set(['unsold_saved', 'unsold_sent', 'unsol
 const F11_SEND_RECORD_ACTIONS = new Set(['unsold_sent', 'unsold_auto_accepted']);
 const getLatestEntryBatch = (entries = []) => {
   const latestTime = entries.reduce((maxTime, entry) => {
-    const entryTime = new Date(entry.sentAt || entry.createdAt || 0).getTime();
+    const entryTime = Math.floor(new Date(entry.sentAt || entry.createdAt || 0).getTime() / 1000);
     return Number.isFinite(entryTime) && entryTime > maxTime ? entryTime : maxTime;
   }, 0);
 
   return latestTime > 0
-    ? entries.filter((entry) => new Date(entry.sentAt || entry.createdAt || 0).getTime() === latestTime)
+    ? entries.filter((entry) => Math.floor(new Date(entry.sentAt || entry.createdAt || 0).getTime() / 1000) === latestTime)
     : [];
 };
 const SELLER_TYPE_LABELS = {
@@ -1699,7 +1699,7 @@ const SubStokistDashboard = ({
         sessionMode,
         purchaseCategory: activePurchaseCategory,
         amount
-      });
+      }, { skipLocalRead: true });
 
       const summaryRows = (response.data || []).map((row) => ({
         id: row.sellerId || row.seller_id,
