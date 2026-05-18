@@ -3002,9 +3002,24 @@ const getPurchaseEntries = async (req, res) => {
     );
 
     if (shouldUseAcceptedSnapshotView) {
-      const [snapshotRows, manualSavedRows, localSavedResult] = await Promise.all([
-        getLatestAcceptedUnsoldSnapshotRows({
-          targetSellerId: sellerId,
+      const branchResult = await query(
+        `WITH RECURSIVE branch_users AS (
+          SELECT id
+          FROM users
+          WHERE id = $1 AND role = 'seller'
+          UNION ALL
+          SELECT u.id
+          FROM users u
+          INNER JOIN branch_users bu ON u.parent_id = bu.id
+          WHERE u.role = 'seller'
+        )
+        SELECT id FROM branch_users`,
+        [sellerId]
+      );
+      const branchSellerIds = branchResult.rows.map((row) => Number(row.id)).filter(Boolean);
+      const [snapshotRowsBySeller, manualSavedRowsBySeller, localSavedResult] = await Promise.all([
+        Promise.all(branchSellerIds.map((branchSellerId) => getLatestAcceptedUnsoldSnapshotRows({
+          targetSellerId: branchSellerId,
           viewerUserId: req.user.id,
           bookingDate,
           sessionMode,
@@ -3012,16 +3027,16 @@ const getPurchaseEntries = async (req, res) => {
           amount,
           boxValue,
           respectLiveMemoState: true
-        }),
-        getManualSavedUnsoldRows({
-          targetSellerId: sellerId,
+        }))),
+        Promise.all(branchSellerIds.map((branchSellerId) => getManualSavedUnsoldRows({
+          targetSellerId: branchSellerId,
           actorUserId: req.user.id,
           bookingDate,
           sessionMode,
           purchaseCategory,
           amount,
           boxValue
-        }),
+        }))),
         query(
           `SELECT le.*, u.username, parent_user.username AS parent_username, forwarded_user.username AS forwarded_by_username
            FROM lottery_entries le
@@ -3053,8 +3068,11 @@ const getPurchaseEntries = async (req, res) => {
           ]
         )
       ]);
+      const snapshotRows = snapshotRowsBySeller.flat();
+      const manualSavedRows = manualSavedRowsBySeller.flat();
 
       const buildUnsoldMemoScopeKey = (row = {}) => ([
+        row.user_id || '',
         row.memo_number ?? row.purchase_memo_number ?? '',
         row.booking_date instanceof Date ? row.booking_date.toISOString().slice(0, 10) : String(row.booking_date || '').slice(0, 10),
         row.session_mode || '',
@@ -3074,7 +3092,23 @@ const getPurchaseEntries = async (req, res) => {
         const rowKey = buildUnsoldIdentityKey(row);
         return rows.findIndex((currentRow) => buildUnsoldIdentityKey(currentRow) === rowKey) === index;
       });
-      res.json(combinedRows.map(mapLotteryEntry));
+      const memoScopeMap = new Map();
+      let nextMemoNumber = 1;
+      const scopedRows = combinedRows.map((row) => {
+        const scopeKey = buildUnsoldMemoScopeKey(row);
+        if (!memoScopeMap.has(scopeKey)) {
+          memoScopeMap.set(scopeKey, nextMemoNumber);
+          nextMemoNumber += 1;
+        }
+
+        return {
+          ...row,
+          user_id: sellerId,
+          memo_number: memoScopeMap.get(scopeKey),
+          purchase_memo_number: memoScopeMap.get(scopeKey)
+        };
+      });
+      res.json(scopedRows.map(mapLotteryEntry));
       return;
     }
 
