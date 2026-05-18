@@ -4979,11 +4979,7 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
     const rawUnsoldPiece = effectiveCurrentUnsoldEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
     const unsoldPiece = Math.max(rawUnsoldPiece, summaryUnsoldPiece);
     const alreadySentPiece = alreadySentEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
-    const pendingSendPiece = Math.max(
-      pendingSendEntries.reduce((sum, entry) => sum + numericPiece(entry), 0),
-      unsoldPiece - alreadySentPiece,
-      0
-    );
+    const pendingSendPiece = currentUnsoldChanged ? unsoldPiece : 0;
     const unsoldCount = effectiveCurrentUnsoldEntries.length;
     const hasPendingUpdate = currentUnsoldChanged || pendingSendPiece > 0;
     const aggregatedRow = totalPiece > 0 || unsoldPiece > 0 || alreadySentPiece > 0 || pendingSendPiece > 0
@@ -5399,7 +5395,7 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       && selectedKeySet.size === alreadySentKeySet.size
       && [...selectedKeySet].every((entryKey) => alreadySentKeySet.has(entryKey));
 
-    if (sameAsAlreadySent || (selectedIsSubsetOfAlreadySent && !hasRemoveAfterLatestSend)) {
+    if (sameAsAlreadySent) {
       return res.status(400).json({ message: 'Ye unsold numbers already send ho chuke hain' });
     }
 
