@@ -5169,43 +5169,6 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       }
       selectedRowsById.set(Number(row.id), row);
     });
-    if (desiredRows.length > 0) {
-      manualSelectedResult.rows.forEach((row) => {
-        const rowKey = [
-          Number(row.user_id),
-          row.booking_date instanceof Date ? row.booking_date.toISOString().slice(0, 10) : String(row.booking_date || ''),
-          String(row.session_mode || ''),
-          String(row.purchase_category || ''),
-          String(Number(row.amount || 0)),
-          String(row.box_value || ''),
-          String(row.number || '')
-        ].join('|');
-        const looseRowKey = [
-          row.booking_date instanceof Date ? row.booking_date.toISOString().slice(0, 10) : String(row.booking_date || ''),
-          String(row.session_mode || ''),
-          String(row.purchase_category || ''),
-          String(Number(row.amount || 0)),
-          String(row.box_value || ''),
-          String(row.number || '')
-        ].join('|');
-        const desiredRow = desiredRowKeyMap.get(rowKey)
-          || desiredRows.find((candidate) => ([
-            candidate.bookingDate,
-            candidate.sessionMode,
-            candidate.purchaseCategory,
-            String(Number(candidate.amount || 0)),
-            candidate.boxValue,
-            candidate.number
-          ].join('|')) === looseRowKey);
-        if (!desiredRow) {
-          return;
-        }
-        selectedRowsById.set(Number(row.id), {
-          ...row,
-          send_unsold_memo_number: desiredRow.memoNumber || row.send_unsold_memo_number || row.memo_number
-        });
-      });
-    }
     if (!hasDesiredSelection) {
       manualSelectedResult.rows.forEach((row) => selectedRowsById.set(Number(row.id), row));
       const directChildSellersResult = await query(
