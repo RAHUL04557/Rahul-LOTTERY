@@ -473,6 +473,8 @@
 }
 
 .retro-purchase-warning-bar.stock-lookup .retro-purchase-warning-content {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
   padding: 20px 24px 24px;
@@ -515,7 +517,8 @@
 }
 
 .retro-stock-table-wrap {
-  max-height: calc(100vh - 250px);
+  flex: 1;
+  min-height: 0;
   overflow: auto;
   border: 2px solid #d7e6ff;
   background: #ffffff;
