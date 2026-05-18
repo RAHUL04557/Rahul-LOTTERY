@@ -742,7 +742,7 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
 }) => {
   const params = [targetSellerId];
   const historyConditions = [
-    "h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')",
+    "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
     'le.user_id = $1'
   ];
   const rowConditions = ['snapshot.user_id = $1'];
@@ -834,7 +834,7 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
        LEFT JOIN users seller_user ON seller_user.id = le.user_id
        LEFT JOIN users parent_user ON parent_user.id = $${viewerParamIndex}
        LEFT JOIN users actor_user ON actor_user.id = h.actor_user_id
-       WHERE h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')
+       WHERE h.action_type IN ('unsold_sent', 'unsold_auto_accepted')
          AND h.to_user_id = $${viewerParamIndex}
          AND NOT EXISTS (
            SELECT 1
@@ -5404,27 +5404,39 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       sentHistoryDeleteParams
     );
 
-    const selectedMemoNumbers = validSelectedRows.map((row) => {
+    const ownSelectedRows = validSelectedRows.filter((row) => Number(row.user_id) === Number(req.user.id));
+    const childSelectedRows = validSelectedRows.filter((row) => Number(row.user_id) !== Number(req.user.id));
+    const ownSelectedIds = ownSelectedRows.map((row) => row.resolvedEntryId);
+    const ownSelectedMemoNumbers = ownSelectedRows.map((row) => {
       const memoNumber = Number(row.send_unsold_memo_number || row.memo_number || 0);
       return Number.isInteger(memoNumber) && memoNumber > 0 ? memoNumber : null;
     });
-    const updatedResult = await query(
-      `UPDATE lottery_entries le
-       SET status = $2,
-           sent_to_parent = $3,
-           forwarded_by = $4,
-           purchase_memo_number = COALESCE(le.purchase_memo_number, le.memo_number),
-           memo_number = COALESCE(selected_entries.memo_number, le.memo_number),
-           sent_at = CURRENT_TIMESTAMP
-       FROM (
-         SELECT *
-         FROM UNNEST($1::int[], $5::int[]) AS selected_entry(id, memo_number)
-       ) AS selected_entries
-       WHERE le.id = selected_entries.id
-       RETURNING le.*`,
-      [selectedIds, targetStatus, req.user.parentId, req.user.id, selectedMemoNumbers]
-    );
-    const historyEntries = updatedResult.rows;
+    const updatedResult = ownSelectedIds.length > 0
+      ? await query(
+        `UPDATE lottery_entries le
+         SET status = $2,
+             sent_to_parent = $3,
+             forwarded_by = $4,
+             purchase_memo_number = COALESCE(le.purchase_memo_number, le.memo_number),
+             memo_number = COALESCE(selected_entries.memo_number, le.memo_number),
+             sent_at = CURRENT_TIMESTAMP
+         FROM (
+           SELECT *
+           FROM UNNEST($1::int[], $5::int[]) AS selected_entry(id, memo_number)
+         ) AS selected_entries
+         WHERE le.id = selected_entries.id
+         RETURNING le.*`,
+        [ownSelectedIds, targetStatus, req.user.parentId, req.user.id, ownSelectedMemoNumbers]
+      )
+      : { rows: [] };
+    const historyEntries = [
+      ...updatedResult.rows,
+      ...childSelectedRows.map((row) => ({
+        ...row,
+        id: row.resolvedEntryId,
+        memo_number: row.send_unsold_memo_number || row.memo_number
+      }))
+    ];
 
     await insertHistoryRecords({
       entries: historyEntries.map((row) => {
@@ -5586,7 +5598,6 @@ const getPurchasePieceSummary = async (req, res) => {
                   OR (
                     LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}'
                     AND le.forwarded_by = $${selfUnsoldParamIndex}
-                    AND le.sent_to_parent IS DISTINCT FROM $${selfUnsoldParamIndex}
                   )
                   OR (
                     LOWER(TRIM(le.status)) = '${UNSOLD_LOCAL_STATUS}'
@@ -5689,7 +5700,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const receivedUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const receivedUnsoldConditions = [
         'le.entry_source = $2',
-        "h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')",
+        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
         'h.to_user_id = $1'
       ];
 
@@ -5776,7 +5787,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const sentUnsoldConditions = [
         'le.entry_source = $2',
-        "h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')",
+        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
         'h.to_user_id = $1'
       ];
 
@@ -5996,7 +6007,6 @@ const getPurchasePieceSummary = async (req, res) => {
               'entry_source = $2',
               `LOWER(TRIM(status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`,
               '(sent_to_parent = $3 OR forwarded_by = $3)',
-              `NOT (LOWER(TRIM(status)) = '${UNSOLD_SENT_STATUS}' AND sent_to_parent = $3)`,
               `NOT EXISTS (
                 SELECT 1
                 FROM lottery_entry_history removed_h
@@ -6205,7 +6215,7 @@ const getPurchaseBillSummary = async (req, res) => {
     const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
     const sentUnsoldConditions = [
       'le.entry_source = $2',
-      "h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')",
+      "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
       'h.to_user_id = $1'
     ];
 
@@ -6403,7 +6413,6 @@ const getPurchaseBillSummary = async (req, res) => {
           OR (
             LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}'
             AND le.forwarded_by = $1
-            AND le.sent_to_parent IS DISTINCT FROM $1
           )
           OR (
             LOWER(TRIM(le.status)) = '${UNSOLD_LOCAL_STATUS}'
@@ -6654,19 +6663,15 @@ const sendEntries = async (req, res) => {
 const getReceivedEntries = async (req, res) => {
   try {
     const sessionMode = getRequiredSessionMode(req, res);
-    const bookingDate = normalizeBookingDate(req.query.bookingDate);
     const amount = String(req.query.amount || '').trim();
 
-    if (!sessionMode || !bookingDate) {
-      if (!bookingDate) {
-        return res.status(400).json({ message: 'Valid booking date is required' });
-      }
+    if (!sessionMode) {
       return;
     }
 
     await normalizeQueuedEntries([req.user.id]);
 
-    const params = [req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE, UNSOLD_SENT_STATUS, bookingDate];
+    const params = [req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE, UNSOLD_SENT_STATUS];
     const amountFilter = amount ? `AND le.amount = $${params.push(amount)}::numeric` : '';
 
     const entriesResult = await query(
@@ -6678,7 +6683,7 @@ const getReceivedEntries = async (req, res) => {
        LEFT JOIN users forwarded_user ON forwarded_user.id = le.forwarded_by
        WHERE le.sent_to_parent = $1
          AND le.session_mode = $2
-         AND le.booking_date = $5::date
+         AND le.booking_date = CURRENT_DATE
          AND (
            le.status = 'sent'
            OR (le.entry_source = $3 AND le.status IN ($4, '${UNSOLD_ACCEPTED_STATUS}'))
@@ -6818,15 +6823,14 @@ const updateReceivedEntryStatus = async (req, res) => {
          SET status = $2,
              sent_to_parent = $3,
              forwarded_by = $4,
-             sent_at = CASE WHEN $2 = $5 THEN sent_at ELSE CURRENT_TIMESTAMP END
+             sent_at = CURRENT_TIMESTAMP
          WHERE id = ANY($1::int[])
          RETURNING *`,
         [
           scopedIds,
           action === 'accept' ? UNSOLD_ACCEPTED_STATUS : 'accepted',
           req.user.id,
-          action === 'accept' ? req.user.id : entry.forwarded_by,
-          UNSOLD_ACCEPTED_STATUS
+          action === 'accept' ? req.user.id : entry.forwarded_by
         ]
       );
 

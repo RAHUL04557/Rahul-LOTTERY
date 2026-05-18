@@ -7741,15 +7741,6 @@ const AdminDashboard = ({
                   <p>Purchase me saved local drafts yahan se seller/stockist/sub-stockist ko bhejo.</p>
                 </div>
                 <div className="send-purchase-actions">
-                  <label className="send-purchase-date-filter">
-                    <span>Date</span>
-                    <input
-                      type="date"
-                      value={purchaseBookingDate}
-                      onChange={(event) => setPurchaseBookingDate(event.target.value)}
-                      disabled={sendPurchaseLoading || Boolean(sendPurchaseSendingKey)}
-                    />
-                  </label>
                   <button type="button" className="btn-secondary" onClick={loadSendPurchaseDrafts} disabled={sendPurchaseLoading || Boolean(sendPurchaseSendingKey)}>
                     Refresh
                   </button>
