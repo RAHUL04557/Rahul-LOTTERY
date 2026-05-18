@@ -5404,39 +5404,27 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       sentHistoryDeleteParams
     );
 
-    const ownSelectedRows = validSelectedRows.filter((row) => Number(row.user_id) === Number(req.user.id));
-    const childSelectedRows = validSelectedRows.filter((row) => Number(row.user_id) !== Number(req.user.id));
-    const ownSelectedIds = ownSelectedRows.map((row) => row.resolvedEntryId);
-    const ownSelectedMemoNumbers = ownSelectedRows.map((row) => {
+    const selectedMemoNumbers = validSelectedRows.map((row) => {
       const memoNumber = Number(row.send_unsold_memo_number || row.memo_number || 0);
       return Number.isInteger(memoNumber) && memoNumber > 0 ? memoNumber : null;
     });
-    const updatedResult = ownSelectedIds.length > 0
-      ? await query(
-        `UPDATE lottery_entries le
-         SET status = $2,
-             sent_to_parent = $3,
-             forwarded_by = $4,
-             purchase_memo_number = COALESCE(le.purchase_memo_number, le.memo_number),
-             memo_number = COALESCE(selected_entries.memo_number, le.memo_number),
-             sent_at = CURRENT_TIMESTAMP
-         FROM (
-           SELECT *
-           FROM UNNEST($1::int[], $5::int[]) AS selected_entry(id, memo_number)
-         ) AS selected_entries
-         WHERE le.id = selected_entries.id
-         RETURNING le.*`,
-        [ownSelectedIds, targetStatus, req.user.parentId, req.user.id, ownSelectedMemoNumbers]
-      )
-      : { rows: [] };
-    const historyEntries = [
-      ...updatedResult.rows,
-      ...childSelectedRows.map((row) => ({
-        ...row,
-        id: row.resolvedEntryId,
-        memo_number: row.send_unsold_memo_number || row.memo_number
-      }))
-    ];
+    const updatedResult = await query(
+      `UPDATE lottery_entries le
+       SET status = $2,
+           sent_to_parent = $3,
+           forwarded_by = $4,
+           purchase_memo_number = COALESCE(le.purchase_memo_number, le.memo_number),
+           memo_number = COALESCE(selected_entries.memo_number, le.memo_number),
+           sent_at = CURRENT_TIMESTAMP
+       FROM (
+         SELECT *
+         FROM UNNEST($1::int[], $5::int[]) AS selected_entry(id, memo_number)
+       ) AS selected_entries
+       WHERE le.id = selected_entries.id
+       RETURNING le.*`,
+      [selectedIds, targetStatus, req.user.parentId, req.user.id, selectedMemoNumbers]
+    );
+    const historyEntries = updatedResult.rows;
 
     await insertHistoryRecords({
       entries: historyEntries.map((row) => {

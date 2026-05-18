@@ -2226,9 +2226,9 @@ const SellerDashboard = ({
     }
   };
 
-  const loadReceivedEntries = async () => {
+  const loadReceivedEntries = async (dateOverride = '') => {
     try {
-      const response = await lotteryService.getReceivedEntries({ bookingDate, amount });
+      const response = await lotteryService.getReceivedEntries({ bookingDate: dateOverride || bookingDate, amount });
       setReceivedEntries(response.data.map(mapApiEntry));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading seller lot');
@@ -5042,6 +5042,12 @@ const SellerDashboard = ({
     } finally {
       setEntryActionLoadingId(null);
     }
+  };
+
+  const handleAcceptSellerLotDateChange = (event) => {
+    const nextDate = event.target.value;
+    setBookingDate(nextDate);
+    loadReceivedEntries(nextDate);
   };
 
   const acceptedEntriesBySeller = acceptedBookEntries.reduce((groups, entry) => {
@@ -8256,7 +8262,18 @@ const SellerDashboard = ({
               Accept Seller Lot
             </button>
             <div className="accordion-content">
-              <h2>Accept Seller Lot</h2>
+              <div className="accept-seller-lot-header">
+                <h2>Accept Seller Lot</h2>
+                <label className="send-purchase-date-filter">
+                  <span>Date</span>
+                  <input
+                    type="date"
+                    value={bookingDate}
+                    onChange={handleAcceptSellerLotDateChange}
+                    disabled={Boolean(entryActionLoadingId)}
+                  />
+                </label>
+              </div>
               <EntriesTableView
                 entries={sortedReceivedEntries}
                 showSeller
