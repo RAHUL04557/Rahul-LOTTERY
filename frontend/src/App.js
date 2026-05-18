@@ -195,7 +195,6 @@ function App() {
 
   return (
     <SellerDashboard
-      key={`seller-dashboard:${user.id}:${user.sellerType || ''}`}
       user={user}
       onLogout={handleLogout}
       sessionMode={entryConfig.sessionMode}
