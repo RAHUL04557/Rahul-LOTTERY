@@ -981,7 +981,7 @@ const formatMissingNumberLabel = (numbers = []) => (
     : numbers.join(', ')
 );
 
-const SellerDashboard = ({
+const StokistDashboard = ({
   user,
   onLogout,
   sessionMode,
@@ -8427,4 +8427,4 @@ const AddSellerForm = ({ currentUser, selectedAmount = '', onSuccess, onError })
   );
 };
 
-export default SellerDashboard;
+export default StokistDashboard;

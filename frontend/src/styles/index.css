@@ -967,14 +967,32 @@ button:disabled {
   color: #152238;
 }
 
-.btn-primary.compact {
+.btn-danger {
+  border: none;
+  border-radius: 6px;
+  padding: 11px 18px;
+  font-weight: 700;
+  cursor: pointer;
+  background: #c53030;
+  color: #fff;
+}
+
+.btn-primary.compact,
+.btn-danger.compact {
   padding: 8px 14px;
 }
 
 .btn-primary:disabled,
-.btn-secondary:disabled {
+.btn-secondary:disabled,
+.btn-danger:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+.send-purchase-row-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .send-purchase-table-wrap {

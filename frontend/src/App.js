@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import Login from './components/Login';
 import Home from './components/Home';
 import SellerDashboard from './components/SellerDashboard';
+import StokistDashboard from './components/StokistDashboard';
+import SubStokistDashboard from './components/SubStokistDashboard';
 import AdminDashboard from './components/AdminDashboard';
 import SuperAdminDashboard from './components/SuperAdminDashboard';
 import EntrySelectionScreen from './components/EntrySelectionScreen';
@@ -10,6 +12,11 @@ import { bootstrapLocalData, flushSyncQueue } from './services/localSync';
 import './styles/index.css';
 
 const isNetworkError = (error) => !error?.response;
+
+const normalizeSellerType = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['seller', 'sub_seller', 'normal_seller'].includes(normalized) ? normalized : 'seller';
+};
 
 const canUseEntryAmount = (user, amount) => {
   if (!user || user.role === 'admin') {
@@ -193,8 +200,15 @@ function App() {
     );
   }
 
+  const sellerType = normalizeSellerType(user.sellerType || user.seller_type);
+  const SellerDashboardComponent = sellerType === 'seller'
+    ? StokistDashboard
+    : sellerType === 'sub_seller'
+      ? SubStokistDashboard
+      : SellerDashboard;
+
   return (
-    <SellerDashboard
+    <SellerDashboardComponent
       user={user}
       onLogout={handleLogout}
       sessionMode={entryConfig.sessionMode}
