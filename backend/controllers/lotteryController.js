@@ -592,7 +592,9 @@ const mapLotteryEntry = (row) => ({
   id: row.id,
   entryId: row.entry_id || row.entryId || null,
   userId: row.user_id,
+  branchUserId: row.branch_user_id || null,
   username: row.username || null,
+  branchUsername: row.branch_username || null,
   parentUsername: row.parent_username || null,
   forwardedBy: row.forwarded_by || null,
   forwardedByUsername: row.forwarded_by_username || null,
@@ -605,6 +607,7 @@ const mapLotteryEntry = (row) => ({
   status: row.status,
   entrySource: row.entry_source || BOOKING_ENTRY_SOURCE,
   memoNumber: row.memo_number,
+  memoScopeKey: row.memo_scope_key || null,
   purchaseMemoNumber: row.purchase_memo_number || row.memo_number,
   memoRowOrder: row.memo_row_order,
   purchaseCategory: row.purchase_category || getDefaultPurchaseCategory(row.session_mode),
@@ -3080,6 +3083,8 @@ const getPurchaseEntries = async (req, res) => {
       const scopedRows = combinedRows.map((row) => ({
         ...row,
         branch_user_id: row.user_id,
+        branch_username: row.username,
+        memo_scope_key: String(row.user_id || ''),
         user_id: sellerId
       }));
       res.json(scopedRows.map(mapLotteryEntry));
