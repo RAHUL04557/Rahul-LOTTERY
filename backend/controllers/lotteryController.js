@@ -5417,6 +5417,65 @@ const getPurchasePieceSummary = async (req, res) => {
     }
     const summaryMap = new Map(summaryResult.rows.map((row) => [Number(row.user_id), row]));
 
+    if (!currentUserIsAdmin) {
+      const sentPurchaseParams = [req.user.id, sellers.map((seller) => seller.id), PURCHASE_ENTRY_SOURCE];
+      const sentPurchaseConditions = [
+        'h.actor_user_id = $1',
+        'h.action_type IN (\'purchase_forwarded\', \'purchase_forward_memo_updated\', \'purchase_self_memo_created\')',
+        'le.entry_source = $3',
+        "LOWER(TRIM(le.status)) IN ('accepted', 'unsold')",
+        'h.to_user_id = ANY($2::int[])'
+      ];
+
+      if (bookingDate) {
+        sentPurchaseParams.push(bookingDate);
+        sentPurchaseConditions.push(`h.booking_date = $${sentPurchaseParams.length}::date`);
+      }
+
+      if (sessionMode) {
+        sentPurchaseParams.push(sessionMode);
+        sentPurchaseConditions.push(`h.session_mode = $${sentPurchaseParams.length}`);
+      }
+
+      if (purchaseCategory) {
+        sentPurchaseParams.push(purchaseCategory);
+        sentPurchaseConditions.push(`h.purchase_category = $${sentPurchaseParams.length}`);
+      }
+
+      if (normalizedAmount) {
+        sentPurchaseParams.push(normalizedAmount);
+        sentPurchaseConditions.push(`h.amount = $${sentPurchaseParams.length}::numeric`);
+      }
+
+      const sentPurchaseResult = await query(
+        `WITH latest_sent_purchase AS (
+          SELECT DISTINCT ON (h.entry_id)
+                 h.entry_id,
+                 h.to_user_id,
+                 h.box_value
+          FROM lottery_entry_history h
+          INNER JOIN lottery_entries le ON le.id = h.entry_id
+          WHERE ${sentPurchaseConditions.join(' AND ')}
+          ORDER BY h.entry_id, h.created_at DESC, h.id DESC
+        )
+        SELECT latest.to_user_id AS user_id,
+               COALESCE(SUM(CASE WHEN latest.box_value ~ '^\\d+(\\.\\d+)?$' THEN latest.box_value::numeric ELSE 0 END), 0) AS sent_purchase_piece
+        FROM latest_sent_purchase latest
+        GROUP BY latest.to_user_id`,
+        sentPurchaseParams
+      );
+
+      sentPurchaseResult.rows.forEach((row) => {
+        const sellerId = Number(row.user_id);
+        const existing = summaryMap.get(sellerId) || { user_id: sellerId, total_piece: 0, unsold_piece: 0 };
+        existing.total_piece = Math.max(
+          Number(existing.total_piece || 0),
+          Number(row.sent_purchase_piece || 0)
+        );
+        summaryMap.set(sellerId, existing);
+      });
+    }
+
     if (currentUserIsAdmin) {
       const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const sentUnsoldConditions = [
