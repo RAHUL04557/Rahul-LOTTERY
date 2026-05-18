@@ -4881,9 +4881,8 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
     );
     const currentUnsoldEntries = Array.from(currentUnsoldByKey.values());
     const currentUnsoldKeySet = new Set(currentUnsoldByKey.keys());
-    const currentUnsoldChanged = currentUnsoldKeySet.size !== alreadySentKeySet.size
-      || [...currentUnsoldKeySet].some((entryKey) => !alreadySentKeySet.has(entryKey));
-    const pendingSendEntries = currentUnsoldChanged ? currentUnsoldEntries : [];
+    const pendingSendEntries = currentUnsoldEntries.filter((entry) => !alreadySentKeySet.has(buildEntryKey(entry)));
+    const currentUnsoldChanged = pendingSendEntries.length > 0;
 
     const totalPiece = allEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
     const unsoldPiece = currentUnsoldEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
