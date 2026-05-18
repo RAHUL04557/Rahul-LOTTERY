@@ -5593,6 +5593,14 @@ const getPurchasePieceSummary = async (req, res) => {
                     AND removed_h.action_type = 'unsold_removed'
                     AND removed_h.actor_user_id = $${selfUnsoldParamIndex}
                     AND removed_h.created_at >= COALESCE(le.sent_at, le.created_at)
+                    AND NOT EXISTS (
+                      SELECT 1
+                      FROM lottery_entry_history saved_h
+                      WHERE saved_h.entry_id = le.id
+                        AND saved_h.action_type = 'saved_unsold'
+                        AND saved_h.actor_user_id = $${selfUnsoldParamIndex}
+                        AND saved_h.created_at > removed_h.created_at
+                    )
                 )
                 THEN le.box_value::numeric ELSE 0 END), 0) AS unsold_piece
          FROM lottery_entries le
@@ -5985,6 +5993,14 @@ const getPurchasePieceSummary = async (req, res) => {
                   AND removed_h.action_type = 'unsold_removed'
                   AND removed_h.actor_user_id = $3
                   AND removed_h.created_at >= COALESCE(lottery_entries.sent_at, lottery_entries.created_at)
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM lottery_entry_history saved_h
+                    WHERE saved_h.entry_id = lottery_entries.id
+                      AND saved_h.action_type = 'saved_unsold'
+                      AND saved_h.actor_user_id = $3
+                      AND saved_h.created_at > removed_h.created_at
+                  )
               )`
             ];
 
