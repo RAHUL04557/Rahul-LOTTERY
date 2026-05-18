@@ -214,69 +214,6 @@ const getLocalPurchasePieceSummary = async (params = {}) => {
   };
 };
 
-const getLocalUnsoldSendEntryIds = async (params = {}) => {
-  const localDb = getLocalDb();
-  const currentUser = getCurrentUser();
-
-  if (!localDb?.listPurchases || !(await canUseLocalRead()) || !currentUser?.id) {
-    return [];
-  }
-
-  const rows = await localDb.listPurchases({
-    ...params,
-    status: 'unsold',
-    currentUserId: currentUser.id
-  });
-
-  return [...new Set((Array.isArray(rows) ? rows : [])
-    .filter((row) => (
-      Number(row.userId || row.user_id || 0) === Number(currentUser.id)
-      || Number(row.forwardedBy || row.forwarded_by || 0) === Number(currentUser.id)
-      || Number(row.sentToParent || row.sent_to_parent || 0) === Number(currentUser.id)
-    ))
-    .map((row) => Number(row.id || row.entryId || row.entry_id || 0))
-    .filter((entryId) => Number.isInteger(entryId) && entryId > 0))];
-};
-
-const getLocalUnsoldSendRows = async (params = {}) => {
-  const localDb = getLocalDb();
-  const currentUser = getCurrentUser();
-
-  if (!localDb?.listPurchases || !(await canUseLocalRead()) || !currentUser?.id) {
-    return [];
-  }
-
-  const rows = await localDb.listPurchases({
-    ...params,
-    status: 'unsold',
-    currentUserId: currentUser.id
-  });
-
-  return (Array.isArray(rows) ? rows : [])
-    .filter((row) => (
-      String(row.bookingDate || row.booking_date || '').slice(0, 10) === String(params.bookingDate || '').slice(0, 10)
-      && String(row.sessionMode || row.session_mode || '') === String(params.sessionMode || '')
-      && String(row.purchaseCategory || row.purchase_category || '') === String(params.purchaseCategory || '')
-      && String(row.amount || '') === String(params.amount || '')
-      && (
-        Number(row.userId || row.user_id || 0) === Number(currentUser.id)
-        || Number(row.forwardedBy || row.forwarded_by || 0) === Number(currentUser.id)
-        || Number(row.sentToParent || row.sent_to_parent || 0) === Number(currentUser.id)
-      )
-    ))
-    .map((row) => ({
-      entryId: row.id || row.entryId || row.entry_id || null,
-      sellerId: row.userId || row.user_id || currentUser.id,
-      number: row.number,
-      boxValue: row.boxValue || row.box_value || row.sem,
-      amount: row.amount,
-      bookingDate: row.bookingDate || row.booking_date,
-      sessionMode: row.sessionMode || row.session_mode,
-      purchaseCategory: row.purchaseCategory || row.purchase_category,
-      memoNumber: row.memoNumber || row.memo_number || null
-    }));
-};
-
 const mergeLocalVisibleUsers = async (users = []) => {
   const localDb = getLocalDb();
   const validUsers = (Array.isArray(users) ? users : []).filter((user) => user?.id);
@@ -811,28 +748,9 @@ export const lotteryService = {
   checkPurchaseUnsoldRemove: (payload) => api.post('/lottery/purchases/remove-unsold/check', payload),
   replacePurchaseUnsoldMemo: (payload) => requestWithOfflineQueue({ method: 'PUT', url: '/lottery/purchases/unsold-memo', data: payload }, 'replace_unsold_memo'),
   sendPurchaseUnsold: async (payload) => {
-    const payloadDesiredEntryIds = Array.isArray(payload?.desiredEntryIds) ? payload.desiredEntryIds : [];
-    const payloadDesiredRows = Array.isArray(payload?.desiredRows) ? payload.desiredRows : [];
-    let desiredEntryIds = payloadDesiredEntryIds;
-    let desiredRows = payloadDesiredRows;
-    try {
-      if (desiredEntryIds.length === 0) {
-        desiredEntryIds = await getLocalUnsoldSendEntryIds(payload);
-      }
-      if (desiredRows.length === 0) {
-        desiredRows = await getLocalUnsoldSendRows(payload);
-      }
-    } catch (error) {
-      console.warn('Local unsold send rows failed, falling back to server:', error.message);
-    }
-
     const { desiredRows: _ignoredDesiredRows, desiredEntryIds: _ignoredDesiredEntryIds, ...basePayload } = payload || {};
 
-    return postWithOfflineQueue('/lottery/purchases/send-unsold', {
-      ...basePayload,
-      ...(desiredEntryIds.length > 0 && { desiredEntryIds }),
-      ...(desiredRows.length > 0 && { desiredRows })
-    }, 'unsold_send');
+    return postWithOfflineQueue('/lottery/purchases/send-unsold', basePayload, 'unsold_send');
   },
   getPendingEntries: ({ bookingDate, amount } = {}) =>
     api.get('/lottery/pending-entries', {

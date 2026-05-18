@@ -1772,30 +1772,11 @@ const SellerDashboard = ({
     setSuccess('');
 
     try {
-      const desiredRows = (unsoldMemoEntries || [])
-        .filter((entry) => (
-          getDateOnlyValue(entry.bookingDate) === bookingDate
-          && String(entry.sessionMode || '') === String(sessionMode || '')
-          && String(entry.purchaseCategory || '') === String(activePurchaseCategory || '')
-          && String(entry.amount || '') === String(amount || '')
-        ))
-        .map((entry) => ({
-          entryId: entry.id || entry.entryId,
-          sellerId: entry.userId,
-          number: entry.number,
-          boxValue: entry.boxValue || entry.sem,
-          amount: entry.amount,
-          bookingDate: entry.bookingDate,
-          sessionMode: entry.sessionMode,
-          purchaseCategory: entry.purchaseCategory,
-          memoNumber: getUnsoldEntryMemoNumber(entry)
-        }));
       const response = await lotteryService.sendPurchaseUnsold({
         bookingDate,
         sessionMode,
         purchaseCategory: activePurchaseCategory,
-        amount,
-        desiredRows
+        amount
       });
       setSuccess(response.data?.message || 'Unsold sent successfully');
       await Promise.all([
