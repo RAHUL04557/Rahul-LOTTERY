@@ -5358,9 +5358,8 @@ const getPurchasePieceSummary = async (req, res) => {
     } else {
       const sellerIds = sellers.map((seller) => seller.id);
       const currentSellerType = normalizeSellerType(req.user.sellerType);
-      const params = [sellerIds, PURCHASE_ENTRY_SOURCE];
+      const params = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const conditions = [
-        'le.user_id = ANY($1::int[])',
         'le.entry_source = $2',
         `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
       ];
@@ -5387,7 +5386,17 @@ const getPurchasePieceSummary = async (req, res) => {
 
       const selfUnsoldParamIndex = params.length + 1;
       summaryResult = await query(
-        `SELECT le.user_id,
+        `WITH RECURSIVE branch_users AS (
+          SELECT id, id AS root_seller_id
+          FROM users
+          WHERE (id = $1 AND role = 'seller') OR (parent_id = $1 AND role = 'seller')
+          UNION ALL
+          SELECT u.id, bu.root_seller_id
+          FROM users u
+          INNER JOIN branch_users bu ON u.parent_id = bu.id
+          WHERE bu.id <> $1
+        )
+        SELECT bu.root_seller_id AS user_id,
                 COALESCE(SUM(CASE WHEN le.memo_number IS NOT NULL AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS total_piece,
                 COALESCE(SUM(CASE WHEN (
                   LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
@@ -5401,6 +5410,7 @@ const getPurchasePieceSummary = async (req, res) => {
                   )
                 ) AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS unsold_piece
          FROM lottery_entries le
+         INNER JOIN branch_users bu ON bu.id = le.user_id
          WHERE ${conditions.join(' AND ')}
            AND (
              le.user_id <> $${selfUnsoldParamIndex}
@@ -5411,7 +5421,7 @@ const getPurchasePieceSummary = async (req, res) => {
                AND le.memo_number IS NOT NULL
              )
            )
-         GROUP BY le.user_id`,
+         GROUP BY bu.root_seller_id`,
         [...params, req.user.id]
       );
     }
@@ -5423,7 +5433,6 @@ const getPurchasePieceSummary = async (req, res) => {
         'h.actor_user_id = $1',
         'h.action_type IN (\'purchase_forwarded\', \'purchase_forward_memo_updated\', \'purchase_self_memo_created\')',
         'le.entry_source = $3',
-        "LOWER(TRIM(le.status)) IN ('accepted', 'unsold')",
         'h.to_user_id = ANY($2::int[])'
       ];
 
@@ -5765,7 +5774,10 @@ const getPurchasePieceSummary = async (req, res) => {
       const summary = summaryMap.get(Number(seller.id)) || {};
       const resolvedUnsoldPiece = currentUserIsAdmin || Number(seller.id) === Number(req.user.id)
         ? Number(summary.unsold_piece || 0)
-        : Number(sellerChildSnapshotUnsoldMap.get(Number(seller.id)) || 0);
+        : Math.max(
+          Number(summary.unsold_piece || 0),
+          Number(sellerChildSnapshotUnsoldMap.get(Number(seller.id)) || 0)
+        );
       return {
         sellerId: seller.id,
         sellerName: seller.username,
