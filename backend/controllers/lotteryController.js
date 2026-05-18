@@ -3786,6 +3786,26 @@ const removePurchaseUnsoldEntries = async (req, res) => {
     }
 
     const selectedIds = selectedEntriesResult.rows.map((row) => row.id);
+    if (targetSellerId !== Number(req.user.id)) {
+      await insertHistoryRecords({
+        entries: selectedEntriesResult.rows,
+        actionType: 'unsold_removed',
+        statusBefore: 'unsold',
+        statusAfter: 'accepted',
+        actorUserId: req.user.id,
+        actorUsername: req.user.username,
+        toUserId: targetSeller.id,
+        toUsername: targetSeller.username,
+        memoNumber: normalizedMemoNumber
+      });
+
+      return res.json({
+        message: `${selectedEntriesResult.rows.length} unsold numbers removed`,
+        memoNumber: normalizedMemoNumber,
+        entries: selectedEntriesResult.rows.map(mapLotteryEntry)
+      });
+    }
+
     const updatedEntriesResult = await query(
       `UPDATE lottery_entries
        SET status = 'accepted',
@@ -5581,6 +5601,14 @@ const getPurchasePieceSummary = async (req, res) => {
          AND batch.latest_created_at = h.created_at
         INNER JOIN branch_users bu ON bu.id = le.user_id
         WHERE ${receivedUnsoldConditions.join(' AND ')}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM lottery_entry_history removed_h
+            WHERE removed_h.entry_id = h.entry_id
+              AND removed_h.action_type = 'unsold_removed'
+              AND removed_h.actor_user_id = $1
+              AND removed_h.created_at >= h.created_at
+          )
         GROUP BY bu.root_seller_id`,
         receivedUnsoldParams
       );
@@ -5665,6 +5693,14 @@ const getPurchasePieceSummary = async (req, res) => {
          AND batch.latest_created_at = h.created_at
         INNER JOIN branch_users bu ON bu.id = le.user_id
         WHERE ${sentUnsoldConditions.join(' AND ')}
+          AND NOT EXISTS (
+            SELECT 1
+            FROM lottery_entry_history removed_h
+            WHERE removed_h.entry_id = h.entry_id
+              AND removed_h.action_type = 'unsold_removed'
+              AND removed_h.actor_user_id = $1
+              AND removed_h.created_at >= h.created_at
+          )
         GROUP BY bu.root_seller_id, h.session_mode, h.purchase_category, h.amount, h.box_value, h.number`,
         sentUnsoldParams
       );
@@ -6075,6 +6111,14 @@ const getPurchaseBillSummary = async (req, res) => {
        AND batch.latest_created_at = h.created_at
       INNER JOIN branch_users bu ON bu.id = le.user_id
       WHERE ${sentUnsoldConditions.join(' AND ')}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM lottery_entry_history removed_h
+          WHERE removed_h.entry_id = h.entry_id
+            AND removed_h.action_type = 'unsold_removed'
+            AND removed_h.actor_user_id = $1
+            AND removed_h.created_at >= h.created_at
+        )
       GROUP BY bu.root_seller_id, h.session_mode, h.purchase_category, h.amount, h.box_value, h.number`,
       sentUnsoldParams
     );
