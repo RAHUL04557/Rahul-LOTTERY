@@ -5508,7 +5508,8 @@ const getPurchasePieceSummary = async (req, res) => {
       const adminParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const adminConditions = [
         'le.entry_source = $2',
-        `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
+        `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`,
+        `NOT (LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}' AND le.sent_to_parent = $1)`
       ];
 
       if (bookingDate) {
@@ -5556,7 +5557,8 @@ const getPurchasePieceSummary = async (req, res) => {
       const params = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const conditions = [
         'le.entry_source = $2',
-        `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
+        `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`,
+        `NOT (LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}' AND le.sent_to_parent = $1)`
       ];
 
       if (bookingDate) {
@@ -5700,7 +5702,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const receivedUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const receivedUnsoldConditions = [
         'le.entry_source = $2',
-        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
+        "h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')",
         'h.to_user_id = $1'
       ];
 
@@ -5787,7 +5789,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const sentUnsoldConditions = [
         'le.entry_source = $2',
-        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
+        "h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')",
         'h.to_user_id = $1'
       ];
 
@@ -6138,7 +6140,8 @@ const getPurchaseBillSummary = async (req, res) => {
 
     const conditions = [
       'le.entry_source = $2',
-      `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
+      `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`,
+      `NOT (LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}' AND le.sent_to_parent = $1)`
     ];
 
     if (dateFilterResult.dateFilter) {
@@ -6215,7 +6218,7 @@ const getPurchaseBillSummary = async (req, res) => {
     const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
     const sentUnsoldConditions = [
       'le.entry_source = $2',
-      "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
+      "h.action_type IN ('unsold_accepted', 'unsold_auto_accepted')",
       'h.to_user_id = $1'
     ];
 
@@ -6663,15 +6666,19 @@ const sendEntries = async (req, res) => {
 const getReceivedEntries = async (req, res) => {
   try {
     const sessionMode = getRequiredSessionMode(req, res);
+    const bookingDate = normalizeBookingDate(req.query.bookingDate);
     const amount = String(req.query.amount || '').trim();
 
-    if (!sessionMode) {
+    if (!sessionMode || !bookingDate) {
+      if (!bookingDate) {
+        return res.status(400).json({ message: 'Valid booking date is required' });
+      }
       return;
     }
 
     await normalizeQueuedEntries([req.user.id]);
 
-    const params = [req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE, UNSOLD_SENT_STATUS];
+    const params = [req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE, UNSOLD_SENT_STATUS, bookingDate];
     const amountFilter = amount ? `AND le.amount = $${params.push(amount)}::numeric` : '';
 
     const entriesResult = await query(
@@ -6683,7 +6690,7 @@ const getReceivedEntries = async (req, res) => {
        LEFT JOIN users forwarded_user ON forwarded_user.id = le.forwarded_by
        WHERE le.sent_to_parent = $1
          AND le.session_mode = $2
-         AND le.booking_date = CURRENT_DATE
+         AND le.booking_date = $5::date
          AND (
            le.status = 'sent'
            OR (le.entry_source = $3 AND le.status IN ($4, '${UNSOLD_ACCEPTED_STATUS}'))
@@ -6823,14 +6830,15 @@ const updateReceivedEntryStatus = async (req, res) => {
          SET status = $2,
              sent_to_parent = $3,
              forwarded_by = $4,
-             sent_at = CURRENT_TIMESTAMP
+             sent_at = CASE WHEN $2 = $5 THEN sent_at ELSE CURRENT_TIMESTAMP END
          WHERE id = ANY($1::int[])
          RETURNING *`,
         [
           scopedIds,
           action === 'accept' ? UNSOLD_ACCEPTED_STATUS : 'accepted',
           req.user.id,
-          action === 'accept' ? req.user.id : entry.forwarded_by
+          action === 'accept' ? req.user.id : entry.forwarded_by,
+          UNSOLD_ACCEPTED_STATUS
         ]
       );
 

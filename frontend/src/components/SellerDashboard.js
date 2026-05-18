@@ -72,7 +72,8 @@ const mapApiEntry = (entry) => ({
   purchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M'),
   createdAt: entry.createdAt,
   sentAt: entry.sentAt,
-  status: entry.status
+  status: entry.status,
+  entrySource: entry.entrySource || entry.entry_source || ''
 });
 
 const mapHistoryRecord = (record) => ({
@@ -2220,7 +2221,7 @@ const SellerDashboard = ({
 
   const loadReceivedEntries = async () => {
     try {
-      const response = await lotteryService.getReceivedEntries({ amount });
+      const response = await lotteryService.getReceivedEntries({ bookingDate, amount });
       setReceivedEntries(response.data.map(mapApiEntry));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading seller lot');
@@ -5016,7 +5017,10 @@ const SellerDashboard = ({
 
     try {
       await Promise.all(
-        groupedEntries.map((currentEntry) => lotteryService.updateReceivedEntryStatus(currentEntry.id, action, { amount }))
+        (groupedEntries.every((currentEntry) => String(currentEntry.entrySource || '').trim().toLowerCase() === 'purchase')
+          ? groupedEntries.slice(0, 1)
+          : groupedEntries
+        ).map((currentEntry) => lotteryService.updateReceivedEntryStatus(currentEntry.id, action, { amount }))
       );
 
       const successLabel = action === 'accept' ? 'accepted' : 'rejected';

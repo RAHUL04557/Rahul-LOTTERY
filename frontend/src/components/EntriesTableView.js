@@ -70,6 +70,7 @@ const EntriesTableView = ({
           sellerName,
           entry.sentAt || entry.createdAt || '',
           entry.bookingDate || '',
+          entry.memoNumber || '',
           entry.amount,
           entry.status || ''
         ].join('|');

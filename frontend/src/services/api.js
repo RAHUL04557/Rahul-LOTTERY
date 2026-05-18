@@ -860,8 +860,9 @@ export const lotteryService = {
         ...(amount && { amount })
       }
     }),
-  getReceivedEntries: ({ amount } = {}) => api.get('/lottery/received-entries', {
+  getReceivedEntries: ({ bookingDate, amount } = {}) => api.get('/lottery/received-entries', {
     params: {
+      ...(bookingDate && { bookingDate }),
       ...(amount && { amount })
     }
   }),
