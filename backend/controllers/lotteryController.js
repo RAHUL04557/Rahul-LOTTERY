@@ -3065,13 +3065,17 @@ const getPurchaseEntries = async (req, res) => {
         manuallyReplacedMemoScopes.size === 0
         || !manuallyReplacedMemoScopes.has(buildUnsoldMemoScopeKey(row))
       );
+      const buildUnsoldMemoIdentityKey = (row = {}) => ([
+        row.memo_number ?? row.purchase_memo_number ?? row.memoNumber ?? row.purchaseMemoNumber ?? '',
+        buildUnsoldIdentityKey(row)
+      ].join('|'));
       const combinedRows = [
         ...manualSavedRows,
         ...snapshotRows.filter(shouldKeepSnapshotRow),
         ...localSavedResult.rows.filter(shouldKeepSnapshotRow)
       ].filter((row, index, rows) => {
-        const rowKey = buildUnsoldIdentityKey(row);
-        return rows.findIndex((currentRow) => buildUnsoldIdentityKey(currentRow) === rowKey) === index;
+        const rowKey = buildUnsoldMemoIdentityKey(row);
+        return rows.findIndex((currentRow) => buildUnsoldMemoIdentityKey(currentRow) === rowKey) === index;
       });
       const scopedRows = combinedRows.map((row) => ({
         ...row,
@@ -5300,6 +5304,7 @@ const getPurchasePieceSummary = async (req, res) => {
     const amount = String(req.query.amount || '').trim();
     const normalizedAmount = /^\d+(\.\d+)?$/.test(amount) ? amount : '';
     const currentUserIsAdmin = isAdminRole(req.user.role);
+    const currentSellerType = normalizeSellerType(req.user.sellerType || req.user.seller_type);
 
     const sellersResult = await query(
       "SELECT id, username FROM users WHERE parent_id = $1 AND role = 'seller' ORDER BY username ASC",
@@ -5366,7 +5371,6 @@ const getPurchasePieceSummary = async (req, res) => {
       );
     } else {
       const sellerIds = sellers.map((seller) => seller.id);
-      const currentSellerType = normalizeSellerType(req.user.sellerType);
       const params = [req.user.id, sellerIds, PURCHASE_ENTRY_SOURCE];
       const conditions = [
         'bu.root_seller_id = ANY($2::int[])',
@@ -5788,6 +5792,218 @@ const getPurchasePieceSummary = async (req, res) => {
     const sellerChildSnapshotUnsoldMap = new Map();
 
     if (!currentUserIsAdmin) {
+      const billStyleUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
+      const billStyleConditions = [
+        'le.entry_source = $2',
+        `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
+      ];
+
+      if (bookingDate) {
+        billStyleUnsoldParams.push(bookingDate);
+        billStyleConditions.push(`le.booking_date = $${billStyleUnsoldParams.length}::date`);
+      }
+
+      if (sessionMode) {
+        billStyleUnsoldParams.push(sessionMode);
+        billStyleConditions.push(`le.session_mode = $${billStyleUnsoldParams.length}`);
+      }
+
+      if (purchaseCategory) {
+        billStyleUnsoldParams.push(purchaseCategory);
+        billStyleConditions.push(`le.purchase_category = $${billStyleUnsoldParams.length}`);
+      }
+
+      if (normalizedAmount) {
+        billStyleUnsoldParams.push(normalizedAmount);
+        billStyleConditions.push(`le.amount = $${billStyleUnsoldParams.length}::numeric`);
+      }
+
+      const billStyleLiveResult = await query(
+        `WITH RECURSIVE branch_users AS (
+          SELECT id, id AS root_seller_id
+          FROM users
+          WHERE (id = $1 AND role = 'seller') OR (parent_id = $1 AND role = 'seller')
+          UNION ALL
+          SELECT u.id, bu.root_seller_id
+          FROM users u
+          INNER JOIN branch_users bu ON u.parent_id = bu.id
+          WHERE bu.id <> $1
+        )
+        SELECT bu.root_seller_id AS user_id,
+               COALESCE(SUM(CASE WHEN (
+                 LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
+                 OR (
+                   LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}'
+                   AND (le.forwarded_by = $1 OR le.sent_to_parent = $1)
+                 )
+                 OR (
+                   LOWER(TRIM(le.status)) = '${UNSOLD_LOCAL_STATUS}'
+                   AND (le.user_id = $1 OR le.sent_to_parent = $1)
+                 )
+               ) AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS live_unsold_piece
+        FROM lottery_entries le
+        INNER JOIN branch_users bu ON bu.id = le.user_id
+        WHERE ${billStyleConditions.join(' AND ')}
+        GROUP BY bu.root_seller_id`,
+        billStyleUnsoldParams
+      );
+      const billStyleUnsoldMap = new Map(billStyleLiveResult.rows.map((row) => [
+        Number(row.user_id),
+        Number(row.live_unsold_piece || 0)
+      ]));
+      billStyleUnsoldMap.clear();
+
+      const billSentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
+      const billSentUnsoldConditions = [
+        'le.entry_source = $2',
+        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
+        'h.to_user_id = $1'
+      ];
+
+      if (bookingDate) {
+        billSentUnsoldParams.push(bookingDate);
+        billSentUnsoldConditions.push(`h.booking_date = $${billSentUnsoldParams.length}::date`);
+      }
+
+      if (sessionMode) {
+        billSentUnsoldParams.push(sessionMode);
+        billSentUnsoldConditions.push(`h.session_mode = $${billSentUnsoldParams.length}`);
+      }
+
+      if (purchaseCategory) {
+        billSentUnsoldParams.push(purchaseCategory);
+        billSentUnsoldConditions.push(`h.purchase_category = $${billSentUnsoldParams.length}`);
+      }
+
+      if (normalizedAmount) {
+        billSentUnsoldParams.push(normalizedAmount);
+        billSentUnsoldConditions.push(`h.amount = $${billSentUnsoldParams.length}::numeric`);
+      }
+
+      const billSentUnsoldResult = await query(
+        `WITH RECURSIVE branch_users AS (
+          SELECT id, id AS root_seller_id
+          FROM users
+          WHERE (id = $1 AND role = 'seller') OR (parent_id = $1 AND role = 'seller')
+          UNION ALL
+          SELECT u.id, bu.root_seller_id
+          FROM users u
+          INNER JOIN branch_users bu ON u.parent_id = bu.id
+          WHERE bu.id <> $1
+        ),
+        latest_send_batches AS (
+          SELECT le.user_id, h.booking_date, h.session_mode, h.purchase_category, h.amount, MAX(h.created_at) AS latest_created_at
+          FROM lottery_entry_history h
+          INNER JOIN lottery_entries le ON le.id = h.entry_id
+          WHERE ${billSentUnsoldConditions.join(' AND ')}
+          GROUP BY le.user_id, h.booking_date, h.session_mode, h.purchase_category, h.amount
+        )
+        SELECT bu.root_seller_id AS user_id,
+               h.session_mode,
+               h.purchase_category,
+               h.amount,
+               h.box_value,
+               h.number,
+               COALESCE(SUM(CASE WHEN h.box_value ~ '^\\d+(\\.\\d+)?$' THEN h.box_value::numeric ELSE 0 END), 0) AS sent_unsold_piece
+        FROM lottery_entry_history h
+        INNER JOIN lottery_entries le ON le.id = h.entry_id
+        INNER JOIN latest_send_batches batch
+          ON batch.user_id = le.user_id
+         AND batch.booking_date = h.booking_date
+         AND batch.session_mode = h.session_mode
+         AND batch.purchase_category = h.purchase_category
+         AND batch.amount = h.amount
+         AND batch.latest_created_at = h.created_at
+        INNER JOIN branch_users bu ON bu.id = le.user_id
+        WHERE ${billSentUnsoldConditions.join(' AND ')}
+        GROUP BY bu.root_seller_id, h.session_mode, h.purchase_category, h.amount, h.box_value, h.number`,
+        billSentUnsoldParams
+      );
+      const billSentUnsoldNumberSet = new Set(billSentUnsoldResult.rows.map((row) => ([
+        row.user_id,
+        row.session_mode,
+        row.purchase_category,
+        String(row.amount),
+        row.box_value,
+        row.number
+      ].join('|'))));
+      billSentUnsoldResult.rows.forEach((row) => {
+        const sellerId = Number(row.user_id);
+        billStyleUnsoldMap.set(sellerId, Number(billStyleUnsoldMap.get(sellerId) || 0) + Number(row.sent_unsold_piece || 0));
+      });
+
+      const billManualUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE, 'saved_unsold', req.user.id];
+      const billManualUnsoldConditions = [
+        'le.entry_source = $2',
+        'h.action_type = $3',
+        'h.actor_user_id = $4',
+        latestSavedUnsoldHistoryCondition
+      ];
+
+      if (bookingDate) {
+        billManualUnsoldParams.push(bookingDate);
+        billManualUnsoldConditions.push(`h.booking_date = $${billManualUnsoldParams.length}::date`);
+      }
+
+      if (sessionMode) {
+        billManualUnsoldParams.push(sessionMode);
+        billManualUnsoldConditions.push(`h.session_mode = $${billManualUnsoldParams.length}`);
+      }
+
+      if (purchaseCategory) {
+        billManualUnsoldParams.push(purchaseCategory);
+        billManualUnsoldConditions.push(`h.purchase_category = $${billManualUnsoldParams.length}`);
+      }
+
+      if (normalizedAmount) {
+        billManualUnsoldParams.push(normalizedAmount);
+        billManualUnsoldConditions.push(`h.amount = $${billManualUnsoldParams.length}::numeric`);
+      }
+
+      const billManualUnsoldResult = await query(
+        `WITH RECURSIVE branch_users AS (
+          SELECT id, id AS root_seller_id
+          FROM users
+          WHERE (id = $1 AND role = 'seller') OR (parent_id = $1 AND role = 'seller')
+          UNION ALL
+          SELECT u.id, bu.root_seller_id
+          FROM users u
+          INNER JOIN branch_users bu ON u.parent_id = bu.id
+          WHERE bu.id <> $1
+        )
+        SELECT bu.root_seller_id AS user_id,
+               h.session_mode,
+               h.purchase_category,
+               h.amount,
+               h.box_value,
+               h.number,
+               COALESCE(SUM(CASE WHEN h.box_value ~ '^\\d+(\\.\\d+)?$' THEN h.box_value::numeric ELSE 0 END), 0) AS manual_unsold_piece
+        FROM lottery_entry_history h
+        INNER JOIN lottery_entries le ON le.id = h.entry_id
+        INNER JOIN branch_users bu ON bu.id = le.user_id
+        WHERE ${billManualUnsoldConditions.join(' AND ')}
+        GROUP BY bu.root_seller_id, h.session_mode, h.purchase_category, h.amount, h.box_value, h.number`,
+        billManualUnsoldParams
+      );
+
+      billManualUnsoldResult.rows.forEach((row) => {
+        const numberKey = [
+          row.user_id,
+          row.session_mode,
+          row.purchase_category,
+          String(row.amount),
+          row.box_value,
+          row.number
+        ].join('|');
+
+        if (billSentUnsoldNumberSet.has(numberKey)) {
+          return;
+        }
+
+        const sellerId = Number(row.user_id);
+        billStyleUnsoldMap.set(sellerId, Number(billStyleUnsoldMap.get(sellerId) || 0) + Number(row.manual_unsold_piece || 0));
+      });
+
       await Promise.all(
         sellers
           .filter((seller) => Number(seller.id) !== Number(req.user.id))
@@ -5866,9 +6082,16 @@ const getPurchasePieceSummary = async (req, res) => {
 
             const summaryUnsoldPiece = Number(summaryMap.get(Number(seller.id))?.unsold_piece || 0);
             const manualBranchUnsoldPiece = Number(manualBranchUnsoldMap.get(Number(seller.id)) || 0);
+            const billStyleChildUnsoldPiece = currentSellerType === SELLER_TYPE_SELLER
+              ? Number(billStyleUnsoldMap.get(Number(seller.id)) || 0)
+              : 0;
             sellerChildSnapshotUnsoldMap.set(
               Number(seller.id),
-              Math.max(childUnsoldPiece + manualBranchUnsoldPiece, summaryUnsoldPiece)
+              Math.max(
+                childUnsoldPiece + manualBranchUnsoldPiece,
+                summaryUnsoldPiece,
+                billStyleChildUnsoldPiece
+              )
             );
           })
       );
