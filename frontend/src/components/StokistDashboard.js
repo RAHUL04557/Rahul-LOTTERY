@@ -3790,11 +3790,6 @@ const StokistDashboard = ({
             return false;
           }
 
-          const hasMemo = entry.memoNumber !== null && entry.memoNumber !== undefined && String(entry.memoNumber).trim() !== '';
-          if (!hasMemo) {
-            return false;
-          }
-
           if (String(targetSellerId || user?.id || '') === String(user?.id || '')) {
             return String(entry.forwardedBy || '') === String(user?.id || '');
           }
@@ -4499,11 +4494,6 @@ const StokistDashboard = ({
     const partyId = String(row.partyId || user?.id || '');
     const partyOption = unsoldPartyOptions.find((party) => String(party.id) === partyId) || selectedUnsoldParty || {};
     const memoStockEntries = (response.data || []).filter((entry) => {
-      const hasMemo = entry.memoNumber !== null && entry.memoNumber !== undefined && String(entry.memoNumber).trim() !== '';
-      if (!hasMemo) {
-        return false;
-      }
-
       if (partyId === String(user?.id || '')) {
         return String(entry.forwardedBy || '') === String(user?.id || '');
       }
