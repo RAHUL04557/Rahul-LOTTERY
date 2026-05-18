@@ -689,21 +689,18 @@ const buildPurchaseMemoSummaries = (entries = []) => {
     memoMap.set(memoKey, memoEntry);
   });
 
-  const sortedMemoEntries = Array.from(memoMap.values())
+  return Array.from(memoMap.values())
     .sort((left, right) => left.memoNumber - right.memoNumber || String(left.memoScopeKey).localeCompare(String(right.memoScopeKey)))
-    .map((memoEntry, index) => ({
+    .map((memoEntry) => ({
       memoKey: memoEntry.memoKey,
       memoScopeKey: memoEntry.memoScopeKey,
       memoNumber: memoEntry.memoNumber,
-      displayMemoNumber: index + 1,
       totalPieceCount: memoEntry.totalPieceCount,
       drawDate: Array.from(memoEntry.batches.values())[0]?.drawDate || '',
       batches: Array.from(memoEntry.batches.values()).sort(
         (left, right) => new Date(left.sentAt || 0).getTime() - new Date(right.sentAt || 0).getTime()
       )
     }));
-
-  return sortedMemoEntries;
 };
 
 const buildCurrentMemoSummaries = (entries = []) => {
@@ -3347,7 +3344,7 @@ const SellerDashboard = ({
   ), [visibleUnsoldMemoEntries]);
   const unsoldMemoSummaries = buildUnsoldMemoSummaries(visibleUnsoldMemoEntries);
   const nextUnsoldMemoNumber = unsoldMemoSummaries.length > 0
-    ? Math.max(...unsoldMemoSummaries.map((memo) => Number(memo.displayMemoNumber || memo.memoNumber || 0))) + 1
+    ? Math.max(...unsoldMemoSummaries.map((memo) => memo.memoNumber)) + 1
     : 1;
   const unsoldMemoOptions = [
     {
@@ -3361,10 +3358,9 @@ const SellerDashboard = ({
     ...unsoldMemoSummaries.map((memo) => ({
       key: `unsold-memo-${memo.memoKey || memo.memoNumber}`,
       memoNumber: memo.memoNumber,
-      displayMemoNumber: memo.displayMemoNumber || memo.memoNumber,
       memoScopeKey: memo.memoScopeKey,
       isNew: false,
-      label: String(memo.displayMemoNumber || memo.memoNumber),
+      label: String(memo.memoNumber),
       drawDate: memo.drawDate,
       quantity: memo.totalPieceCount,
       totalPieceCount: memo.totalPieceCount,
@@ -3556,7 +3552,7 @@ const SellerDashboard = ({
       skipUnsoldMemoAutoHydrateRef.current = false;
       preferNextUnsoldMemoRef.current = false;
       deletedUnsoldMemoEntryIdsRef.current = [];
-      setUnsoldMemoNumber(option.displayMemoNumber || option.memoNumber);
+      setUnsoldMemoNumber(option.memoNumber);
       setUnsoldMemoKey(option.isNew ? null : option.key);
     }
     setUnsoldMemoSelectionIndex(Math.max(
@@ -4635,7 +4631,7 @@ const SellerDashboard = ({
     const isUnsoldRemoveMode = activeTab === 'unsold-remove';
     const editingExistingUnsoldRow = Boolean(unsoldDraftRows[unsoldActiveRowIndex]?.isExistingUnsoldMemoRow);
     const editingExistingUnsoldMemo = !isUnsoldRemoveMode && Boolean(selectedUnsoldMemoOption && !selectedUnsoldMemoOption.isNew);
-    const currentUnsoldMemoNumber = Number(selectedUnsoldMemoOption?.memoNumber || unsoldMemoNumber || 0);
+    const currentUnsoldMemoNumber = Number(unsoldMemoNumber || selectedUnsoldMemoOption?.memoNumber || 0);
 
     try {
       const stockValidation = editingExistingUnsoldRow && !editingExistingUnsoldMemo
@@ -4719,7 +4715,7 @@ const SellerDashboard = ({
     const isUnsoldRemoveMode = activeTab === 'unsold-remove';
     const editingExistingUnsoldRow = Boolean(unsoldDraftRows[unsoldActiveRowIndex]?.isExistingUnsoldMemoRow);
     const editingExistingUnsoldMemo = !isUnsoldRemoveMode && Boolean(selectedUnsoldMemoOption && !selectedUnsoldMemoOption.isNew);
-    const currentUnsoldMemoNumber = Number(selectedUnsoldMemoOption?.memoNumber || unsoldMemoNumber || 0);
+    const currentUnsoldMemoNumber = Number(unsoldMemoNumber || selectedUnsoldMemoOption?.memoNumber || 0);
 
     try {
       const stockValidation = editingExistingUnsoldRow && !editingExistingUnsoldMemo
@@ -4909,7 +4905,7 @@ const SellerDashboard = ({
     setUnsoldLoading(true);
 
     try {
-      const effectiveMemoNumber = unsoldMemoNumber || selectedUnsoldMemoOption?.displayMemoNumber || selectedUnsoldMemoOption?.memoNumber || nextUnsoldMemoNumber;
+      const effectiveMemoNumber = unsoldMemoNumber || selectedUnsoldMemoOption?.memoNumber || nextUnsoldMemoNumber;
       const effectiveMemoScopeKey = selectedUnsoldMemoOption?.memoScopeKey || '';
       if (editingExistingUnsoldMemo) {
         const entryIds = [
@@ -7697,7 +7693,7 @@ const SellerDashboard = ({
                 panelTitle="Unsold"
                 screenTitle={entryCompanyLabel || 'SELLER UNSOLD'}
                 headerTimestamp={sellerUnsoldTimestamp}
-                memoNumber={defaultUnsoldMemoOption ? String(defaultUnsoldMemoOption.displayMemoNumber || defaultUnsoldMemoOption.memoNumber) : '1'}
+                memoNumber={defaultUnsoldMemoOption ? String(defaultUnsoldMemoOption.memoNumber) : '1'}
                 formRows={sellerUnsoldFormRows}
                 gridRows={sellerUnsoldGridRows}
                 editableRow={unsoldEditorVisible ? sellerUnsoldEditableRow : null}
