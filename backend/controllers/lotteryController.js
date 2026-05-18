@@ -4769,8 +4769,14 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
       if (normalizedStatus === UNSOLD_ACCEPTED_STATUS) {
         return (
           Number(entry.sent_to_parent || 0) === Number(req.user.id)
-          || Number(entry.user_id) === Number(req.user.id)
-          || !entry.sent_to_parent
+          || Number(entry.forwarded_by || 0) === Number(req.user.id)
+          || (
+            Number(entry.user_id) === Number(req.user.id)
+            && (
+              !entry.sent_to_parent
+              || Number(entry.sent_to_parent || 0) === Number(req.user.id)
+            )
+          )
         );
       }
 
@@ -6788,7 +6794,7 @@ const getPurchaseBillSummary = async (req, res) => {
       const manualUnsoldPiece = Number(manualUnsoldMap.get(manualKey) || 0);
       const unsoldPiece = !currentUserIsAdmin && Number(row.root_seller_id) === Number(req.user.id)
         ? Number(selfCurrentUnsoldMap.get(manualKey) || 0)
-        : Number(row.unsold_piece || 0) + Number(sentUnsoldMap.get(manualKey) || 0) + manualUnsoldPiece;
+        : Number(row.unsold_piece || 0) + manualUnsoldPiece;
       const soldPiece = Math.max(totalPiece - unsoldPiece, 0);
       const appliedRate = Number(row.applied_rate || 0);
 
