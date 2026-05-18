@@ -5483,6 +5483,83 @@ const getPurchasePieceSummary = async (req, res) => {
         );
         summaryMap.set(sellerId, existing);
       });
+
+      const receivedUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
+      const receivedUnsoldConditions = [
+        'le.entry_source = $2',
+        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
+        'h.to_user_id = $1'
+      ];
+
+      if (bookingDate) {
+        receivedUnsoldParams.push(bookingDate);
+        receivedUnsoldConditions.push(`h.booking_date = $${receivedUnsoldParams.length}::date`);
+      }
+
+      if (sessionMode) {
+        receivedUnsoldParams.push(sessionMode);
+        receivedUnsoldConditions.push(`h.session_mode = $${receivedUnsoldParams.length}`);
+      }
+
+      if (purchaseCategory) {
+        receivedUnsoldParams.push(purchaseCategory);
+        receivedUnsoldConditions.push(`h.purchase_category = $${receivedUnsoldParams.length}`);
+      }
+
+      if (normalizedAmount) {
+        receivedUnsoldParams.push(normalizedAmount);
+        receivedUnsoldConditions.push(`h.amount = $${receivedUnsoldParams.length}::numeric`);
+      }
+
+      const receivedUnsoldResult = await query(
+        `WITH RECURSIVE branch_users AS (
+          SELECT id, id AS root_seller_id
+          FROM users
+          WHERE parent_id = $1 AND role = 'seller'
+          UNION ALL
+          SELECT u.id, bu.root_seller_id
+          FROM users u
+          INNER JOIN branch_users bu ON u.parent_id = bu.id
+        ),
+        latest_send_batches AS (
+          SELECT
+            le.user_id,
+            h.booking_date,
+            h.session_mode,
+            h.purchase_category,
+            h.amount,
+            MAX(h.created_at) AS latest_created_at
+          FROM lottery_entry_history h
+          INNER JOIN lottery_entries le ON le.id = h.entry_id
+          WHERE ${receivedUnsoldConditions.join(' AND ')}
+          GROUP BY le.user_id, h.booking_date, h.session_mode, h.purchase_category, h.amount
+        )
+        SELECT bu.root_seller_id AS user_id,
+               COALESCE(SUM(CASE WHEN h.box_value ~ '^\\d+(\\.\\d+)?$' THEN h.box_value::numeric ELSE 0 END), 0) AS received_unsold_piece
+        FROM lottery_entry_history h
+        INNER JOIN lottery_entries le ON le.id = h.entry_id
+        INNER JOIN latest_send_batches batch
+          ON batch.user_id = le.user_id
+         AND batch.booking_date = h.booking_date
+         AND batch.session_mode = h.session_mode
+         AND batch.purchase_category = h.purchase_category
+         AND batch.amount = h.amount
+         AND batch.latest_created_at = h.created_at
+        INNER JOIN branch_users bu ON bu.id = le.user_id
+        WHERE ${receivedUnsoldConditions.join(' AND ')}
+        GROUP BY bu.root_seller_id`,
+        receivedUnsoldParams
+      );
+
+      receivedUnsoldResult.rows.forEach((row) => {
+        const sellerId = Number(row.user_id);
+        const existing = summaryMap.get(sellerId) || { user_id: sellerId, total_piece: 0, unsold_piece: 0 };
+        existing.unsold_piece = Math.max(
+          Number(existing.unsold_piece || 0),
+          Number(row.received_unsold_piece || 0)
+        );
+        summaryMap.set(sellerId, existing);
+      });
     }
 
     if (currentUserIsAdmin) {
