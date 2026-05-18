@@ -4853,28 +4853,30 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
     );
     await Promise.all(
       directChildSellersResult.rows.map(async (seller) => {
-        const [snapshotRows, manualRows] = await Promise.all([
-          getLatestAcceptedUnsoldSnapshotRows({
-            targetSellerId: seller.id,
+        const branchSellerIds = await getDirectSellerBranchIds(req.user.id, seller.id);
+        const scopedSellerIds = branchSellerIds.length > 0 ? branchSellerIds : [seller.id];
+        const [snapshotRowsBySeller, manualRowsBySeller] = await Promise.all([
+          Promise.all(scopedSellerIds.map((branchSellerId) => getLatestAcceptedUnsoldSnapshotRows({
+            targetSellerId: branchSellerId,
             viewerUserId: req.user.id,
             bookingDate,
             sessionMode,
             purchaseCategory,
             amount: normalizedAmount,
             boxValue: ''
-          }),
-          getManualSavedUnsoldRows({
-            targetSellerId: seller.id,
+          }))),
+          Promise.all(scopedSellerIds.map((branchSellerId) => getManualSavedUnsoldRows({
+            targetSellerId: branchSellerId,
             actorUserId: req.user.id,
             bookingDate,
             sessionMode,
             purchaseCategory,
             amount: normalizedAmount,
             boxValue: ''
-          })
+          })))
         ]);
 
-        [...snapshotRows, ...manualRows].forEach((entry) => {
+        [...snapshotRowsBySeller.flat(), ...manualRowsBySeller.flat()].forEach((entry) => {
           currentUnsoldByKey.set(buildEntryKey(entry), entry);
         });
       })
@@ -5109,28 +5111,30 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       );
       await Promise.all(
         directChildSellersResult.rows.map(async (seller) => {
-          const [snapshotRows, manualRows] = await Promise.all([
-            getLatestAcceptedUnsoldSnapshotRows({
-              targetSellerId: seller.id,
+          const branchSellerIds = await getDirectSellerBranchIds(req.user.id, seller.id);
+          const scopedSellerIds = branchSellerIds.length > 0 ? branchSellerIds : [seller.id];
+          const [snapshotRowsBySeller, manualRowsBySeller] = await Promise.all([
+            Promise.all(scopedSellerIds.map((branchSellerId) => getLatestAcceptedUnsoldSnapshotRows({
+              targetSellerId: branchSellerId,
               viewerUserId: req.user.id,
               bookingDate,
               sessionMode,
               purchaseCategory,
               amount: normalizedAmount,
               boxValue: ''
-            }),
-            getManualSavedUnsoldRows({
-              targetSellerId: seller.id,
+            }))),
+            Promise.all(scopedSellerIds.map((branchSellerId) => getManualSavedUnsoldRows({
+              targetSellerId: branchSellerId,
               actorUserId: req.user.id,
               bookingDate,
               sessionMode,
               purchaseCategory,
               amount: normalizedAmount,
               boxValue: ''
-            })
+            })))
           ]);
 
-          [...snapshotRows, ...manualRows].forEach((row) => {
+          [...snapshotRowsBySeller.flat(), ...manualRowsBySeller.flat()].forEach((row) => {
             selectedRowsById.set(Number(row.entry_id || row.id), row);
           });
         })
