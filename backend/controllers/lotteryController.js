@@ -3726,7 +3726,64 @@ const removePurchaseUnsoldEntries = async (req, res) => {
       params
     );
 
-    if (selectedEntriesResult.rows.length === 0 && targetSellerId !== Number(req.user.id)) {
+    let selectedRows = selectedEntriesResult.rows;
+    if (selectedRows.length === 0 && targetSellerId !== Number(req.user.id)) {
+      const branchParams = [
+        targetSellerId,
+        PURCHASE_ENTRY_SOURCE,
+        req.user.id,
+        sessionMode,
+        purchaseCategory,
+        bookingDate,
+        numbersToRemove.numbers
+      ];
+      const branchFilters = [];
+      if (normalizedAmount) {
+        branchFilters.push(`AND h.amount = $${branchParams.push(normalizedAmount)}::numeric`);
+      }
+      if (normalizedBoxValue) {
+        branchFilters.push(`AND h.box_value = $${branchParams.push(normalizedBoxValue)}`);
+      }
+
+      const branchSentResult = await query(
+        `WITH RECURSIVE branch_users AS (
+          SELECT id
+          FROM users
+          WHERE id = $1 AND role = 'seller'
+          UNION ALL
+          SELECT u.id
+          FROM users u
+          INNER JOIN branch_users bu ON u.parent_id = bu.id
+          WHERE u.role = 'seller'
+        )
+        SELECT DISTINCT ON (le.id) le.*
+        FROM lottery_entry_history h
+        INNER JOIN lottery_entries le ON le.id = h.entry_id
+        INNER JOIN branch_users bu ON bu.id = le.user_id
+        WHERE le.entry_source = $2
+          AND h.to_user_id = $3
+          AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')
+          AND h.session_mode = $4
+          AND h.purchase_category = $5
+          AND h.booking_date = $6::date
+          AND h.number = ANY($7::varchar[])
+          AND NOT EXISTS (
+            SELECT 1
+            FROM lottery_entry_history removed_h
+            WHERE removed_h.entry_id = h.entry_id
+              AND removed_h.action_type = 'unsold_removed'
+              AND removed_h.actor_user_id = $3
+              AND removed_h.created_at >= h.created_at
+          )
+          ${branchFilters.join('\n          ')}
+        ORDER BY le.id, h.created_at DESC, h.id DESC`,
+        branchParams
+      );
+
+      selectedRows = branchSentResult.rows;
+    }
+
+    if (selectedRows.length === 0 && targetSellerId !== Number(req.user.id)) {
       const manualParams = [
         targetSellerId,
         PURCHASE_ENTRY_SOURCE,
@@ -3772,12 +3829,12 @@ const removePurchaseUnsoldEntries = async (req, res) => {
       }
     }
 
-    if (selectedEntriesResult.rows.length === 0) {
+    if (selectedRows.length === 0) {
       return res.status(404).json({ message: 'Selected number current unsold me nahi mila' });
     }
 
-    if (selectedEntriesResult.rows.length !== numbersToRemove.numbers.length) {
-      const availableNumbers = new Set(selectedEntriesResult.rows.map((row) => row.number));
+    if (selectedRows.length !== numbersToRemove.numbers.length) {
+      const availableNumbers = new Set(selectedRows.map((row) => row.number));
       const missingNumbers = numbersToRemove.numbers.filter((currentNumber) => !availableNumbers.has(currentNumber));
       const missingLabel = missingNumbers.length > 5
         ? `${missingNumbers.slice(0, 5).join(', ')} +${missingNumbers.length - 5} more`
@@ -3785,10 +3842,10 @@ const removePurchaseUnsoldEntries = async (req, res) => {
       return res.status(400).json({ message: `Ye number current unsold me nahi hai: ${missingLabel}` });
     }
 
-    const selectedIds = selectedEntriesResult.rows.map((row) => row.id);
+    const selectedIds = selectedRows.map((row) => row.id);
     if (targetSellerId !== Number(req.user.id)) {
       await insertHistoryRecords({
-        entries: selectedEntriesResult.rows,
+        entries: selectedRows,
         actionType: 'unsold_removed',
         statusBefore: 'unsold',
         statusAfter: 'accepted',
@@ -3800,9 +3857,9 @@ const removePurchaseUnsoldEntries = async (req, res) => {
       });
 
       return res.json({
-        message: `${selectedEntriesResult.rows.length} unsold numbers removed`,
+        message: `${selectedRows.length} unsold numbers removed`,
         memoNumber: normalizedMemoNumber,
-        entries: selectedEntriesResult.rows.map(mapLotteryEntry)
+        entries: selectedRows.map(mapLotteryEntry)
       });
     }
 
@@ -3941,7 +3998,64 @@ const checkPurchaseUnsoldRemoveEntries = async (req, res) => {
       params
     );
 
-    if (selectedEntriesResult.rows.length === 0 && targetSellerId !== Number(req.user.id)) {
+    let selectedRows = selectedEntriesResult.rows;
+    if (selectedRows.length === 0 && targetSellerId !== Number(req.user.id)) {
+      const branchParams = [
+        targetSellerId,
+        PURCHASE_ENTRY_SOURCE,
+        req.user.id,
+        sessionMode,
+        purchaseCategory,
+        bookingDate,
+        numbersToRemove.numbers
+      ];
+      const branchFilters = [];
+      if (normalizedAmount) {
+        branchFilters.push(`AND h.amount = $${branchParams.push(normalizedAmount)}::numeric`);
+      }
+      if (normalizedBoxValue) {
+        branchFilters.push(`AND h.box_value = $${branchParams.push(normalizedBoxValue)}`);
+      }
+
+      const branchSentResult = await query(
+        `WITH RECURSIVE branch_users AS (
+          SELECT id
+          FROM users
+          WHERE id = $1 AND role = 'seller'
+          UNION ALL
+          SELECT u.id
+          FROM users u
+          INNER JOIN branch_users bu ON u.parent_id = bu.id
+          WHERE u.role = 'seller'
+        )
+        SELECT DISTINCT ON (le.id) le.*
+        FROM lottery_entry_history h
+        INNER JOIN lottery_entries le ON le.id = h.entry_id
+        INNER JOIN branch_users bu ON bu.id = le.user_id
+        WHERE le.entry_source = $2
+          AND h.to_user_id = $3
+          AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')
+          AND h.session_mode = $4
+          AND h.purchase_category = $5
+          AND h.booking_date = $6::date
+          AND h.number = ANY($7::varchar[])
+          AND NOT EXISTS (
+            SELECT 1
+            FROM lottery_entry_history removed_h
+            WHERE removed_h.entry_id = h.entry_id
+              AND removed_h.action_type = 'unsold_removed'
+              AND removed_h.actor_user_id = $3
+              AND removed_h.created_at >= h.created_at
+          )
+          ${branchFilters.join('\n          ')}
+        ORDER BY le.id, h.created_at DESC, h.id DESC`,
+        branchParams
+      );
+
+      selectedRows = branchSentResult.rows;
+    }
+
+    if (selectedRows.length === 0 && targetSellerId !== Number(req.user.id)) {
       const manualRows = await getManualSavedUnsoldRows({
         targetSellerId,
         actorUserId: req.user.id,
@@ -3963,12 +4077,12 @@ const checkPurchaseUnsoldRemoveEntries = async (req, res) => {
       }
     }
 
-    if (selectedEntriesResult.rows.length === 0) {
+    if (selectedRows.length === 0) {
       return res.status(404).json({ message: 'Selected number current unsold me nahi mila' });
     }
 
-    if (selectedEntriesResult.rows.length !== numbersToRemove.numbers.length) {
-      const availableNumbers = new Set(selectedEntriesResult.rows.map((row) => row.number));
+    if (selectedRows.length !== numbersToRemove.numbers.length) {
+      const availableNumbers = new Set(selectedRows.map((row) => row.number));
       const missingNumbers = numbersToRemove.numbers.filter((currentNumber) => !availableNumbers.has(currentNumber));
       const missingLabel = missingNumbers.length > 5
         ? `${missingNumbers.slice(0, 5).join(', ')} +${missingNumbers.length - 5} more`
@@ -3978,8 +4092,8 @@ const checkPurchaseUnsoldRemoveEntries = async (req, res) => {
 
     return res.json({
       ok: true,
-      message: `${selectedEntriesResult.rows.length} unsold numbers available`,
-      entries: selectedEntriesResult.rows.map(mapLotteryEntry)
+      message: `${selectedRows.length} unsold numbers available`,
+      entries: selectedRows.map(mapLotteryEntry)
     });
   } catch (error) {
     return res.status(500).json({ message: 'Server error', error: error.message });
