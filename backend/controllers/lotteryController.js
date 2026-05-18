@@ -2939,17 +2939,14 @@ const getPurchaseEntries = async (req, res) => {
         conditions.push(`le.forwarded_by = $${params.length}`);
       }
     } else if (sellerId && sellerId !== Number(req.user.id)) {
-      const childSellerResult = await query(
-        "SELECT id FROM users WHERE id = $1 AND parent_id = $2 AND role = 'seller' LIMIT 1",
-        [sellerId, req.user.id]
-      );
+      const branchIds = await getDirectSellerBranchIds(req.user.id, sellerId);
 
-      if (childSellerResult.rows.length === 0) {
+      if (branchIds.length === 0) {
         return res.status(403).json({ message: 'You can view purchase only for your direct sub stokist' });
       }
 
-      params.push(sellerId);
-      conditions.push(`le.user_id = $${params.length}`);
+      params.push(branchIds);
+      conditions.push(`le.user_id = ANY($${params.length}::int[])`);
       params.push(req.user.id);
       childSellerVisibilityParamIndex = params.length;
       params.push(sellerId);
@@ -3407,8 +3404,12 @@ const markPurchaseEntriesUnsold = async (req, res) => {
       targetSeller = childSellerResult.rows[0];
     }
 
+    const targetSellerStockIds = targetSellerId === Number(req.user.id) || isAdminRole(req.user.role)
+      ? [targetSellerId]
+      : await getDirectSellerBranchIds(req.user.id, targetSellerId);
+
     const selectedEntriesParams = [
-      targetSellerId,
+      targetSellerStockIds,
       PURCHASE_ENTRY_SOURCE,
       sessionMode,
       purchaseCategory,
@@ -3480,7 +3481,7 @@ const markPurchaseEntriesUnsold = async (req, res) => {
       selectedEntriesResult = await query(
         `SELECT le.*
          FROM lottery_entries le
-         WHERE le.user_id = $1
+         WHERE le.user_id = ANY($1::int[])
            AND le.entry_source = $2
            AND LOWER(TRIM(le.status)) = 'accepted'
            AND le.session_mode = $3
