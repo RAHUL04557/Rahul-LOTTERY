@@ -4979,10 +4979,9 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
     const rawUnsoldPiece = effectiveCurrentUnsoldEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
     const unsoldPiece = Math.max(rawUnsoldPiece, summaryUnsoldPiece);
     const alreadySentPiece = alreadySentEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
-    const unsoldPieceChanged = Math.abs(Number(unsoldPiece || 0) - Number(alreadySentPiece || 0)) > 0.0001;
-    const pendingSendPiece = currentUnsoldChanged || unsoldPieceChanged ? unsoldPiece : 0;
+    const pendingSendPiece = currentUnsoldChanged ? unsoldPiece : 0;
     const unsoldCount = effectiveCurrentUnsoldEntries.length;
-    const hasPendingUpdate = currentUnsoldChanged || unsoldPieceChanged || pendingSendPiece > 0;
+    const hasPendingUpdate = currentUnsoldChanged || pendingSendPiece > 0;
     const aggregatedRow = totalPiece > 0 || unsoldPiece > 0 || alreadySentPiece > 0 || pendingSendPiece > 0
       ? [{
         sellerId: req.user.id,
