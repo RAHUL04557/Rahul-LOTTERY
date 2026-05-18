@@ -3499,9 +3499,9 @@ const markPurchaseEntriesUnsold = async (req, res) => {
       return res.status(404).json({ message: 'Not found' });
     }
 
-    if (selectedEntriesResult.rows.length !== numbersToMark.numbers.length) {
-      const availableNumbers = new Set(selectedEntriesResult.rows.map((row) => row.number));
-      const missingNumbers = numbersToMark.numbers.filter((currentNumber) => !availableNumbers.has(currentNumber));
+    const availableNumbers = new Set(selectedEntriesResult.rows.map((row) => row.number));
+    const missingNumbers = numbersToMark.numbers.filter((currentNumber) => !availableNumbers.has(currentNumber));
+    if (missingNumbers.length > 0) {
       const missingLabel = missingNumbers.length > 5
         ? `${missingNumbers.slice(0, 5).join(', ')} +${missingNumbers.length - 5} more`
         : missingNumbers.join(', ');

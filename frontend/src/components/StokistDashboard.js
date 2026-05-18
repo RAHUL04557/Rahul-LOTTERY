@@ -3745,7 +3745,7 @@ const StokistDashboard = ({
           bookingDate,
           sessionMode: filter.sessionMode,
           sellerId: (isUnsoldLookup || isUnsoldRemoveLookup) && String(targetSellerId) !== String(user?.id) ? targetSellerId : undefined,
-          status: (isUnsoldLookup || isUnsoldRemoveLookup) ? 'unsold' : 'accepted',
+          status: isUnsoldRemoveLookup ? 'unsold' : 'accepted',
           purchaseCategory: filter.purchaseCategory,
           amount,
           boxValue: filter.boxValue || undefined,
