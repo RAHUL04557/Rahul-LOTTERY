@@ -4881,14 +4881,16 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
     );
     const currentUnsoldEntries = Array.from(currentUnsoldByKey.values());
     const currentUnsoldKeySet = new Set(currentUnsoldByKey.keys());
-    const pendingSendEntries = currentUnsoldEntries.filter((entry) => !alreadySentKeySet.has(buildEntryKey(entry)));
-    const currentUnsoldChanged = pendingSendEntries.length > 0;
+    const currentUnsoldChanged = currentUnsoldKeySet.size !== alreadySentKeySet.size
+      || [...currentUnsoldKeySet].some((entryKey) => !alreadySentKeySet.has(entryKey))
+      || [...alreadySentKeySet].some((entryKey) => !currentUnsoldKeySet.has(entryKey));
+    const pendingSendEntries = currentUnsoldChanged ? currentUnsoldEntries : [];
 
     const totalPiece = allEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
     const alreadySentPiece = alreadySentEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
     const pendingSendPiece = pendingSendEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
     const currentUnsoldPiece = currentUnsoldEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
-    const unsoldPiece = Math.max(currentUnsoldPiece, alreadySentPiece);
+    const unsoldPiece = currentUnsoldPiece;
     const unsoldCount = currentUnsoldEntries.length;
     const aggregatedRow = totalPiece > 0 || unsoldPiece > 0 || alreadySentPiece > 0 || pendingSendPiece > 0
       ? [{

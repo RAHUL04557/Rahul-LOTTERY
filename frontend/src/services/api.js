@@ -811,22 +811,9 @@ export const lotteryService = {
   checkPurchaseUnsoldRemove: (payload) => api.post('/lottery/purchases/remove-unsold/check', payload),
   replacePurchaseUnsoldMemo: (payload) => requestWithOfflineQueue({ method: 'PUT', url: '/lottery/purchases/unsold-memo', data: payload }, 'replace_unsold_memo'),
   sendPurchaseUnsold: async (payload) => {
-    let desiredEntryIds = [];
-    let desiredRows = [];
-    try {
-      desiredEntryIds = await getLocalUnsoldSendEntryIds(payload);
-      desiredRows = await getLocalUnsoldSendRows(payload);
-    } catch (error) {
-      console.warn('Local unsold send rows failed, falling back to server:', error.message);
-    }
-
     const { desiredRows: _ignoredDesiredRows, desiredEntryIds: _ignoredDesiredEntryIds, ...basePayload } = payload || {};
 
-    return postWithOfflineQueue('/lottery/purchases/send-unsold', {
-      ...basePayload,
-      ...(desiredEntryIds.length > 0 && { desiredEntryIds }),
-      ...(desiredRows.length > 0 && { desiredRows })
-    }, 'unsold_send');
+    return postWithOfflineQueue('/lottery/purchases/send-unsold', basePayload, 'unsold_send');
   },
   getPendingEntries: ({ bookingDate, amount } = {}) =>
     api.get('/lottery/pending-entries', {
