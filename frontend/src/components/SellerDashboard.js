@@ -4788,21 +4788,6 @@ const SellerDashboard = ({
         openBlockingWarning('Unsold remove memo select karo');
         return;
       }
-
-      for (const row of rowsToSave) {
-        const effectivePartyId = String(row.partyId || selectedUnsoldParty?.id || user?.id || '');
-        await lotteryService.checkPurchaseUnsoldRemove({
-          bookingDate: row.drawDate || bookingDate,
-          sessionMode: row.resolvedSessionMode || sessionMode,
-          purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
-          sellerId: effectivePartyId === String(user?.id) ? undefined : effectivePartyId,
-          amount: row.bookingAmount || amount,
-          boxValue: row.semValue,
-          rangeStart: row.numberStart || row.from,
-          rangeEnd: row.numberEnd || row.to
-        });
-      }
-
       for (const row of rowsToSave) {
         const effectivePartyId = String(row.partyId || selectedUnsoldParty?.id || user?.id || '');
         await lotteryService.removePurchaseUnsold({
