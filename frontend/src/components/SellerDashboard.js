@@ -1719,14 +1719,15 @@ const SellerDashboard = ({
     }
   };
 
-  const loadUnsoldSendSummary = async () => {
+  const loadUnsoldSendSummary = async (dateOverride = '') => {
+    const summaryDateValue = dateOverride || bookingDate;
     setUnsoldSendLoading(true);
     setUnsoldSendOpen(true);
     setError('');
 
     try {
       const response = await lotteryService.getPurchaseUnsoldSendSummary({
-        bookingDate,
+        bookingDate: summaryDateValue,
         sessionMode,
         purchaseCategory: activePurchaseCategory,
         amount
@@ -1794,6 +1795,12 @@ const SellerDashboard = ({
   const cancelUnsoldSendExitConfirmation = () => {
     setUnsoldSendExitConfirmOpen(false);
     setUnsoldSendExitConfirmSelected('no');
+  };
+
+  const handleUnsoldSendDateChange = (event) => {
+    const nextDate = event.target.value;
+    setBookingDate(nextDate);
+    loadUnsoldSendSummary(nextDate);
   };
 
   const confirmUnsoldSendExit = () => {
@@ -6706,7 +6713,18 @@ const SellerDashboard = ({
           <div style={{ background: '#fff', width: 'min(820px, 100%)', borderRadius: '8px', padding: '20px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
               <h2 style={{ margin: 0 }}>F11 Send Unsold</h2>
-              <button type="button" onClick={requestUnsoldSendExitConfirmation}>Exit (Esc)</button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <label className="send-purchase-date-filter">
+                  <span>Date</span>
+                  <input
+                    type="date"
+                    value={bookingDate}
+                    onChange={handleUnsoldSendDateChange}
+                    disabled={unsoldSendLoading || unsoldSendSaving}
+                  />
+                </label>
+                <button type="button" onClick={requestUnsoldSendExitConfirmation}>Exit (Esc)</button>
+              </div>
             </div>
             {unsoldSendLoading ? (
               <p>Loading...</p>
@@ -7237,6 +7255,15 @@ const SellerDashboard = ({
                   <p>Purchase me saved local drafts yahan se seller/stockist/sub-stockist ko bhejo.</p>
                 </div>
                 <div className="send-purchase-actions">
+                  <label className="send-purchase-date-filter">
+                    <span>Date</span>
+                    <input
+                      type="date"
+                      value={bookingDate}
+                      onChange={(event) => setBookingDate(event.target.value)}
+                      disabled={sendPurchaseLoading || Boolean(sendPurchaseSendingKey)}
+                    />
+                  </label>
                   <button type="button" className="btn-secondary" onClick={loadSendPurchaseDrafts} disabled={sendPurchaseLoading || Boolean(sendPurchaseSendingKey)}>
                     Refresh
                   </button>

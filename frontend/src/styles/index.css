@@ -943,9 +943,25 @@ button:disabled {
 
 .send-purchase-actions {
   display: flex;
+  align-items: center;
   gap: 10px;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.send-purchase-date-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  color: #14213d;
+}
+
+.send-purchase-date-filter input {
+  border: 1px solid #cbd5e0;
+  border-radius: 6px;
+  padding: 9px 10px;
+  font: inherit;
 }
 
 .btn-primary,
