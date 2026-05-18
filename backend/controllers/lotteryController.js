@@ -5593,7 +5593,20 @@ const getPurchasePieceSummary = async (req, res) => {
                   OR LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
                 ) AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS total_piece,
                 COALESCE(SUM(CASE WHEN (
-                  LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
+                  (
+                    LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
+                    AND (
+                      le.sent_to_parent = $${selfUnsoldParamIndex}
+                      OR le.forwarded_by = $${selfUnsoldParamIndex}
+                      OR (
+                        le.user_id = $${selfUnsoldParamIndex}
+                        AND (
+                          le.sent_to_parent IS NULL
+                          OR le.sent_to_parent = $${selfUnsoldParamIndex}
+                        )
+                      )
+                    )
+                  )
                   OR (
                     LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}'
                     AND (le.forwarded_by = $${selfUnsoldParamIndex} OR le.sent_to_parent = $${selfUnsoldParamIndex})
