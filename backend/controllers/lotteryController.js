@@ -4729,7 +4729,7 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
       }]
       : [];
 
-    const autoAccept = Boolean(parentUser && isWithinUnsoldAutoAcceptTime({
+    const autoAccept = Boolean(parentUser && isAdminRole(parentUser.role) && isWithinUnsoldAutoAcceptTime({
       sellerType: req.user.sellerType || req.user.seller_type,
       bookingDate,
       sessionMode,
@@ -5046,13 +5046,13 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       return res.status(400).json({ message: 'Ye unsold numbers already send ho chuke hain' });
     }
 
-    const shouldAutoAcceptToParent = Boolean(parentUser && isWithinUnsoldAutoAcceptTime({
+    const shouldAutoAcceptToAdmin = Boolean(parentUser && isAdminRole(parentUser.role) && isWithinUnsoldAutoAcceptTime({
       sellerType: req.user.sellerType || req.user.seller_type,
       bookingDate,
       sessionMode,
       purchaseCategory
     }));
-    const targetStatus = shouldAutoAcceptToParent ? UNSOLD_ACCEPTED_STATUS : UNSOLD_SENT_STATUS;
+    const targetStatus = shouldAutoAcceptToAdmin ? UNSOLD_ACCEPTED_STATUS : UNSOLD_SENT_STATUS;
     const sendGroupMap = new Map();
     selectedRows.forEach((row) => {
       const sellerMemoNumber = Number(row.send_unsold_memo_number || row.memo_number || 0);
@@ -5270,7 +5270,7 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
 
     res.json({
       message: targetStatus === UNSOLD_ACCEPTED_STATUS
-        ? `Unsold ${parentUser?.username || 'parent'} ko send ho gaya aur auto accepted ho gaya`
+        ? `Unsold admin ko send ho gaya aur auto accepted ho gaya`
         : `Unsold ${parentUser?.username || 'parent'} ko send ho gaya`,
       entriesSent: updatedResult.rows.length,
       autoAccepted: targetStatus === UNSOLD_ACCEPTED_STATUS,
@@ -5790,8 +5790,7 @@ const getPurchasePieceSummary = async (req, res) => {
               sum + (String(row.box_value || '').match(/^\d+(\.\d+)?$/) ? Number(row.box_value) : 0)
             ), 0);
 
-            const summaryUnsoldPiece = Number(summaryMap.get(Number(seller.id))?.unsold_piece || 0);
-            sellerChildSnapshotUnsoldMap.set(Number(seller.id), Math.max(childUnsoldPiece, summaryUnsoldPiece));
+            sellerChildSnapshotUnsoldMap.set(Number(seller.id), childUnsoldPiece);
           })
       );
     }
@@ -6360,67 +6359,6 @@ const getReceivedEntries = async (req, res) => {
 
     const params = [req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE, UNSOLD_SENT_STATUS];
     const amountFilter = amount ? `AND le.amount = $${params.push(amount)}::numeric` : '';
-
-    const pendingAutoAcceptResult = await query(
-      `SELECT le.*, sender_user.username AS sender_username, sender_user.seller_type AS sender_seller_type
-       FROM lottery_entries le
-       LEFT JOIN users sender_user ON sender_user.id = le.forwarded_by
-       WHERE le.sent_to_parent = $1
-         AND le.session_mode = $2
-         AND le.booking_date = CURRENT_DATE
-         AND le.entry_source = $3
-         AND le.status = $4
-         ${amountFilter}`,
-      params
-    );
-    const autoAcceptRows = pendingAutoAcceptResult.rows.filter((row) => isWithinUnsoldAutoAcceptTime({
-      sellerType: row.sender_seller_type,
-      bookingDate: row.booking_date instanceof Date ? row.booking_date.toISOString().slice(0, 10) : String(row.booking_date || ''),
-      sessionMode: row.session_mode,
-      purchaseCategory: row.purchase_category
-    }));
-    const autoAcceptIds = autoAcceptRows.map((row) => Number(row.id)).filter((entryId) => Number.isInteger(entryId) && entryId > 0);
-
-    if (autoAcceptIds.length > 0) {
-      const autoAcceptedResult = await query(
-        `UPDATE lottery_entries
-         SET status = $2,
-             sent_to_parent = $3,
-             forwarded_by = $3,
-             sent_at = CURRENT_TIMESTAMP
-         WHERE id = ANY($1::int[])
-         RETURNING *`,
-        [autoAcceptIds, UNSOLD_ACCEPTED_STATUS, req.user.id]
-      );
-      const actorById = new Map(autoAcceptRows.map((row) => [Number(row.id), row]));
-      const rowsByActor = new Map();
-      autoAcceptedResult.rows.forEach((row) => {
-        const actorRow = actorById.get(Number(row.id)) || {};
-        const actorId = Number(actorRow.forwarded_by || 0);
-        if (!actorId) {
-          return;
-        }
-        const actorKey = `${actorId}|${actorRow.sender_username || 'Unknown'}`;
-        if (!rowsByActor.has(actorKey)) {
-          rowsByActor.set(actorKey, {
-            actorId,
-            actorUsername: actorRow.sender_username || 'Unknown',
-            rows: []
-          });
-        }
-        rowsByActor.get(actorKey).rows.push(row);
-      });
-      await Promise.all([...rowsByActor.values()].map((group) => insertHistoryRecords({
-        entries: group.rows,
-        actionType: 'unsold_auto_accepted',
-        statusBefore: UNSOLD_SENT_STATUS,
-        statusAfter: UNSOLD_ACCEPTED_STATUS,
-        actorUserId: group.actorId,
-        actorUsername: group.actorUsername,
-        toUserId: req.user.id,
-        toUsername: req.user.username
-      })));
-    }
 
     const entriesResult = await query(
       `SELECT le.*, u.username, parent_user.username AS parent_username
