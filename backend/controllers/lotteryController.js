@@ -3169,7 +3169,7 @@ const getPurchaseEntries = async (req, res) => {
     }
 
     let liveRows = result.rows;
-    if ([UNSOLD_ACCEPTED_STATUS, 'unsold'].includes(status) && result.rows.length > 0) {
+    if ([UNSOLD_ACCEPTED_STATUS, 'unsold'].includes(status) && req.user.role === 'admin' && sellerId && result.rows.length > 0) {
       const liveEntryIds = result.rows
         .map((row) => Number(row.id))
         .filter((entryId) => Number.isInteger(entryId) && entryId > 0);
@@ -5172,25 +5172,9 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     if (validSelectedRows.length === 0) {
       return res.status(400).json({ message: 'Send karne ke liye valid unsold entry nahi mili' });
     }
-    const getSendGroupKeyForRow = (row = {}) => {
-      const memoNumber = Number(row.send_unsold_memo_number || row.memo_number || 0);
-      return [
-        row.user_id,
-        Number.isInteger(memoNumber) && memoNumber > 0 ? memoNumber : 0,
-        row.booking_date instanceof Date ? row.booking_date.toISOString().slice(0, 10) : String(row.booking_date || ''),
-        row.session_mode,
-        row.purchase_category,
-        String(row.amount)
-      ].join('|');
-    };
     const selectedMemoNumbers = validSelectedRows.map((row) => {
-      const parentMemoNumber = adminMemoByGroup.get(getSendGroupKeyForRow(row));
-      if (Number.isInteger(parentMemoNumber) && parentMemoNumber > 0) {
-        return parentMemoNumber;
-      }
-
-      const sellerMemoNumber = Number(row.send_unsold_memo_number || row.memo_number || 0);
-      return Number.isInteger(sellerMemoNumber) && sellerMemoNumber > 0 ? sellerMemoNumber : null;
+      const memoNumber = Number(row.send_unsold_memo_number || row.memo_number || 0);
+      return Number.isInteger(memoNumber) && memoNumber > 0 ? memoNumber : null;
     });
     const staleParams = [
       visibleUserIds,
