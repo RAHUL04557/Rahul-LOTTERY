@@ -4957,7 +4957,9 @@ const AdminDashboard = ({
         stockNotTransferredPiece: Number(row.stockNotTransferredPiece || row.stock_not_transferred_piece || 0)
       }));
       setPieceSummaryStockNotTransferredPiece(Number(summaryRows[0]?.stockNotTransferredPiece || 0));
-      setPieceSummaryRows(summaryRows.filter((row) => Number(row.totalPiece || 0) > 0));
+      setPieceSummaryRows(summaryRows.filter((row) => (
+        Number(row.totalPiece || 0) > 0 || Number(row.unsoldPiece || 0) > 0
+      )));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading piece summary');
       setPieceSummaryRows([]);
@@ -5141,6 +5143,108 @@ const AdminDashboard = ({
   const sendAllPurchaseDrafts = async () => {
     for (const draft of sendPurchaseDrafts) {
       await sendPurchaseDraft(draft);
+    }
+  };
+  const deletePurchaseDraft = async (draft, options = {}) => {
+    const shouldRefresh = options.refresh !== false;
+    const rows = Array.isArray(draft?.rows) ? draft.rows : [];
+    if (!draft?.targetSellerId || rows.length === 0) {
+      setError('Delete karne ke liye purchase draft nahi mila');
+      return;
+    }
+
+    setSendPurchaseSendingKey(`delete:${draft.draftKey}`);
+    setError('');
+    setSuccess('');
+
+    try {
+      const memoNumber = Number(rows[0]?.memoNumber || draft.memoNumber || 1);
+      const entryIds = rows.flatMap((row) => Array.isArray(row.entryIds) ? row.entryIds : []).filter(Boolean);
+      const firstRowDate = rows[0]?.drawDate || draft.bookingDate || purchaseBookingDate;
+      const sessionValue = rows[0]?.resolvedSessionMode || draft.sessionMode || purchaseSessionMode;
+      const amountValue = rows[0]?.bookingAmount || draft.amount || purchaseAmount;
+      const categoryValue = rows[0]?.resolvedPurchaseCategory || draft.purchaseCategory || purchaseCategory;
+
+      await lotteryService.replacePurchaseSendMemo({
+        sellerId: draft.targetSellerId,
+        memoNumber,
+        entryIds,
+        bookingDate: firstRowDate,
+        sessionMode: sessionValue,
+        amount: amountValue,
+        purchaseCategory: categoryValue,
+        rows: []
+      });
+
+      await clearDraftRows(draft.draftKey);
+      setSuccess(`Memo ${memoNumber} delete ho gaya`);
+      if (shouldRefresh) {
+        await Promise.all([
+          loadLocalPurchaseMemoDrafts(),
+          loadSendPurchaseDrafts(),
+          loadPurchaseEntries(firstRowDate, sessionValue, draft.targetSellerId)
+        ]);
+      }
+    } catch (error) {
+      setError(error.response?.data?.message || error.message || 'Purchase delete nahi hua');
+    } finally {
+      if (shouldRefresh) {
+        setSendPurchaseSendingKey('');
+      }
+    }
+  };
+  const deleteAllPurchaseDrafts = async () => {
+    if (sendPurchaseDrafts.length === 0) {
+      return;
+    }
+
+    setSendPurchaseSendingKey('delete-all');
+    setError('');
+    setSuccess('');
+
+    try {
+      const draftsToDelete = [...sendPurchaseDrafts].sort((left, right) => Number(right.memoNumber || 0) - Number(left.memoNumber || 0));
+      for (const draft of draftsToDelete) {
+        await deletePurchaseDraft(draft, { refresh: false });
+      }
+      setSuccess(`${draftsToDelete.length} purchase memo delete ho gaye`);
+      await Promise.all([
+        loadLocalPurchaseMemoDrafts(),
+        loadSendPurchaseDrafts()
+      ]);
+    } catch (error) {
+      setError(error.response?.data?.message || error.message || 'All purchase delete nahi hua');
+    } finally {
+      setSendPurchaseSendingKey('');
+    }
+  };
+  const deleteSellerPurchaseDrafts = async (sellerDraft) => {
+    const sellerDrafts = sendPurchaseDrafts.filter((draft) => (
+      String(draft.targetSellerId || '') === String(sellerDraft?.targetSellerId || '')
+    ));
+
+    if (sellerDrafts.length === 0) {
+      return;
+    }
+
+    setSendPurchaseSendingKey(`delete-seller:${sellerDraft.targetSellerId}`);
+    setError('');
+    setSuccess('');
+
+    try {
+      const draftsToDelete = [...sellerDrafts].sort((left, right) => Number(right.memoNumber || 0) - Number(left.memoNumber || 0));
+      for (const draft of draftsToDelete) {
+        await deletePurchaseDraft(draft, { refresh: false });
+      }
+      setSuccess(`${sellerDraft.sellerName || 'Seller'} ke ${draftsToDelete.length} purchase memo delete ho gaye`);
+      await Promise.all([
+        loadLocalPurchaseMemoDrafts(),
+        loadSendPurchaseDrafts()
+      ]);
+    } catch (error) {
+      setError(error.response?.data?.message || error.message || 'Seller purchase delete nahi hua');
+    } finally {
+      setSendPurchaseSendingKey('');
     }
   };
   useEffect(() => {
@@ -7645,6 +7749,9 @@ const AdminDashboard = ({
                   <button type="button" className="btn-primary" onClick={sendAllPurchaseDrafts} disabled={sendPurchaseDrafts.length === 0 || Boolean(sendPurchaseSendingKey)}>
                     Send All
                   </button>
+                  <button type="button" className="btn-danger" onClick={deleteAllPurchaseDrafts} disabled={sendPurchaseDrafts.length === 0 || Boolean(sendPurchaseSendingKey)}>
+                    {sendPurchaseSendingKey === 'delete-all' ? 'Deleting All...' : 'Delete All'}
+                  </button>
                 </div>
               </div>
 
@@ -7674,7 +7781,12 @@ const AdminDashboard = ({
                         <td colSpan="9">Send karne ke liye koi local purchase draft nahi hai</td>
                       </tr>
                     )}
-                    {!sendPurchaseLoading && sendPurchaseDrafts.map((draft) => (
+                    {!sendPurchaseLoading && sendPurchaseDrafts.map((draft, draftIndex) => {
+                      const showSellerDeleteAll = sendPurchaseDrafts.findIndex((entry) => (
+                        String(entry.targetSellerId || '') === String(draft.targetSellerId || '')
+                      )) === draftIndex;
+
+                      return (
                       <tr key={draft.draftKey}>
                         <td>
                           <strong>{draft.keyword ? `${draft.keyword} ` : ''}{draft.sellerName}</strong>
@@ -7687,17 +7799,38 @@ const AdminDashboard = ({
                         <td>{draft.pieceCount}</td>
                         <td>{draft.amountTotal.toFixed(2)}</td>
                         <td>
-                          <button
-                            type="button"
-                            className="btn-primary compact"
-                            onClick={() => sendPurchaseDraft(draft)}
-                            disabled={Boolean(sendPurchaseSendingKey)}
-                          >
-                            {sendPurchaseSendingKey === draft.draftKey ? 'Sending...' : 'Send'}
-                          </button>
+                          <div className="send-purchase-row-actions">
+                            <button
+                              type="button"
+                              className="btn-primary compact"
+                              onClick={() => sendPurchaseDraft(draft)}
+                              disabled={Boolean(sendPurchaseSendingKey)}
+                            >
+                              {sendPurchaseSendingKey === draft.draftKey ? 'Sending...' : 'Send'}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-danger compact"
+                              onClick={() => deletePurchaseDraft(draft)}
+                              disabled={Boolean(sendPurchaseSendingKey)}
+                            >
+                              {sendPurchaseSendingKey === `delete:${draft.draftKey}` ? 'Deleting...' : 'Delete'}
+                            </button>
+                            {showSellerDeleteAll && (
+                              <button
+                                type="button"
+                                className="btn-danger compact"
+                                onClick={() => deleteSellerPurchaseDrafts(draft)}
+                                disabled={Boolean(sendPurchaseSendingKey)}
+                              >
+                                {sendPurchaseSendingKey === `delete-seller:${draft.targetSellerId}` ? 'Deleting...' : 'Delete Seller All'}
+                              </button>
+                            )}
+                          </div>
                         </td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
