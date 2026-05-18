@@ -5773,6 +5773,7 @@ const SellerDashboard = ({
                 setUnsoldMemoPopupOpen(false);
                 window.setTimeout(() => {
                   unsoldMemoRef.current?.focus();
+                  openUnsoldMemoPopup();
                 }, 0);
               });
             }
@@ -7715,6 +7716,11 @@ const SellerDashboard = ({
                 memoProps={{
                   ref: unsoldMemoRef,
                   tabIndex: 0,
+                  onFocus: () => {
+                    if (activeTab === 'unsold') {
+                      openUnsoldMemoPopup();
+                    }
+                  },
                   onKeyDown: (e) => {
                     if (e.key === 'Enter') {
                       e.preventDefault();
