@@ -1698,7 +1698,7 @@ const StokistDashboard = ({
         sessionMode,
         purchaseCategory: activePurchaseCategory,
         amount
-      });
+      }, { skipLocalRead: true });
 
       const summaryRows = (response.data || []).map((row) => ({
         id: row.sellerId || row.seller_id,
