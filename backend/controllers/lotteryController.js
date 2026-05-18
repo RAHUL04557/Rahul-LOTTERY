@@ -5144,15 +5144,13 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     ];
     const manualFilters = [
       'le.user_id = ANY($1::int[])',
-      'le.user_id <> $2',
       'h.actor_user_id = $2',
       'le.entry_source = $3',
       'h.action_type = $4',
       'h.booking_date = $5::date',
       'h.session_mode = $6',
       '($7::text IS NULL OR h.purchase_category = $7)',
-      latestSavedUnsoldHistoryCondition,
-      `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
+      latestSavedUnsoldHistoryCondition
     ];
 
     if (normalizedAmount) {
