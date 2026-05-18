@@ -5510,6 +5510,72 @@ const getPurchasePieceSummary = async (req, res) => {
       });
     }
 
+    const manualBranchUnsoldMap = new Map();
+
+    if (!currentUserIsAdmin) {
+      const manualBranchParams = [req.user.id, PURCHASE_ENTRY_SOURCE, 'saved_unsold'];
+      const manualBranchConditions = [
+        'le.entry_source = $2',
+        'h.action_type = $3',
+        'h.actor_user_id = $1',
+        latestSavedUnsoldHistoryCondition
+      ];
+
+      if (bookingDate) {
+        manualBranchParams.push(bookingDate);
+        manualBranchConditions.push(`h.booking_date = $${manualBranchParams.length}::date`);
+      }
+
+      if (sessionMode) {
+        manualBranchParams.push(sessionMode);
+        manualBranchConditions.push(`h.session_mode = $${manualBranchParams.length}`);
+      }
+
+      if (purchaseCategory) {
+        manualBranchParams.push(purchaseCategory);
+        manualBranchConditions.push(`h.purchase_category = $${manualBranchParams.length}`);
+      }
+
+      if (normalizedAmount) {
+        manualBranchParams.push(normalizedAmount);
+        manualBranchConditions.push(`h.amount = $${manualBranchParams.length}::numeric`);
+      }
+
+      const manualBranchResult = await query(
+        `WITH RECURSIVE branch_users AS (
+          SELECT id, id AS root_seller_id
+          FROM users
+          WHERE (id = $1 AND role = 'seller') OR (parent_id = $1 AND role = 'seller')
+          UNION ALL
+          SELECT u.id, bu.root_seller_id
+          FROM users u
+          INNER JOIN branch_users bu ON u.parent_id = bu.id
+          WHERE bu.id <> $1
+        )
+        SELECT bu.root_seller_id AS user_id,
+               h.session_mode,
+               h.purchase_category,
+               h.amount,
+               h.box_value,
+               h.number,
+               COALESCE(SUM(CASE WHEN h.box_value ~ '^\\d+(\\.\\d+)?$' THEN h.box_value::numeric ELSE 0 END), 0) AS manual_unsold_piece
+        FROM lottery_entry_history h
+        INNER JOIN lottery_entries le ON le.id = h.entry_id
+        INNER JOIN branch_users bu ON bu.id = le.user_id
+        WHERE ${manualBranchConditions.join(' AND ')}
+        GROUP BY bu.root_seller_id, h.session_mode, h.purchase_category, h.amount, h.box_value, h.number`,
+        manualBranchParams
+      );
+
+      manualBranchResult.rows.forEach((row) => {
+        const sellerId = Number(row.user_id);
+        manualBranchUnsoldMap.set(
+          sellerId,
+          Number(manualBranchUnsoldMap.get(sellerId) || 0) + Number(row.manual_unsold_piece || 0)
+        );
+      });
+    }
+
     if (currentUserIsAdmin) {
       const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const sentUnsoldConditions = [
@@ -5791,7 +5857,11 @@ const getPurchasePieceSummary = async (req, res) => {
             ), 0);
 
             const summaryUnsoldPiece = Number(summaryMap.get(Number(seller.id))?.unsold_piece || 0);
-            sellerChildSnapshotUnsoldMap.set(Number(seller.id), Math.max(childUnsoldPiece, summaryUnsoldPiece));
+            const manualBranchUnsoldPiece = Number(manualBranchUnsoldMap.get(Number(seller.id)) || 0);
+            sellerChildSnapshotUnsoldMap.set(
+              Number(seller.id),
+              Math.max(childUnsoldPiece, summaryUnsoldPiece, manualBranchUnsoldPiece)
+            );
           })
       );
     }
