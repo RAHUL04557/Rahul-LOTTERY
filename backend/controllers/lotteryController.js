@@ -3751,6 +3751,64 @@ const removePurchaseUnsoldEntries = async (req, res) => {
           entries: []
         });
       }
+
+      const snapshotRows = (await Promise.all(targetBranchIds.map((branchSellerId) => getLatestAcceptedUnsoldSnapshotRows({
+        targetSellerId: branchSellerId,
+        viewerUserId: req.user.id,
+        bookingDate,
+        sessionMode,
+        purchaseCategory,
+        amount: normalizedAmount,
+        boxValue: normalizedBoxValue,
+        respectLiveMemoState: true
+      })))).flat();
+      const requestedNumberSet = new Set(numbersToRemove.numbers);
+      const matchingSnapshotRows = snapshotRows.filter((row) => requestedNumberSet.has(String(row.number || '').padStart(5, '0')));
+
+      if (matchingSnapshotRows.length === numbersToRemove.numbers.length) {
+        const snapshotIds = matchingSnapshotRows
+          .map((row) => Number(row.id || row.entry_id || 0))
+          .filter((entryId) => Number.isInteger(entryId) && entryId > 0);
+
+        if (snapshotIds.length > 0) {
+          await query(
+            `UPDATE lottery_entries
+             SET status = 'accepted',
+                 sent_to_parent = $2,
+                 forwarded_by = $3,
+                 memo_number = COALESCE(purchase_memo_number, memo_number),
+                 sent_at = CURRENT_TIMESTAMP
+             WHERE id = ANY($1::int[])`,
+            [
+              snapshotIds,
+              Number(targetSeller.id) === Number(req.user.id) ? req.user.id : (targetSeller.parent_id || req.user.id),
+              req.user.id
+            ]
+          );
+        }
+
+        await insertHistoryRecords({
+          entries: matchingSnapshotRows,
+          actionType: 'unsold_removed',
+          statusBefore: 'unsold',
+          statusAfter: 'accepted',
+          actorUserId: req.user.id,
+          actorUsername: req.user.username,
+          toUserId: targetSeller.id,
+          toUsername: targetSeller.username,
+          memoNumber: normalizedMemoNumber
+        });
+
+        return res.json({
+          message: `${matchingSnapshotRows.length} unsold numbers removed`,
+          memoNumber: normalizedMemoNumber,
+          entries: matchingSnapshotRows.map((row) => mapLotteryEntry({
+            ...row,
+            status: 'accepted',
+            memo_number: row.purchase_memo_number || row.memo_number
+          }))
+        });
+      }
     }
 
     if (selectedEntriesResult.rows.length === 0) {
@@ -3922,6 +3980,26 @@ const checkPurchaseUnsoldRemoveEntries = async (req, res) => {
           ok: true,
           message: `${matchingManualRows.length} unsold numbers available`,
           entries: matchingManualRows.map(mapLotteryEntry)
+        });
+      }
+
+      const snapshotRows = (await Promise.all(targetBranchIds.map((branchSellerId) => getLatestAcceptedUnsoldSnapshotRows({
+        targetSellerId: branchSellerId,
+        viewerUserId: req.user.id,
+        bookingDate,
+        sessionMode,
+        purchaseCategory,
+        amount: normalizedAmount,
+        boxValue: normalizedBoxValue,
+        respectLiveMemoState: true
+      })))).flat();
+      const matchingSnapshotRows = snapshotRows.filter((row) => requestedNumberSet.has(String(row.number || '').padStart(5, '0')));
+
+      if (matchingSnapshotRows.length === numbersToRemove.numbers.length) {
+        return res.json({
+          ok: true,
+          message: `${matchingSnapshotRows.length} unsold numbers available`,
+          entries: matchingSnapshotRows.map(mapLotteryEntry)
         });
       }
     }
