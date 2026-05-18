@@ -5304,14 +5304,16 @@ const getPurchasePieceSummary = async (req, res) => {
     const amount = String(req.query.amount || '').trim();
     const normalizedAmount = /^\d+(\.\d+)?$/.test(amount) ? amount : '';
     const currentUserIsAdmin = isAdminRole(req.user.role);
+    const currentSellerType = normalizeSellerType(req.user.sellerType || req.user.seller_type);
+
     const sellersResult = await query(
-      "SELECT id, username, seller_type FROM users WHERE parent_id = $1 AND role = 'seller' ORDER BY username ASC",
+      "SELECT id, username FROM users WHERE parent_id = $1 AND role = 'seller' ORDER BY username ASC",
       [req.user.id]
     );
     const sellers = currentUserIsAdmin
       ? sellersResult.rows
       : [
-        { id: req.user.id, username: req.user.username, seller_type: req.user.sellerType || req.user.seller_type },
+        { id: req.user.id, username: req.user.username },
         ...sellersResult.rows.filter((seller) => Number(seller.id) !== Number(req.user.id))
       ];
 
@@ -6080,8 +6082,7 @@ const getPurchasePieceSummary = async (req, res) => {
 
             const summaryUnsoldPiece = Number(summaryMap.get(Number(seller.id))?.unsold_piece || 0);
             const manualBranchUnsoldPiece = Number(manualBranchUnsoldMap.get(Number(seller.id)) || 0);
-            const childSellerType = normalizeSellerType(seller.seller_type || seller.sellerType);
-            const billStyleChildUnsoldPiece = childSellerType === SELLER_TYPE_SUB_SELLER
+            const billStyleChildUnsoldPiece = currentSellerType === SELLER_TYPE_SELLER
               ? Number(billStyleUnsoldMap.get(Number(seller.id)) || 0)
               : 0;
             sellerChildSnapshotUnsoldMap.set(
