@@ -6788,62 +6788,105 @@ const getPurchaseBillSummary = async (req, res) => {
       });
     }
 
-    const billPieceSummaryDate = date || (fromDate && toDate && fromDate === toDate ? fromDate : toDate || fromDate || '');
-    const billPieceSummaryUnsoldMap = new Map();
-    if (billPieceSummaryDate) {
-      const pieceSummaryReq = {
-        ...req,
-        query: {
-          bookingDate: billPieceSummaryDate,
-          sessionMode,
-          purchaseCategory: normalizedPurchaseCategory,
-          amount: normalizedAmount
+    const childCurrentUnsoldMap = new Map();
+    const singleBookingDate = date || (fromDate && toDate && fromDate === toDate ? fromDate : '');
+    if (!currentUserIsAdmin && singleBookingDate) {
+      const childSellerIds = [...new Set(result.rows
+        .map((row) => Number(row.root_seller_id))
+        .filter((sellerId) => sellerId && sellerId !== Number(req.user.id)))];
+
+      await Promise.all(childSellerIds.map(async (sellerId) => {
+        const localSavedParams = [sellerId, PURCHASE_ENTRY_SOURCE, req.user.id, singleBookingDate];
+        const localSavedFilters = [
+          'user_id = $1',
+          'entry_source = $2',
+          `LOWER(TRIM(status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`,
+          '(sent_to_parent = $3 OR forwarded_by = $3)',
+          'booking_date = $4::date'
+        ];
+
+        if (sessionMode) {
+          localSavedParams.push(sessionMode);
+          localSavedFilters.push(`session_mode = $${localSavedParams.length}`);
         }
-      };
-      let pieceSummaryRows = [];
-      let pieceSummaryError = null;
-      const pieceSummaryRes = {
-        json: (data) => {
-          pieceSummaryRows = Array.isArray(data) ? data : [];
-          return data;
-        },
-        status: (statusCode) => ({
-          json: (data) => {
-            pieceSummaryError = { statusCode, data };
-            return data;
+
+        if (normalizedPurchaseCategory) {
+          localSavedParams.push(normalizedPurchaseCategory);
+          localSavedFilters.push(`purchase_category = $${localSavedParams.length}`);
+        }
+
+        if (normalizedAmount) {
+          localSavedParams.push(normalizedAmount);
+          localSavedFilters.push(`amount = $${localSavedParams.length}::numeric`);
+        }
+
+        const [snapshotRows, localSavedResult, manualRows] = await Promise.all([
+          getLatestAcceptedUnsoldSnapshotRows({
+            targetSellerId: sellerId,
+            viewerUserId: req.user.id,
+            bookingDate: singleBookingDate,
+            sessionMode,
+            purchaseCategory: normalizedPurchaseCategory,
+            amount: normalizedAmount,
+            boxValue: ''
+          }),
+          query(
+            `SELECT user_id, booking_date, session_mode, purchase_category, amount, box_value, number
+             FROM lottery_entries
+             WHERE ${localSavedFilters.join(' AND ')}`,
+            localSavedParams
+          ),
+          getManualSavedUnsoldRows({
+            targetSellerId: sellerId,
+            actorUserId: req.user.id,
+            bookingDate: singleBookingDate,
+            sessionMode,
+            purchaseCategory: normalizedPurchaseCategory,
+            amount: normalizedAmount,
+            boxValue: ''
+          })
+        ]);
+
+        const unsoldRowsByNumber = new Map();
+        [...snapshotRows, ...(localSavedResult.rows || []), ...(manualRows || [])].forEach((row) => {
+          const numberKey = [
+            sellerId,
+            String(row.session_mode || ''),
+            String(row.purchase_category || ''),
+            String(row.amount || ''),
+            String(row.box_value || ''),
+            String(row.number || '')
+          ].join('|');
+          unsoldRowsByNumber.set(numberKey, row);
+        });
+
+        unsoldRowsByNumber.forEach((row) => {
+          const boxValue = String(row.box_value || '');
+          if (!boxValue.match(/^\d+(\.\d+)?$/)) {
+            return;
           }
-        })
-      };
 
-      await getPurchasePieceSummary(pieceSummaryReq, pieceSummaryRes);
-      if (pieceSummaryError) {
-        return res.status(pieceSummaryError.statusCode).json(pieceSummaryError.data);
-      }
-
-      pieceSummaryRows.forEach((row) => {
-        const sellerId = Number(row.sellerId || row.seller_id || row.user_id || row.id);
-        if (!sellerId) {
-          return;
-        }
-        billPieceSummaryUnsoldMap.set(sellerId, Number(row.unsoldPiece || row.unsold_piece || 0));
-      });
+          const key = [
+            sellerId,
+            row.session_mode,
+            row.purchase_category,
+            String(row.amount),
+            row.box_value
+          ].join('|');
+          childCurrentUnsoldMap.set(key, Number(childCurrentUnsoldMap.get(key) || 0) + Number(boxValue));
+        });
+      }));
     }
 
-    const appliedPieceSummarySellerIds = new Set();
     res.json(result.rows.map((row) => {
       const totalPiece = Number(row.total_piece || 0);
       const manualKey = [row.root_seller_id, row.session_mode, row.purchase_category, String(row.amount), row.box_value].join('|');
       const manualUnsoldPiece = Number(manualUnsoldMap.get(manualKey) || 0);
-      const sellerId = Number(row.root_seller_id);
-      const pieceSummaryUnsoldPiece = billPieceSummaryUnsoldMap.get(sellerId);
-      const unsoldPiece = billPieceSummaryUnsoldMap.has(sellerId)
-        ? appliedPieceSummarySellerIds.has(sellerId)
-          ? 0
-          : Number(pieceSummaryUnsoldPiece || 0)
-        : !currentUserIsAdmin && sellerId === Number(req.user.id)
+      const unsoldPiece = !currentUserIsAdmin && Number(row.root_seller_id) === Number(req.user.id)
         ? Number(selfCurrentUnsoldMap.get(manualKey) || 0)
+        : !currentUserIsAdmin && childCurrentUnsoldMap.has(manualKey)
+          ? Number(childCurrentUnsoldMap.get(manualKey) || 0)
         : Number(row.unsold_piece || 0) + manualUnsoldPiece;
-      appliedPieceSummarySellerIds.add(sellerId);
       const soldPiece = Math.max(totalPiece - unsoldPiece, 0);
       const appliedRate = Number(row.applied_rate || 0);
 
