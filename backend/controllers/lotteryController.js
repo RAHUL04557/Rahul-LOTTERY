@@ -2916,7 +2916,6 @@ const getPurchaseEntries = async (req, res) => {
     const conditions = ['le.entry_source = $1'];
     let childSellerVisibilityParamIndex = null;
     let adminScopedBranchIds = [];
-    let childScopedBranchIds = [];
 
     if (req.user.role === 'admin') {
       if (sellerId) {
@@ -2940,14 +2939,17 @@ const getPurchaseEntries = async (req, res) => {
         conditions.push(`le.forwarded_by = $${params.length}`);
       }
     } else if (sellerId && sellerId !== Number(req.user.id)) {
-      childScopedBranchIds = await getDirectSellerBranchIds(req.user.id, sellerId);
+      const childSellerResult = await query(
+        "SELECT id FROM users WHERE id = $1 AND parent_id = $2 AND role = 'seller' LIMIT 1",
+        [sellerId, req.user.id]
+      );
 
-      if (childScopedBranchIds.length === 0) {
+      if (childSellerResult.rows.length === 0) {
         return res.status(403).json({ message: 'You can view purchase only for your direct sub stokist' });
       }
 
-      params.push(childScopedBranchIds);
-      conditions.push(`le.user_id = ANY($${params.length}::int[])`);
+      params.push(sellerId);
+      conditions.push(`le.user_id = $${params.length}`);
       params.push(req.user.id);
       childSellerVisibilityParamIndex = params.length;
       params.push(sellerId);
@@ -3000,10 +3002,9 @@ const getPurchaseEntries = async (req, res) => {
     );
 
     if (shouldUseAcceptedSnapshotView) {
-      const snapshotSellerIds = childScopedBranchIds.length > 0 ? childScopedBranchIds : [sellerId];
       const [snapshotRows, manualSavedRows, localSavedResult] = await Promise.all([
-        Promise.all(snapshotSellerIds.map((targetId) => getLatestAcceptedUnsoldSnapshotRows({
-          targetSellerId: targetId,
+        getLatestAcceptedUnsoldSnapshotRows({
+          targetSellerId: sellerId,
           viewerUserId: req.user.id,
           bookingDate,
           sessionMode,
@@ -3011,16 +3012,16 @@ const getPurchaseEntries = async (req, res) => {
           amount,
           boxValue,
           respectLiveMemoState: true
-        }))).then((rows) => rows.flat()),
-        Promise.all(snapshotSellerIds.map((targetId) => getManualSavedUnsoldRows({
-          targetSellerId: targetId,
+        }),
+        getManualSavedUnsoldRows({
+          targetSellerId: sellerId,
           actorUserId: req.user.id,
           bookingDate,
           sessionMode,
           purchaseCategory,
           amount,
           boxValue
-        }))).then((rows) => rows.flat()),
+        }),
         query(
           `SELECT le.*, u.username, parent_user.username AS parent_username, forwarded_user.username AS forwarded_by_username
            FROM lottery_entries le
@@ -3028,7 +3029,7 @@ const getPurchaseEntries = async (req, res) => {
            LEFT JOIN users parent_user ON parent_user.id = le.sent_to_parent
            LEFT JOIN users forwarded_user ON forwarded_user.id = le.forwarded_by
            WHERE le.entry_source = $1
-             AND le.user_id = ANY($2::int[])
+             AND le.user_id = $2
              AND LOWER(TRIM(le.status)) = $3
              AND (le.sent_to_parent = $4 OR le.forwarded_by = $4)
              ${bookingDate ? 'AND le.booking_date = $5::date' : ''}
@@ -3039,7 +3040,7 @@ const getPurchaseEntries = async (req, res) => {
            ORDER BY le.booking_date DESC, le.session_mode ASC, u.username ASC, le.number ASC`,
           [
             PURCHASE_ENTRY_SOURCE,
-            snapshotSellerIds,
+            sellerId,
             UNSOLD_LOCAL_STATUS,
             req.user.id,
             ...[
@@ -3073,12 +3074,7 @@ const getPurchaseEntries = async (req, res) => {
         const rowKey = buildUnsoldIdentityKey(row);
         return rows.findIndex((currentRow) => buildUnsoldIdentityKey(currentRow) === rowKey) === index;
       });
-      const scopedRows = combinedRows.map((row) => ({
-        ...row,
-        branch_user_id: row.user_id,
-        user_id: sellerId
-      }));
-      res.json(scopedRows.map(mapLotteryEntry));
+      res.json(combinedRows.map(mapLotteryEntry));
       return;
     }
 
@@ -3638,7 +3634,6 @@ const removePurchaseUnsoldEntries = async (req, res) => {
       seller_type: req.user.sellerType,
       parent_id: req.user.parentId
     };
-    let targetBranchIds = [targetSellerId];
 
     if (targetSellerId !== Number(req.user.id)) {
       const childSellerResult = await query(
@@ -3651,11 +3646,10 @@ const removePurchaseUnsoldEntries = async (req, res) => {
       }
 
       targetSeller = childSellerResult.rows[0];
-      targetBranchIds = await getDirectSellerBranchIds(req.user.id, targetSellerId);
     }
 
     const params = [
-      targetBranchIds,
+      targetSellerId,
       PURCHASE_ENTRY_SOURCE,
       sessionMode,
       purchaseCategory,
@@ -3685,7 +3679,7 @@ const removePurchaseUnsoldEntries = async (req, res) => {
     const selectedEntriesResult = await query(
       `SELECT le.*
        FROM lottery_entries le
-       WHERE le.user_id = ANY($1::int[])
+       WHERE le.user_id = $1
          AND le.entry_source = $2
          AND le.session_mode = $3
          AND le.purchase_category = $4
@@ -3700,7 +3694,7 @@ const removePurchaseUnsoldEntries = async (req, res) => {
 
     if (selectedEntriesResult.rows.length === 0 && targetSellerId !== Number(req.user.id)) {
       const manualParams = [
-        targetBranchIds,
+        targetSellerId,
         PURCHASE_ENTRY_SOURCE,
         req.user.id,
         'saved_unsold',
@@ -3721,7 +3715,7 @@ const removePurchaseUnsoldEntries = async (req, res) => {
         `DELETE FROM lottery_entry_history h
          USING lottery_entries le
          WHERE h.entry_id = le.id
-           AND le.user_id = ANY($1::int[])
+           AND le.user_id = $1
            AND le.entry_source = $2
            AND h.actor_user_id = $3
            AND h.action_type = $4
@@ -3835,7 +3829,6 @@ const checkPurchaseUnsoldRemoveEntries = async (req, res) => {
       seller_type: req.user.sellerType,
       parent_id: req.user.parentId
     };
-    let targetBranchIds = [targetSellerId];
 
     if (targetSellerId !== Number(req.user.id)) {
       const childSellerResult = await query(
@@ -3848,11 +3841,10 @@ const checkPurchaseUnsoldRemoveEntries = async (req, res) => {
       }
 
       targetSeller = childSellerResult.rows[0];
-      targetBranchIds = await getDirectSellerBranchIds(req.user.id, targetSellerId);
     }
 
     const params = [
-      targetBranchIds,
+      targetSellerId,
       PURCHASE_ENTRY_SOURCE,
       sessionMode,
       purchaseCategory,
@@ -3882,7 +3874,7 @@ const checkPurchaseUnsoldRemoveEntries = async (req, res) => {
     const selectedEntriesResult = await query(
       `SELECT le.*
        FROM lottery_entries le
-       WHERE le.user_id = ANY($1::int[])
+       WHERE le.user_id = $1
          AND le.entry_source = $2
          AND le.session_mode = $3
          AND le.purchase_category = $4
@@ -3896,15 +3888,15 @@ const checkPurchaseUnsoldRemoveEntries = async (req, res) => {
     );
 
     if (selectedEntriesResult.rows.length === 0 && targetSellerId !== Number(req.user.id)) {
-      const manualRows = (await Promise.all(targetBranchIds.map((branchSellerId) => getManualSavedUnsoldRows({
-        targetSellerId: branchSellerId,
+      const manualRows = await getManualSavedUnsoldRows({
+        targetSellerId,
         actorUserId: req.user.id,
         bookingDate,
         sessionMode,
         purchaseCategory,
         amount: normalizedAmount,
         boxValue: normalizedBoxValue
-      })))).flat();
+      });
       const requestedNumberSet = new Set(numbersToRemove.numbers);
       const matchingManualRows = manualRows.filter((row) => requestedNumberSet.has(String(row.number || '')));
 
@@ -5868,7 +5860,7 @@ const getPurchasePieceSummary = async (req, res) => {
             const manualBranchUnsoldPiece = Number(manualBranchUnsoldMap.get(Number(seller.id)) || 0);
             sellerChildSnapshotUnsoldMap.set(
               Number(seller.id),
-              Math.max(childUnsoldPiece + manualBranchUnsoldPiece, summaryUnsoldPiece)
+              Math.max(childUnsoldPiece, summaryUnsoldPiece, manualBranchUnsoldPiece)
             );
           })
       );
