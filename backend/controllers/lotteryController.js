@@ -3411,7 +3411,6 @@ const markPurchaseEntriesUnsold = async (req, res) => {
     } else if (!isAdminRole(req.user.role)) {
       ownerStockFilter = `AND (
            le.sent_to_parent = $${selectedEntriesParams.push(req.user.id)}
-           OR le.forwarded_by = $${selectedEntriesParams.push(req.user.id)}
            OR (
              le.sent_to_parent = $${selectedEntriesParams.push(targetSellerId)}
              AND le.forwarded_by = $${selectedEntriesParams.push(targetSellerId)}
