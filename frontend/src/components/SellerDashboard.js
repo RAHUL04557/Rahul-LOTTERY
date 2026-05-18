@@ -55,9 +55,7 @@ const mapApiEntry = (entry) => ({
   id: entry.id,
   entryId: entry.entryId || entry.entry_id || null,
   userId: entry.userId || entry.user_id,
-  branchUserId: entry.branchUserId || entry.branch_user_id || null,
   username: entry.username,
-  branchUsername: entry.branchUsername || entry.branch_username || '',
   displaySeller: entry.forwardedByUsername || entry.username,
   forwardedBy: entry.forwardedBy,
   sentToParent: entry.sentToParent,
@@ -67,7 +65,6 @@ const mapApiEntry = (entry) => ({
   number: entry.number,
   price: Number(entry.boxValue || 0) * Number(entry.amount || 0),
   memoNumber: entry.memoNumber ?? entry.memo_number ?? null,
-  memoScopeKey: entry.memoScopeKey || entry.memo_scope_key || entry.branchUserId || entry.branch_user_id || null,
   purchaseMemoNumber: entry.purchaseMemoNumber ?? entry.purchase_memo_number ?? entry.memoNumber ?? entry.memo_number ?? null,
   memoRowOrder: entry.memoRowOrder ?? entry.memo_row_order ?? null,
   bookingDate: entry.bookingDate || entry.booking_date || null,
@@ -648,10 +645,7 @@ const buildPurchaseMemoSummaries = (entries = []) => {
       return;
     }
 
-    const memoScopeKey = String(entry.memoScopeKey || entry.branchUserId || entry.userId || '');
-    const memoKey = `${memoNumber}|${memoScopeKey}`;
     const entryNumberKey = [
-      memoScopeKey,
       memoNumber,
       entry.bookingDate || entry.booking_date || '',
       entry.sessionMode || entry.session_mode || '',
@@ -666,9 +660,7 @@ const buildPurchaseMemoSummaries = (entries = []) => {
     seenEntryKeys.add(entryNumberKey);
 
     const sentAtKey = entry.sentAt || entry.createdAt || `${entry.bookingDate || ''}-${memoNumber}`;
-    const memoEntry = memoMap.get(memoKey) || {
-      memoKey,
-      memoScopeKey,
+    const memoEntry = memoMap.get(memoNumber) || {
       memoNumber,
       totalPieceCount: 0,
       batches: new Map()
@@ -686,14 +678,12 @@ const buildPurchaseMemoSummaries = (entries = []) => {
     existingBatch.rowCount += 1;
     memoEntry.totalPieceCount += pieceCount;
     memoEntry.batches.set(sentAtKey, existingBatch);
-    memoMap.set(memoKey, memoEntry);
+    memoMap.set(memoNumber, memoEntry);
   });
 
   return Array.from(memoMap.values())
-    .sort((left, right) => left.memoNumber - right.memoNumber || String(left.memoScopeKey).localeCompare(String(right.memoScopeKey)))
+    .sort((left, right) => left.memoNumber - right.memoNumber)
     .map((memoEntry) => ({
-      memoKey: memoEntry.memoKey,
-      memoScopeKey: memoEntry.memoScopeKey,
       memoNumber: memoEntry.memoNumber,
       totalPieceCount: memoEntry.totalPieceCount,
       drawDate: Array.from(memoEntry.batches.values())[0]?.drawDate || '',
@@ -715,8 +705,7 @@ const buildCurrentMemoSummaries = (entries = []) => {
 const buildUnsoldMemoSummaries = (entries = []) => {
   const normalizedEntries = entries.map((entry) => ({
     ...entry,
-    purchaseMemoNumber: entry.memoNumber ?? entry.memo_number ?? entry.purchaseMemoNumber ?? entry.purchase_memo_number ?? null,
-    memoScopeKey: getUnsoldEntryMemoScopeKey(entry)
+    purchaseMemoNumber: entry.memoNumber ?? entry.memo_number ?? entry.purchaseMemoNumber ?? entry.purchase_memo_number ?? null
   }));
 
   return buildPurchaseMemoSummaries(normalizedEntries);
@@ -736,16 +725,6 @@ const getUnsoldEntryMemoNumber = (entry = {}) => Number(
   || entry.purchaseMemoNumber
   || entry.purchase_memo_number
   || 0
-);
-
-const getUnsoldEntryMemoScopeKey = (entry = {}) => String(
-  entry.memoScopeKey
-  || entry.memo_scope_key
-  || entry.branchUserId
-  || entry.branch_user_id
-  || entry.userId
-  || entry.user_id
-  || ''
 );
 
 const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, options = {}) => {
@@ -1133,7 +1112,6 @@ const SellerDashboard = ({
   const [purchaseSendMemoPopupOpen, setPurchaseSendMemoPopupOpen] = useState(false);
   const [purchaseSendMemoSelectionIndex, setPurchaseSendMemoSelectionIndex] = useState(0);
   const [unsoldMemoNumber, setUnsoldMemoNumber] = useState(null);
-  const [unsoldMemoKey, setUnsoldMemoKey] = useState(null);
   const [unsoldRemoveMemoNumber, setUnsoldRemoveMemoNumber] = useState(null);
   const [unsoldMemoPopupOpen, setUnsoldMemoPopupOpen] = useState(false);
   const [unsoldMemoSelectionIndex, setUnsoldMemoSelectionIndex] = useState(0);
@@ -2614,7 +2592,6 @@ const SellerDashboard = ({
       preferNextUnsoldMemoRef.current = true;
       setUnsoldPartyId('');
       setUnsoldMemoNumber(nextUnsoldMemoNumber);
-      setUnsoldMemoKey(null);
       setUnsoldMemoSelectionIndex(0);
       setUnsoldMemoPopupOpen(false);
       setUnsoldDraftRows([]);
@@ -2640,7 +2617,6 @@ const SellerDashboard = ({
     setBookingDate(nextDate);
     preferNextUnsoldMemoRef.current = activeTab === 'unsold';
     setUnsoldMemoNumber(null);
-    setUnsoldMemoKey(null);
     setUnsoldRemoveMemoNumber(null);
     setUnsoldMemoSelectionIndex(0);
     setUnsoldMemoPopupOpen(false);
@@ -3356,9 +3332,8 @@ const SellerDashboard = ({
       quantity: ''
     },
     ...unsoldMemoSummaries.map((memo) => ({
-      key: `unsold-memo-${memo.memoKey || memo.memoNumber}`,
+      key: `unsold-memo-${memo.memoNumber}`,
       memoNumber: memo.memoNumber,
-      memoScopeKey: memo.memoScopeKey,
       isNew: false,
       label: String(memo.memoNumber),
       drawDate: memo.drawDate,
@@ -3368,8 +3343,6 @@ const SellerDashboard = ({
     }))
   ];
   const selectedUnsoldMemoOption = unsoldMemoOptions.find((option) => (
-    unsoldMemoKey && option.key === unsoldMemoKey
-  )) || unsoldMemoOptions.find((option) => (
     !option.isNew && Number(option.memoNumber) === Number(unsoldMemoNumber)
   )) || unsoldMemoOptions[0] || null;
   const unsoldRemoveMemoSummaries = buildCurrentMemoSummaries(unsoldRemoveMemoEntries);
@@ -3415,21 +3388,16 @@ const SellerDashboard = ({
 
   const openUnsoldMemoPopup = () => {
     const nextIndex = Math.max(
-      currentUnsoldMemoOptions.findIndex((option) => (
-        activeTab === 'unsold' && unsoldMemoKey
-          ? option.key === unsoldMemoKey
-          : Number(option.memoNumber) === Number(currentUnsoldMemoNumber) && !option.isNew
-      )),
+      currentUnsoldMemoOptions.findIndex((option) => Number(option.memoNumber) === Number(currentUnsoldMemoNumber) && !option.isNew),
       0
     );
     setUnsoldMemoSelectionIndex(nextIndex);
     setUnsoldMemoPopupOpen(true);
   };
 
-  const hydrateUnsoldDraftRowsForMemo = (memoNumber, sourceEntries = visibleUnsoldMemoEntries, memoScopeKey = '') => {
+  const hydrateUnsoldDraftRowsForMemo = (memoNumber, sourceEntries = visibleUnsoldMemoEntries) => {
     const selectedEntries = sourceEntries.filter((entry) => (
       getUnsoldEntryMemoNumber(entry) === Number(memoNumber)
-      && (!memoScopeKey || getUnsoldEntryMemoScopeKey(entry) === String(memoScopeKey))
     ));
     const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, amount, {
       existingUnsoldMemo: true,
@@ -3553,7 +3521,6 @@ const SellerDashboard = ({
       preferNextUnsoldMemoRef.current = false;
       deletedUnsoldMemoEntryIdsRef.current = [];
       setUnsoldMemoNumber(option.memoNumber);
-      setUnsoldMemoKey(option.isNew ? null : option.key);
     }
     setUnsoldMemoSelectionIndex(Math.max(
       currentUnsoldMemoOptions.findIndex((currentOption) => currentOption.key === option.key),
@@ -3574,7 +3541,7 @@ const SellerDashboard = ({
       if (activeTab === 'unsold-remove') {
         hydrateUnsoldRemoveDraftRowsForMemo(option.memoNumber);
       } else {
-        hydrateUnsoldDraftRowsForMemo(option.memoNumber, visibleUnsoldMemoEntries, option.memoScopeKey || '');
+        hydrateUnsoldDraftRowsForMemo(option.memoNumber);
       }
     }
     window.requestAnimationFrame(() => unsoldCodeInputRef.current?.focus());
@@ -3588,7 +3555,6 @@ const SellerDashboard = ({
     const nextNewMemoOption = unsoldMemoOptions[0];
     if (nextNewMemoOption) {
       setUnsoldMemoNumber(nextNewMemoOption.memoNumber);
-      setUnsoldMemoKey(null);
     }
   }, [activeTab, unsoldMemoNumber, unsoldMemoOptions, unsoldMemoPopupOpen]);
 
@@ -3607,7 +3573,6 @@ const SellerDashboard = ({
     }
 
     setUnsoldMemoNumber(nextNewMemoOption.memoNumber);
-    setUnsoldMemoKey(null);
     setUnsoldMemoSelectionIndex(0);
     setUnsoldDraftRows([]);
     setUnsoldActiveRowIndex(0);
@@ -3637,12 +3602,11 @@ const SellerDashboard = ({
 
     const selectedMemoExists = visibleUnsoldMemoEntries.some((entry) => (
       getUnsoldEntryMemoNumber(entry) === Number(unsoldMemoNumber)
-      && (!selectedUnsoldMemoOption?.memoScopeKey || getUnsoldEntryMemoScopeKey(entry) === String(selectedUnsoldMemoOption.memoScopeKey))
     ));
     if (selectedMemoExists && unsoldDraftRows.length === 0) {
-      hydrateUnsoldDraftRowsForMemo(unsoldMemoNumber, visibleUnsoldMemoEntries, selectedUnsoldMemoOption?.memoScopeKey || '');
+      hydrateUnsoldDraftRowsForMemo(unsoldMemoNumber, visibleUnsoldMemoEntries);
     }
-  }, [activeTab, visibleUnsoldMemoEntries, unsoldMemoNumber, unsoldMemoPopupOpen, unsoldDraftRows, selectedUnsoldMemoOption?.memoScopeKey]);
+  }, [activeTab, visibleUnsoldMemoEntries, unsoldMemoNumber, unsoldMemoPopupOpen, unsoldDraftRows]);
 
   useEffect(() => {
     if (activeTab !== 'unsold' || !selectedUnsoldMemoOption?.isNew || unsoldMemoPopupOpen) {
@@ -3672,16 +3636,13 @@ const SellerDashboard = ({
       setUnsoldMemoSelectionIndex(0);
       if (unsoldMemoNumber !== null || unsoldRemoveMemoNumber !== null) {
         setUnsoldMemoNumber(null);
-        setUnsoldMemoKey(null);
         setUnsoldRemoveMemoNumber(null);
       }
       return;
     }
 
     const existingMemoOption = currentMemoOptions.find((option) => (
-      activeTab === 'unsold' && unsoldMemoKey
-        ? option.key === unsoldMemoKey
-        : Number(option.memoNumber) === Number(currentMemoNumber)
+      Number(option.memoNumber) === Number(currentMemoNumber)
     ));
 
     setUnsoldMemoSelectionIndex((currentIndex) => {
@@ -3697,7 +3658,6 @@ const SellerDashboard = ({
     unsoldMemoOptions,
     unsoldRemoveMemoOptions,
     unsoldMemoNumber,
-    unsoldMemoKey,
     unsoldRemoveMemoNumber,
     unsoldMemoPopupOpen
   ]);
@@ -4058,7 +4018,6 @@ const SellerDashboard = ({
   function startNewUnsoldRow() {
     if (activeTab === 'unsold') {
       setUnsoldMemoNumber(nextUnsoldMemoNumber);
-      setUnsoldMemoKey(null);
       setUnsoldMemoSelectionIndex(0);
       setUnsoldMemoPopupOpen(false);
       setUnsoldDraftRows([]);
@@ -4906,7 +4865,6 @@ const SellerDashboard = ({
 
     try {
       const effectiveMemoNumber = unsoldMemoNumber || selectedUnsoldMemoOption?.memoNumber || nextUnsoldMemoNumber;
-      const effectiveMemoScopeKey = selectedUnsoldMemoOption?.memoScopeKey || '';
       if (editingExistingUnsoldMemo) {
         const entryIds = [
           ...deletedUnsoldMemoEntryIdsRef.current,
@@ -4965,7 +4923,6 @@ const SellerDashboard = ({
         const refreshedMemoRows = buildPurchaseSendDraftRowsFromEntries(
           (refreshedUnsoldEntries || []).filter((entry) => (
             getUnsoldEntryMemoNumber(entry) === Number(effectiveMemoNumber)
-            && (!effectiveMemoScopeKey || getUnsoldEntryMemoScopeKey(entry) === String(effectiveMemoScopeKey))
           )),
           amount,
           {
@@ -4987,7 +4944,6 @@ const SellerDashboard = ({
           editingExistingUnsoldMemo
             ? (refreshedUnsoldEntries || []).filter((entry) => (
               getUnsoldEntryMemoNumber(entry) !== Number(effectiveMemoNumber)
-              || (effectiveMemoScopeKey && getUnsoldEntryMemoScopeKey(entry) !== String(effectiveMemoScopeKey))
             ))
             : refreshedUnsoldEntries || []
         );
@@ -4998,12 +4954,10 @@ const SellerDashboard = ({
           setSuccess(`Unsold memo ${effectiveMemoNumber} deleted successfully`);
           setUnsoldMemoEntries((currentEntries) => currentEntries.filter((entry) => (
             getUnsoldEntryMemoNumber(entry) !== Number(effectiveMemoNumber)
-            || (effectiveMemoScopeKey && getUnsoldEntryMemoScopeKey(entry) !== String(effectiveMemoScopeKey))
           )));
         }
         clearDraftRows(sellerLocalDraftKey);
         setUnsoldMemoNumber(nextMemoNumber);
-        setUnsoldMemoKey(null);
         setUnsoldMemoSelectionIndex(0);
         setUnsoldMemoPopupOpen(false);
         setUnsoldDraftRows([]);
@@ -5732,7 +5686,6 @@ const SellerDashboard = ({
             preferNextUnsoldMemoRef.current = activeTab === 'unsold';
             setUnsoldPartyId(String(party?.id || ''));
             setUnsoldMemoNumber(null);
-            setUnsoldMemoKey(null);
             setUnsoldRemoveMemoNumber(null);
             setUnsoldMemoSelectionIndex(0);
             setUnsoldMemoPopupOpen(false);
@@ -5770,10 +5723,7 @@ const SellerDashboard = ({
                   return;
                 }
 
-                setUnsoldMemoPopupOpen(false);
-                window.setTimeout(() => {
-                  unsoldMemoRef.current?.focus();
-                }, 0);
+                unsoldMemoRef.current?.focus();
               });
             }
           }}
