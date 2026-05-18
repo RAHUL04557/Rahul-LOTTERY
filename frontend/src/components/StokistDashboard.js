@@ -3745,7 +3745,7 @@ const StokistDashboard = ({
           bookingDate,
           sessionMode: filter.sessionMode,
           sellerId: (isUnsoldLookup || isUnsoldRemoveLookup) && String(targetSellerId) !== String(user?.id) ? targetSellerId : undefined,
-          status: isUnsoldRemoveLookup ? 'unsold' : 'accepted',
+          status: (isUnsoldLookup || isUnsoldRemoveLookup) ? 'unsold' : 'accepted',
           purchaseCategory: filter.purchaseCategory,
           amount,
           boxValue: filter.boxValue || undefined,
@@ -3782,11 +3782,11 @@ const StokistDashboard = ({
         : isUnsoldLookup
         ? (response.data || []).filter((entry) => {
           const normalizedStatus = String(entry.status || '').trim().toLowerCase();
-          if (normalizedStatus && normalizedStatus !== 'accepted') {
+          if (normalizedStatus && !['unsold', 'unsold_saved', 'unsold_sent', 'accepted'].includes(normalizedStatus)) {
             return false;
           }
 
-          if (savedUnsoldNumberKeys.has(buildUnsoldStockKey(entry))) {
+          if (normalizedStatus === 'accepted' && savedUnsoldNumberKeys.has(buildUnsoldStockKey(entry))) {
             return false;
           }
 
