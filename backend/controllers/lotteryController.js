@@ -4877,15 +4877,76 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
     );
     const currentUnsoldEntries = Array.from(currentUnsoldByKey.values());
     const currentUnsoldKeySet = new Set(currentUnsoldByKey.keys());
-    const currentUnsoldChanged = currentUnsoldKeySet.size !== alreadySentKeySet.size
-      || [...currentUnsoldKeySet].some((entryKey) => !alreadySentKeySet.has(entryKey));
-    const pendingSendEntries = currentUnsoldChanged ? currentUnsoldEntries : [];
+    const currentIsSubsetOfAlreadySent = currentUnsoldKeySet.size > 0
+      && currentUnsoldKeySet.size < alreadySentKeySet.size
+      && [...currentUnsoldKeySet].every((entryKey) => alreadySentKeySet.has(entryKey));
+    const latestAlreadySentAt = alreadySentEntries.reduce((latestTime, entry) => {
+      const entryTime = new Date(entry.created_at || 0).getTime();
+      return Number.isFinite(entryTime) ? Math.max(latestTime, entryTime) : latestTime;
+    }, 0);
+    let hasRemoveAfterLatestSend = false;
+
+    if (currentIsSubsetOfAlreadySent && latestAlreadySentAt > 0) {
+      const removeCheckParams = [
+        visibleUserIds,
+        PURCHASE_ENTRY_SOURCE,
+        req.user.id,
+        new Date(latestAlreadySentAt).toISOString()
+      ];
+      const removeCheckConditions = [
+        'le.user_id = ANY($1::int[])',
+        'le.entry_source = $2',
+        'h.actor_user_id = $3',
+        "h.action_type = 'unsold_removed'",
+        'h.created_at > $4::timestamp'
+      ];
+
+      if (bookingDate) {
+        removeCheckParams.push(bookingDate);
+        removeCheckConditions.push(`h.booking_date = $${removeCheckParams.length}::date`);
+      }
+
+      if (sessionMode) {
+        removeCheckParams.push(sessionMode);
+        removeCheckConditions.push(`h.session_mode = $${removeCheckParams.length}`);
+      }
+
+      if (purchaseCategory) {
+        removeCheckParams.push(purchaseCategory);
+        removeCheckConditions.push(`h.purchase_category = $${removeCheckParams.length}`);
+      }
+
+      if (normalizedAmount) {
+        removeCheckParams.push(normalizedAmount);
+        removeCheckConditions.push(`h.amount = $${removeCheckParams.length}::numeric`);
+      }
+
+      const removeCheckResult = await query(
+        `SELECT 1
+         FROM lottery_entry_history h
+         INNER JOIN lottery_entries le ON le.id = h.entry_id
+         WHERE ${removeCheckConditions.join(' AND ')}
+         LIMIT 1`,
+        removeCheckParams
+      );
+      hasRemoveAfterLatestSend = removeCheckResult.rows.length > 0;
+    }
+
+    const effectiveCurrentUnsoldEntries = currentIsSubsetOfAlreadySent && !hasRemoveAfterLatestSend
+      ? alreadySentEntries
+      : currentUnsoldEntries;
+    const effectiveCurrentUnsoldKeySet = currentIsSubsetOfAlreadySent && !hasRemoveAfterLatestSend
+      ? alreadySentKeySet
+      : currentUnsoldKeySet;
+    const currentUnsoldChanged = effectiveCurrentUnsoldKeySet.size !== alreadySentKeySet.size
+      || [...effectiveCurrentUnsoldKeySet].some((entryKey) => !alreadySentKeySet.has(entryKey));
+    const pendingSendEntries = currentUnsoldChanged ? effectiveCurrentUnsoldEntries : [];
 
     const totalPiece = allEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
-    const unsoldPiece = currentUnsoldEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
+    const unsoldPiece = effectiveCurrentUnsoldEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
     const alreadySentPiece = alreadySentEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
     const pendingSendPiece = pendingSendEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
-    const unsoldCount = currentUnsoldEntries.length;
+    const unsoldCount = effectiveCurrentUnsoldEntries.length;
     const aggregatedRow = totalPiece > 0 || unsoldPiece > 0 || alreadySentPiece > 0 || pendingSendPiece > 0
       ? [{
         sellerId: req.user.id,
@@ -5183,7 +5244,8 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
          h.booking_date,
          h.purchase_category,
          le.memo_number,
-         le.purchase_memo_number
+         le.purchase_memo_number,
+         h.created_at
        FROM lottery_entry_history h
        INNER JOIN lottery_entries le ON le.id = h.entry_id
        CROSS JOIN latest_send_batch batch
@@ -5209,11 +5271,59 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     }
     const selectedKeySet = new Set(selectedRows.map(buildSendEntryKey));
     const alreadySentKeySet = new Set((alreadySentResult.rows || []).map(buildSendEntryKey));
+    const selectedIsSubsetOfAlreadySent = selectedKeySet.size > 0
+      && selectedKeySet.size < alreadySentKeySet.size
+      && [...selectedKeySet].every((entryKey) => alreadySentKeySet.has(entryKey));
+    let hasRemoveAfterLatestSend = false;
+
+    if (selectedIsSubsetOfAlreadySent) {
+      const latestAlreadySentAt = (alreadySentResult.rows || []).reduce((latestTime, entry) => {
+        const entryTime = new Date(entry.created_at || 0).getTime();
+        return Number.isFinite(entryTime) ? Math.max(latestTime, entryTime) : latestTime;
+      }, 0);
+
+      if (latestAlreadySentAt > 0) {
+        const removeCheckParams = [
+          visibleUserIds,
+          PURCHASE_ENTRY_SOURCE,
+          req.user.id,
+          new Date(latestAlreadySentAt).toISOString(),
+          bookingDate,
+          sessionMode,
+          purchaseCategory
+        ];
+        const removeCheckFilters = [
+          'le.user_id = ANY($1::int[])',
+          'le.entry_source = $2',
+          'h.actor_user_id = $3',
+          "h.action_type = 'unsold_removed'",
+          'h.created_at > $4::timestamp',
+          'h.booking_date = $5::date',
+          'h.session_mode = $6',
+          '($7::text IS NULL OR h.purchase_category = $7)'
+        ];
+
+        if (normalizedAmount) {
+          removeCheckParams.push(normalizedAmount);
+          removeCheckFilters.push(`h.amount = $${removeCheckParams.length}::numeric`);
+        }
+
+        const removeCheckResult = await query(
+          `SELECT 1
+           FROM lottery_entry_history h
+           INNER JOIN lottery_entries le ON le.id = h.entry_id
+           WHERE ${removeCheckFilters.join(' AND ')}
+           LIMIT 1`,
+          removeCheckParams
+        );
+        hasRemoveAfterLatestSend = removeCheckResult.rows.length > 0;
+      }
+    }
     const sameAsAlreadySent = selectedKeySet.size > 0
       && selectedKeySet.size === alreadySentKeySet.size
       && [...selectedKeySet].every((entryKey) => alreadySentKeySet.has(entryKey));
 
-    if (sameAsAlreadySent) {
+    if (sameAsAlreadySent || (selectedIsSubsetOfAlreadySent && !hasRemoveAfterLatestSend)) {
       return res.status(400).json({ message: 'Ye unsold numbers already send ho chuke hain' });
     }
 
@@ -6191,6 +6301,17 @@ const getPurchasePieceSummary = async (req, res) => {
         billStyleUnsoldMap.set(sellerId, Number(billStyleUnsoldMap.get(sellerId) || 0) + Number(row.manual_unsold_piece || 0));
       });
 
+      const selfSellerId = Number(req.user.id);
+      const selfSummaryUnsoldPiece = Number(summaryMap.get(selfSellerId)?.unsold_piece || 0);
+      sellerChildSnapshotUnsoldMap.set(
+        selfSellerId,
+        Math.max(
+          selfSummaryUnsoldPiece,
+          Number(manualBranchUnsoldMap.get(selfSellerId) || 0),
+          Number(billStyleUnsoldMap.get(selfSellerId) || 0)
+        )
+      );
+
       await Promise.all(
         sellers
           .filter((seller) => Number(seller.id) !== Number(req.user.id))
@@ -6290,9 +6411,11 @@ const getPurchasePieceSummary = async (req, res) => {
 
     res.json(sellers.map((seller) => {
       const summary = summaryMap.get(Number(seller.id)) || {};
-      const resolvedUnsoldPiece = currentUserIsAdmin || Number(seller.id) === Number(req.user.id)
+      const resolvedUnsoldPiece = currentUserIsAdmin
         ? Number(summary.unsold_piece || 0)
-        : Number(sellerChildSnapshotUnsoldMap.get(Number(seller.id)) || 0);
+        : sellerChildSnapshotUnsoldMap.has(Number(seller.id))
+          ? Number(sellerChildSnapshotUnsoldMap.get(Number(seller.id)) || 0)
+          : Number(summary.unsold_piece || 0);
       return {
         sellerId: seller.id,
         sellerName: seller.username,
@@ -6345,6 +6468,23 @@ const getPurchaseBillSummary = async (req, res) => {
     if (normalizedAmount) {
       params.push(normalizedAmount);
       conditions.push(`le.amount = $${params.length}::numeric`);
+    }
+
+    if (!currentUserIsAdmin) {
+      conditions.push(`(
+        LOWER(TRIM(le.status)) NOT IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')
+        OR le.forwarded_by = $1
+        OR le.sent_to_parent = $1
+        OR (
+          le.user_id = $1
+          AND (
+            le.forwarded_by IS NULL
+            OR le.forwarded_by = $1
+            OR le.sent_to_parent IS NULL
+            OR le.sent_to_parent = $1
+          )
+        )
+      )`);
     }
 
     const result = await query(
