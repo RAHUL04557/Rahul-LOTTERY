@@ -3386,12 +3386,8 @@ const markPurchaseEntriesUnsold = async (req, res) => {
       targetSeller = childSellerResult.rows[0];
     }
 
-    const targetStockSellerIds = targetSellerId === Number(req.user.id)
-      ? [targetSellerId]
-      : await getDirectSellerBranchIds(req.user.id, targetSellerId);
-
     const selectedEntriesParams = [
-      targetStockSellerIds.length > 0 ? targetStockSellerIds : [targetSellerId],
+      targetSellerId,
       PURCHASE_ENTRY_SOURCE,
       sessionMode,
       purchaseCategory,
@@ -3464,7 +3460,7 @@ const markPurchaseEntriesUnsold = async (req, res) => {
       selectedEntriesResult = await query(
         `SELECT le.*
          FROM lottery_entries le
-         WHERE le.user_id = ANY($1::int[])
+         WHERE le.user_id = $1
            AND le.entry_source = $2
            AND LOWER(TRIM(le.status)) = 'accepted'
            AND le.session_mode = $3
@@ -3553,17 +3549,15 @@ const markPurchaseEntriesUnsold = async (req, res) => {
         memoNumber: resolvedMemoNumber
       });
 
-      const manualRows = (await Promise.all((targetStockSellerIds.length > 0 ? targetStockSellerIds : [targetSellerId]).map(
-        (branchSellerId) => getManualSavedUnsoldRows({
-          targetSellerId: branchSellerId,
-          actorUserId: req.user.id,
-          bookingDate,
-          sessionMode,
-          purchaseCategory,
-          amount: normalizedAmount,
-          boxValue: normalizedBoxValue
-        })
-      ))).flat();
+      const manualRows = await getManualSavedUnsoldRows({
+        targetSellerId,
+        actorUserId: req.user.id,
+        bookingDate,
+        sessionMode,
+        purchaseCategory,
+        amount: normalizedAmount,
+        boxValue: normalizedBoxValue
+      });
 
       return res.json({
         message: `${selectedEntriesResult.rows.length} purchase numbers saved as unsold`,
