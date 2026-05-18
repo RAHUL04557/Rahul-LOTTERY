@@ -1397,6 +1397,7 @@ const AdminDashboard = ({
   const [currentIndiaDateTime, setCurrentIndiaDateTime] = useState(() => getIndiaDateTimeParts());
   const [treeData, setTreeData] = useState(null);
   const [acceptEntries, setAcceptEntries] = useState([]);
+  const [acceptEntriesDate, setAcceptEntriesDate] = useState(getTodayDateValue());
   const [entryActionLoadingId, setEntryActionLoadingId] = useState(null);
   const [pieceSummaryOpen, setPieceSummaryOpen] = useState(false);
   const [pieceSummaryDate, setPieceSummaryDate] = useState(getTodayDateValue());
@@ -1980,13 +1981,19 @@ const AdminDashboard = ({
     }
   };
 
-  const loadAcceptEntries = async () => {
+  const loadAcceptEntries = async (dateOverride = '') => {
     try {
-      const response = await lotteryService.getReceivedEntries({ amount: initialAmount });
+      const response = await lotteryService.getReceivedEntries({ bookingDate: dateOverride || acceptEntriesDate, amount: initialAmount });
       setAcceptEntries(response.data.map(mapApiEntry));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading accept entries');
     }
+  };
+
+  const handleAcceptEntriesDateChange = (event) => {
+    const nextDate = event.target.value;
+    setAcceptEntriesDate(nextDate);
+    loadAcceptEntries(nextDate);
   };
 
   const handleAcceptEntryAction = async (entry, action) => {
@@ -7741,6 +7748,15 @@ const AdminDashboard = ({
                   <p>Purchase me saved local drafts yahan se seller/stockist/sub-stockist ko bhejo.</p>
                 </div>
                 <div className="send-purchase-actions">
+                  <label className="send-purchase-date-filter">
+                    <span>Date</span>
+                    <input
+                      type="date"
+                      value={purchaseBookingDate}
+                      onChange={(event) => setPurchaseBookingDate(event.target.value)}
+                      disabled={sendPurchaseLoading || Boolean(sendPurchaseSendingKey)}
+                    />
+                  </label>
                   <button type="button" className="btn-secondary" onClick={loadSendPurchaseDrafts} disabled={sendPurchaseLoading || Boolean(sendPurchaseSendingKey)}>
                     Refresh
                   </button>
@@ -8295,7 +8311,18 @@ const AdminDashboard = ({
               Accept Entries
             </button>
             <div className="accordion-content">
-              <h2>Accept Entries</h2>
+              <div className="accept-seller-lot-header">
+                <h2>Accept Entries</h2>
+                <label className="send-purchase-date-filter">
+                  <span>Date</span>
+                  <input
+                    type="date"
+                    value={acceptEntriesDate}
+                    onChange={handleAcceptEntriesDateChange}
+                    disabled={Boolean(entryActionLoadingId)}
+                  />
+                </label>
+              </div>
               <EntriesTableView
                 entries={latestAcceptEntries}
                 showSeller

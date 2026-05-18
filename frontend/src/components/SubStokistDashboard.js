@@ -1718,14 +1718,15 @@ const SubStokistDashboard = ({
     }
   };
 
-  const loadUnsoldSendSummary = async () => {
+  const loadUnsoldSendSummary = async (dateOverride = '') => {
+    const summaryDateValue = dateOverride || bookingDate;
     setUnsoldSendLoading(true);
     setUnsoldSendOpen(true);
     setError('');
 
     try {
       const response = await lotteryService.getPurchaseUnsoldSendSummary({
-        bookingDate,
+        bookingDate: summaryDateValue,
         sessionMode,
         purchaseCategory: activePurchaseCategory,
         amount
@@ -1793,6 +1794,18 @@ const SubStokistDashboard = ({
   const cancelUnsoldSendExitConfirmation = () => {
     setUnsoldSendExitConfirmOpen(false);
     setUnsoldSendExitConfirmSelected('no');
+  };
+
+  const handleUnsoldSendDateChange = (event) => {
+    const nextDate = event.target.value;
+    setBookingDate(nextDate);
+    loadUnsoldSendSummary(nextDate);
+  };
+
+  const handleAcceptSellerLotDateChange = (event) => {
+    const nextDate = event.target.value;
+    setBookingDate(nextDate);
+    loadReceivedEntries(nextDate);
   };
 
   const confirmUnsoldSendExit = () => {
@@ -2218,9 +2231,9 @@ const SubStokistDashboard = ({
     }
   };
 
-  const loadReceivedEntries = async () => {
+  const loadReceivedEntries = async (dateOverride = '') => {
     try {
-      const response = await lotteryService.getReceivedEntries({ amount });
+      const response = await lotteryService.getReceivedEntries({ bookingDate: dateOverride || bookingDate, amount });
       setReceivedEntries(response.data.map(mapApiEntry));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading seller lot');
@@ -6702,7 +6715,18 @@ const SubStokistDashboard = ({
           <div style={{ background: '#fff', width: 'min(820px, 100%)', borderRadius: '8px', padding: '20px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
               <h2 style={{ margin: 0 }}>F11 Send Unsold</h2>
-              <button type="button" onClick={requestUnsoldSendExitConfirmation}>Exit (Esc)</button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                <label className="send-purchase-date-filter">
+                  <span>Date</span>
+                  <input
+                    type="date"
+                    value={bookingDate}
+                    onChange={handleUnsoldSendDateChange}
+                    disabled={unsoldSendLoading || unsoldSendSaving}
+                  />
+                </label>
+                <button type="button" onClick={requestUnsoldSendExitConfirmation}>Exit (Esc)</button>
+              </div>
             </div>
             {unsoldSendLoading ? (
               <p>Loading...</p>
@@ -7233,6 +7257,15 @@ const SubStokistDashboard = ({
                   <p>Purchase me saved local drafts yahan se seller/stockist/sub-stockist ko bhejo.</p>
                 </div>
                 <div className="send-purchase-actions">
+                  <label className="send-purchase-date-filter">
+                    <span>Date</span>
+                    <input
+                      type="date"
+                      value={bookingDate}
+                      onChange={(event) => setBookingDate(event.target.value)}
+                      disabled={sendPurchaseLoading || Boolean(sendPurchaseSendingKey)}
+                    />
+                  </label>
                   <button type="button" className="btn-secondary" onClick={loadSendPurchaseDrafts} disabled={sendPurchaseLoading || Boolean(sendPurchaseSendingKey)}>
                     Refresh
                   </button>
@@ -8225,7 +8258,18 @@ const SubStokistDashboard = ({
               Accept Seller Lot
             </button>
             <div className="accordion-content">
-              <h2>Accept Seller Lot</h2>
+              <div className="accept-seller-lot-header">
+                <h2>Accept Seller Lot</h2>
+                <label className="send-purchase-date-filter">
+                  <span>Date</span>
+                  <input
+                    type="date"
+                    value={bookingDate}
+                    onChange={handleAcceptSellerLotDateChange}
+                    disabled={Boolean(entryActionLoadingId)}
+                  />
+                </label>
+              </div>
               <EntriesTableView
                 entries={sortedReceivedEntries}
                 showSeller

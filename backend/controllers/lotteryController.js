@@ -6663,15 +6663,19 @@ const sendEntries = async (req, res) => {
 const getReceivedEntries = async (req, res) => {
   try {
     const sessionMode = getRequiredSessionMode(req, res);
+    const bookingDate = normalizeBookingDate(req.query.bookingDate);
     const amount = String(req.query.amount || '').trim();
 
-    if (!sessionMode) {
+    if (!sessionMode || !bookingDate) {
+      if (!bookingDate) {
+        return res.status(400).json({ message: 'Valid booking date is required' });
+      }
       return;
     }
 
     await normalizeQueuedEntries([req.user.id]);
 
-    const params = [req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE, UNSOLD_SENT_STATUS];
+    const params = [req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE, UNSOLD_SENT_STATUS, bookingDate];
     const amountFilter = amount ? `AND le.amount = $${params.push(amount)}::numeric` : '';
 
     const entriesResult = await query(
@@ -6683,7 +6687,7 @@ const getReceivedEntries = async (req, res) => {
        LEFT JOIN users forwarded_user ON forwarded_user.id = le.forwarded_by
        WHERE le.sent_to_parent = $1
          AND le.session_mode = $2
-         AND le.booking_date = CURRENT_DATE
+         AND le.booking_date = $5::date
          AND (
            le.status = 'sent'
            OR (le.entry_source = $3 AND le.status IN ($4, '${UNSOLD_ACCEPTED_STATUS}'))
