@@ -3680,56 +3680,6 @@ const removePurchaseUnsoldEntries = async (req, res) => {
     if (normalizedBoxValue) {
       stockFilters.push(`AND le.box_value = $${params.push(normalizedBoxValue)}`);
     }
-
-    if (targetSellerId !== Number(req.user.id)) {
-      const manualRemoveParams = [
-        targetBranchIds,
-        PURCHASE_ENTRY_SOURCE,
-        req.user.id,
-        'saved_unsold',
-        sessionMode,
-        purchaseCategory,
-        bookingDate,
-        numbersToRemove.numbers
-      ];
-      const manualRemoveFilters = [];
-      if (normalizedAmount) {
-        manualRemoveFilters.push(`AND h.amount = $${manualRemoveParams.push(normalizedAmount)}::numeric`);
-      }
-      if (normalizedBoxValue) {
-        manualRemoveFilters.push(`AND h.box_value = $${manualRemoveParams.push(normalizedBoxValue)}`);
-      }
-
-      const manualRemoveResult = await query(
-        `DELETE FROM lottery_entry_history h
-         USING lottery_entries le
-         WHERE h.entry_id = le.id
-           AND (
-             le.user_id = ANY($1::int[])
-             OR (h.to_user_id = ANY($1::int[]) AND h.to_user_id <> h.actor_user_id)
-           )
-           AND le.entry_source = $2
-           AND h.actor_user_id = $3
-           AND h.action_type = $4
-           AND h.session_mode = $5
-           AND h.purchase_category = $6
-           AND h.booking_date = $7::date
-           AND h.number = ANY($8::varchar[])
-           AND ${latestSavedUnsoldHistoryCondition}
-           ${manualRemoveFilters.join('\n           ')}
-         RETURNING h.*`,
-        manualRemoveParams
-      );
-
-      if (manualRemoveResult.rows.length === numbersToRemove.numbers.length) {
-        return res.json({
-          message: `${manualRemoveResult.rows.length} unsold numbers removed`,
-          memoNumber: normalizedMemoNumber,
-          entries: []
-        });
-      }
-    }
-
     const ownershipFilter = isAdminRole(req.user.role) || targetSellerId === Number(req.user.id)
       ? ''
       : `AND (
@@ -3988,29 +3938,6 @@ const checkPurchaseUnsoldRemoveEntries = async (req, res) => {
     if (normalizedBoxValue) {
       stockFilters.push(`AND le.box_value = $${params.push(normalizedBoxValue)}`);
     }
-
-    if (targetSellerId !== Number(req.user.id)) {
-      const manualRows = (await Promise.all(targetBranchIds.map((branchSellerId) => getManualSavedUnsoldRows({
-        targetSellerId: branchSellerId,
-        actorUserId: req.user.id,
-        bookingDate,
-        sessionMode,
-        purchaseCategory,
-        amount: normalizedAmount,
-        boxValue: normalizedBoxValue
-      })))).flat();
-      const requestedNumberSet = new Set(numbersToRemove.numbers);
-      const matchingManualRows = manualRows.filter((row) => requestedNumberSet.has(String(row.number || '').padStart(5, '0')));
-
-      if (matchingManualRows.length === numbersToRemove.numbers.length) {
-        return res.json({
-          ok: true,
-          message: `${matchingManualRows.length} unsold numbers available`,
-          entries: matchingManualRows.map(mapLotteryEntry)
-        });
-      }
-    }
-
     const ownershipFilter = isAdminRole(req.user.role) || targetSellerId === Number(req.user.id)
       ? ''
       : `AND (
