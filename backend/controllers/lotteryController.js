@@ -4728,7 +4728,7 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
       }]
       : [];
 
-    const autoAccept = Boolean(parentUser && isWithinUnsoldAutoAcceptTime({
+    const autoAccept = Boolean(parentUser && isAdminRole(parentUser.role) && isWithinUnsoldAutoAcceptTime({
       sellerType: req.user.sellerType || req.user.seller_type,
       bookingDate,
       sessionMode,
@@ -5045,7 +5045,7 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       return res.status(400).json({ message: 'Ye unsold numbers already send ho chuke hain' });
     }
 
-    const shouldAutoAcceptToAdmin = Boolean(parentUser && isWithinUnsoldAutoAcceptTime({
+    const shouldAutoAcceptToAdmin = Boolean(parentUser && isAdminRole(parentUser.role) && isWithinUnsoldAutoAcceptTime({
       sellerType: req.user.sellerType || req.user.seller_type,
       bookingDate,
       sessionMode,
