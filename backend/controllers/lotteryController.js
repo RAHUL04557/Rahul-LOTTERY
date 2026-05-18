@@ -4591,8 +4591,7 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
       }
 
       if (normalizedStatus === UNSOLD_SENT_STATUS) {
-        return Number(entry.forwarded_by || 0) === Number(req.user.id)
-          || Number(entry.sent_to_parent || 0) === Number(req.user.id);
+        return Number(entry.forwarded_by || 0) === Number(req.user.id);
       }
 
       if (normalizedStatus === UNSOLD_ACCEPTED_STATUS) {
@@ -4729,7 +4728,7 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
       }]
       : [];
 
-    const autoAccept = Boolean(parentUser && isAdminRole(parentUser.role) && isWithinUnsoldAutoAcceptTime({
+    const autoAccept = Boolean(parentUser && isWithinUnsoldAutoAcceptTime({
       sellerType: req.user.sellerType || req.user.seller_type,
       bookingDate,
       sessionMode,
@@ -4838,7 +4837,7 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
         )
         OR (
           LOWER(TRIM(status)) = '${UNSOLD_SENT_STATUS}'
-          AND (forwarded_by = $6 OR sent_to_parent = $6)
+          AND forwarded_by = $6
         )
         OR (
           LOWER(TRIM(status)) = '${UNSOLD_ACCEPTED_STATUS}'
@@ -5046,7 +5045,7 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       return res.status(400).json({ message: 'Ye unsold numbers already send ho chuke hain' });
     }
 
-    const shouldAutoAcceptToAdmin = Boolean(parentUser && isAdminRole(parentUser.role) && isWithinUnsoldAutoAcceptTime({
+    const shouldAutoAcceptToAdmin = Boolean(parentUser && isWithinUnsoldAutoAcceptTime({
       sellerType: req.user.sellerType || req.user.seller_type,
       bookingDate,
       sessionMode,
@@ -5359,10 +5358,10 @@ const getPurchasePieceSummary = async (req, res) => {
     } else {
       const sellerIds = sellers.map((seller) => seller.id);
       const currentSellerType = normalizeSellerType(req.user.sellerType);
-      const params = [req.user.id, sellerIds, PURCHASE_ENTRY_SOURCE];
+      const params = [sellerIds, PURCHASE_ENTRY_SOURCE];
       const conditions = [
-        'bu.root_seller_id = ANY($2::int[])',
-        'le.entry_source = $3',
+        'le.user_id = ANY($1::int[])',
+        'le.entry_source = $2',
         `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
       ];
 
@@ -5388,29 +5387,13 @@ const getPurchasePieceSummary = async (req, res) => {
 
       const selfUnsoldParamIndex = params.length + 1;
       summaryResult = await query(
-        `WITH RECURSIVE branch_users AS (
-          SELECT id, parent_id, id AS root_seller_id
-          FROM users
-          WHERE id = $1
-          UNION ALL
-          SELECT u.id,
-                 u.parent_id,
-                 CASE WHEN branch_users.id = $1 THEN u.id ELSE branch_users.root_seller_id END AS root_seller_id
-          FROM users u
-          INNER JOIN branch_users ON u.parent_id = branch_users.id
-          WHERE u.role = 'seller'
-        )
-        SELECT bu.root_seller_id AS user_id,
-                COALESCE(SUM(CASE WHEN (
-                  le.memo_number IS NOT NULL
-                  OR le.user_id <> $${selfUnsoldParamIndex}
-                  OR LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
-                ) AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS total_piece,
+        `SELECT le.user_id,
+                COALESCE(SUM(CASE WHEN le.memo_number IS NOT NULL AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS total_piece,
                 COALESCE(SUM(CASE WHEN (
                   LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
                   OR (
                     LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}'
-                    AND (le.forwarded_by = $${selfUnsoldParamIndex} OR le.sent_to_parent = $${selfUnsoldParamIndex})
+                    AND le.forwarded_by = $${selfUnsoldParamIndex}
                   )
                   OR (
                     LOWER(TRIM(le.status)) = '${UNSOLD_LOCAL_STATUS}'
@@ -5418,7 +5401,6 @@ const getPurchasePieceSummary = async (req, res) => {
                   )
                 ) AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS unsold_piece
          FROM lottery_entries le
-         INNER JOIN branch_users bu ON bu.id = le.user_id
          WHERE ${conditions.join(' AND ')}
            AND (
              le.user_id <> $${selfUnsoldParamIndex}
@@ -5429,86 +5411,11 @@ const getPurchasePieceSummary = async (req, res) => {
                AND le.memo_number IS NOT NULL
              )
            )
-         GROUP BY bu.root_seller_id`,
+         GROUP BY le.user_id`,
         [...params, req.user.id]
       );
     }
     const summaryMap = new Map(summaryResult.rows.map((row) => [Number(row.user_id), row]));
-
-    if (!currentUserIsAdmin) {
-      const sentPurchaseParams = [req.user.id, sellers.map((seller) => seller.id), PURCHASE_ENTRY_SOURCE];
-      const sentPurchaseConditions = [
-        'h.actor_user_id = $1',
-        'h.action_type IN (\'purchase_forwarded\', \'purchase_forward_memo_updated\', \'purchase_self_memo_created\')',
-        'le.entry_source = $3',
-        "LOWER(TRIM(le.status)) IN ('accepted', 'unsold')",
-        'live_branch.root_seller_id = recipient_branch.root_seller_id',
-        'recipient_branch.root_seller_id = ANY($2::int[])'
-      ];
-
-      if (bookingDate) {
-        sentPurchaseParams.push(bookingDate);
-        sentPurchaseConditions.push(`h.booking_date = $${sentPurchaseParams.length}::date`);
-      }
-
-      if (sessionMode) {
-        sentPurchaseParams.push(sessionMode);
-        sentPurchaseConditions.push(`h.session_mode = $${sentPurchaseParams.length}`);
-      }
-
-      if (purchaseCategory) {
-        sentPurchaseParams.push(purchaseCategory);
-        sentPurchaseConditions.push(`h.purchase_category = $${sentPurchaseParams.length}`);
-      }
-
-      if (normalizedAmount) {
-        sentPurchaseParams.push(normalizedAmount);
-        sentPurchaseConditions.push(`h.amount = $${sentPurchaseParams.length}::numeric`);
-      }
-
-      const sentPurchaseResult = await query(
-        `WITH RECURSIVE branch_users AS (
-          SELECT id, parent_id, id AS root_seller_id
-          FROM users
-          WHERE id = $1
-          UNION ALL
-          SELECT u.id,
-                 u.parent_id,
-                 CASE WHEN branch_users.id = $1 THEN u.id ELSE branch_users.root_seller_id END AS root_seller_id
-          FROM users u
-          INNER JOIN branch_users ON u.parent_id = branch_users.id
-          WHERE u.role = 'seller'
-        ),
-        latest_sent_purchase AS (
-          SELECT DISTINCT ON (h.entry_id)
-                 h.entry_id,
-                 h.to_user_id,
-                 h.box_value
-          FROM lottery_entry_history h
-          INNER JOIN lottery_entries le ON le.id = h.entry_id
-          INNER JOIN branch_users live_branch ON live_branch.id = le.user_id
-          INNER JOIN branch_users recipient_branch ON recipient_branch.id = h.to_user_id
-          WHERE ${sentPurchaseConditions.join(' AND ')}
-          ORDER BY h.entry_id, h.created_at DESC
-        )
-        SELECT recipient_branch.root_seller_id AS user_id,
-               COALESCE(SUM(CASE WHEN latest.box_value ~ '^\\d+(\\.\\d+)?$' THEN latest.box_value::numeric ELSE 0 END), 0) AS sent_purchase_piece
-        FROM latest_sent_purchase latest
-        INNER JOIN branch_users recipient_branch ON recipient_branch.id = latest.to_user_id
-        GROUP BY recipient_branch.root_seller_id`,
-        sentPurchaseParams
-      );
-
-      sentPurchaseResult.rows.forEach((row) => {
-        const sellerId = Number(row.user_id);
-        const existing = summaryMap.get(sellerId) || { user_id: sellerId, total_piece: 0, unsold_piece: 0 };
-        existing.total_piece = Math.max(
-          Number(existing.total_piece || 0),
-          Number(row.sent_purchase_piece || 0)
-        );
-        summaryMap.set(sellerId, existing);
-      });
-    }
 
     if (currentUserIsAdmin) {
       const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];

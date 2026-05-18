@@ -890,11 +890,7 @@ const getLocalPieceSummary = (filters = {}) => {
   const unsoldIdentitySet = new Set();
   rows.forEach((row) => {
     const rowUserId = Number(row.user_id);
-    const summaryUserId = isAdmin
-      ? getDirectChildRootId(rowUserId, currentUserId, usersById)
-      : rowUserId === currentUserId
-        ? currentUserId
-        : getDirectChildRootId(rowUserId, currentUserId, usersById);
+    const summaryUserId = isAdmin ? getDirectChildRootId(rowUserId, currentUserId, usersById) : rowUserId;
     if (!summaryUserId || !sellerIds.has(Number(summaryUserId))) {
       return;
     }
@@ -913,16 +909,12 @@ const getLocalPieceSummary = (filters = {}) => {
       ? ['unsold_saved', 'unsold_sent', 'unsold_accepted', 'unsold'].includes(status)
       : (
         status === 'unsold_accepted'
-        || status === 'unsold'
         || (status === 'unsold_saved' && (
           rowUserId === currentUserId
           || Number(row.sent_to_parent) === currentUserId
           || Number(row.forwarded_by) === currentUserId
         ))
-        || (status === 'unsold_sent' && (
-          Number(row.forwarded_by) === currentUserId
-          || Number(row.sent_to_parent) === currentUserId
-        ))
+        || (status === 'unsold_sent' && Number(row.forwarded_by) === currentUserId)
       );
     const summary = summaryMap.get(Number(summaryUserId)) || { totalPiece: 0, unsoldPiece: 0 };
     summary.totalPiece += piece;
@@ -957,11 +949,7 @@ const getLocalPieceSummary = (filters = {}) => {
 
   manualRows.forEach((row) => {
     const rowUserId = Number(row.user_id);
-    const summaryUserId = isAdmin
-      ? getDirectChildRootId(rowUserId, currentUserId, usersById)
-      : rowUserId === currentUserId
-        ? currentUserId
-        : getDirectChildRootId(rowUserId, currentUserId, usersById);
+    const summaryUserId = isAdmin ? getDirectChildRootId(rowUserId, currentUserId, usersById) : rowUserId;
     if (!summaryUserId || !sellerIds.has(Number(summaryUserId))) {
       return;
     }
