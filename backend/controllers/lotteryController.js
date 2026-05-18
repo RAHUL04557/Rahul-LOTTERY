@@ -4885,9 +4885,10 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
     const currentUnsoldChanged = pendingSendEntries.length > 0;
 
     const totalPiece = allEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
-    const unsoldPiece = currentUnsoldEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
     const alreadySentPiece = alreadySentEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
     const pendingSendPiece = pendingSendEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
+    const currentUnsoldPiece = currentUnsoldEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
+    const unsoldPiece = Math.max(currentUnsoldPiece, alreadySentPiece);
     const unsoldCount = currentUnsoldEntries.length;
     const aggregatedRow = totalPiece > 0 || unsoldPiece > 0 || alreadySentPiece > 0 || pendingSendPiece > 0
       ? [{
@@ -5329,12 +5330,8 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
     if (validSelectedRows.length === 0) {
       return res.status(400).json({ message: 'Send karne ke liye valid unsold entry nahi mili' });
     }
-    const selectedMemoNumbers = validSelectedRows.map((row) => {
-      const memoNumber = Number(row.send_unsold_memo_number || row.memo_number || 0);
-      return Number.isInteger(memoNumber) && memoNumber > 0 ? memoNumber : null;
-    });
     const staleParams = [
-      visibleUserIds,
+      [req.user.id],
       PURCHASE_ENTRY_SOURCE,
       bookingDate,
       sessionMode,
@@ -5401,25 +5398,42 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       sentHistoryDeleteParams
     );
 
-    const updatedResult = await query(
-      `UPDATE lottery_entries le
-       SET status = $2,
-           sent_to_parent = $3,
-           forwarded_by = $4,
-           purchase_memo_number = COALESCE(le.purchase_memo_number, le.memo_number),
-           memo_number = COALESCE(selected_entries.memo_number, le.memo_number),
-           sent_at = CURRENT_TIMESTAMP
-       FROM (
-         SELECT *
-         FROM UNNEST($1::int[], $5::int[]) AS selected_entry(id, memo_number)
-       ) AS selected_entries
-       WHERE le.id = selected_entries.id
-       RETURNING le.*`,
-      [selectedIds, targetStatus, req.user.parentId, req.user.id, selectedMemoNumbers]
-    );
+    const ownSelectedRows = validSelectedRows.filter((row) => Number(row.user_id) === Number(req.user.id));
+    const childSelectedRows = validSelectedRows.filter((row) => Number(row.user_id) !== Number(req.user.id));
+    const ownSelectedIds = ownSelectedRows.map((row) => row.resolvedEntryId);
+    const ownSelectedMemoNumbers = ownSelectedRows.map((row) => {
+      const memoNumber = Number(row.send_unsold_memo_number || row.memo_number || 0);
+      return Number.isInteger(memoNumber) && memoNumber > 0 ? memoNumber : null;
+    });
+    const updatedResult = ownSelectedIds.length > 0
+      ? await query(
+        `UPDATE lottery_entries le
+         SET status = $2,
+             sent_to_parent = $3,
+             forwarded_by = $4,
+             purchase_memo_number = COALESCE(le.purchase_memo_number, le.memo_number),
+             memo_number = COALESCE(selected_entries.memo_number, le.memo_number),
+             sent_at = CURRENT_TIMESTAMP
+         FROM (
+           SELECT *
+           FROM UNNEST($1::int[], $5::int[]) AS selected_entry(id, memo_number)
+         ) AS selected_entries
+         WHERE le.id = selected_entries.id
+         RETURNING le.*`,
+        [ownSelectedIds, targetStatus, req.user.parentId, req.user.id, ownSelectedMemoNumbers]
+      )
+      : { rows: [] };
+    const historyEntries = [
+      ...updatedResult.rows,
+      ...childSelectedRows.map((row) => ({
+        ...row,
+        id: row.resolvedEntryId,
+        memo_number: row.send_unsold_memo_number || row.memo_number
+      }))
+    ];
 
     await insertHistoryRecords({
-      entries: updatedResult.rows.map((row) => {
+      entries: historyEntries.map((row) => {
         const groupKey = [
           row.user_id,
           Number(row.memo_number || 0),
@@ -5446,9 +5460,9 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
       message: targetStatus === UNSOLD_ACCEPTED_STATUS
         ? `Unsold admin ko send ho gaya aur auto accepted ho gaya`
         : `Unsold ${parentUser?.username || 'parent'} ko send ho gaya`,
-      entriesSent: updatedResult.rows.length,
+      entriesSent: historyEntries.length,
       autoAccepted: targetStatus === UNSOLD_ACCEPTED_STATUS,
-      entries: updatedResult.rows.map(mapLotteryEntry)
+      entries: historyEntries.map(mapLotteryEntry)
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
