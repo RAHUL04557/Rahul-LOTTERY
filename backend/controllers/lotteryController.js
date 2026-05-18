@@ -4955,11 +4955,37 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
       || [...effectiveCurrentUnsoldKeySet].some((entryKey) => !alreadySentKeySet.has(entryKey));
     const pendingSendEntries = currentUnsoldChanged ? effectiveCurrentUnsoldEntries : [];
 
-    const totalPiece = allEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
-    const unsoldPiece = effectiveCurrentUnsoldEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
+    let pieceSummaryRows = [];
+    const pieceSummaryRes = {
+      json: (data) => {
+        pieceSummaryRows = Array.isArray(data) ? data : [];
+        return data;
+      },
+      status: () => ({ json: () => null })
+    };
+    await getPurchasePieceSummary({
+      ...req,
+      query: {
+        bookingDate,
+        sessionMode,
+        purchaseCategory,
+        amount: normalizedAmount
+      }
+    }, pieceSummaryRes);
+
+    const summaryTotalPiece = pieceSummaryRows.reduce((sum, row) => sum + Number(row.totalPiece || row.total_piece || 0), 0);
+    const summaryUnsoldPiece = pieceSummaryRows.reduce((sum, row) => sum + Number(row.unsoldPiece || row.unsold_piece || 0), 0);
+    const totalPiece = summaryTotalPiece || allEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
+    const rawUnsoldPiece = effectiveCurrentUnsoldEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
+    const unsoldPiece = Math.max(rawUnsoldPiece, summaryUnsoldPiece);
     const alreadySentPiece = alreadySentEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
-    const pendingSendPiece = pendingSendEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
+    const pendingSendPiece = Math.max(
+      pendingSendEntries.reduce((sum, entry) => sum + numericPiece(entry), 0),
+      unsoldPiece - alreadySentPiece,
+      0
+    );
     const unsoldCount = effectiveCurrentUnsoldEntries.length;
+    const hasPendingUpdate = currentUnsoldChanged || pendingSendPiece > 0;
     const aggregatedRow = totalPiece > 0 || unsoldPiece > 0 || alreadySentPiece > 0 || pendingSendPiece > 0
       ? [{
         sellerId: req.user.id,
@@ -4970,7 +4996,7 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
         pendingSendPiece,
         soldPiece: Math.max(totalPiece - unsoldPiece, 0),
         unsoldCount,
-        hasPendingUpdate: currentUnsoldChanged
+        hasPendingUpdate
       }]
       : [];
 
@@ -4989,7 +5015,7 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
       unsoldPiece,
       alreadySentPiece,
       pendingSendPiece,
-      hasPendingUpdate: currentUnsoldChanged,
+      hasPendingUpdate,
       soldPiece: Math.max(totalPiece - unsoldPiece, 0),
       rows: aggregatedRow
     });

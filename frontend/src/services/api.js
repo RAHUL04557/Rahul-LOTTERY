@@ -811,11 +811,17 @@ export const lotteryService = {
   checkPurchaseUnsoldRemove: (payload) => api.post('/lottery/purchases/remove-unsold/check', payload),
   replacePurchaseUnsoldMemo: (payload) => requestWithOfflineQueue({ method: 'PUT', url: '/lottery/purchases/unsold-memo', data: payload }, 'replace_unsold_memo'),
   sendPurchaseUnsold: async (payload) => {
-    let desiredEntryIds = [];
-    let desiredRows = [];
+    const payloadDesiredEntryIds = Array.isArray(payload?.desiredEntryIds) ? payload.desiredEntryIds : [];
+    const payloadDesiredRows = Array.isArray(payload?.desiredRows) ? payload.desiredRows : [];
+    let desiredEntryIds = payloadDesiredEntryIds;
+    let desiredRows = payloadDesiredRows;
     try {
-      desiredEntryIds = await getLocalUnsoldSendEntryIds(payload);
-      desiredRows = await getLocalUnsoldSendRows(payload);
+      if (desiredEntryIds.length === 0) {
+        desiredEntryIds = await getLocalUnsoldSendEntryIds(payload);
+      }
+      if (desiredRows.length === 0) {
+        desiredRows = await getLocalUnsoldSendRows(payload);
+      }
     } catch (error) {
       console.warn('Local unsold send rows failed, falling back to server:', error.message);
     }
