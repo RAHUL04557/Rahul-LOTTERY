@@ -929,6 +929,14 @@ const getManualSavedUnsoldRows = async ({
      LEFT JOIN users target_user ON target_user.id = CASE WHEN h.to_user_id <> h.actor_user_id THEN h.to_user_id ELSE le.user_id END
      LEFT JOIN users actor_user ON actor_user.id = h.actor_user_id
      WHERE ${conditions.join(' AND ')}
+       AND NOT EXISTS (
+         SELECT 1
+         FROM lottery_entry_history removed_h
+         WHERE removed_h.entry_id = h.entry_id
+           AND removed_h.action_type = 'unsold_removed'
+           AND removed_h.actor_user_id = $2
+           AND removed_h.created_at >= h.created_at
+       )
      ORDER BY h.memo_number ASC NULLS LAST, h.created_at ASC, h.number ASC`,
     params
   );
@@ -5576,7 +5584,17 @@ const getPurchasePieceSummary = async (req, res) => {
                     LOWER(TRIM(le.status)) = '${UNSOLD_LOCAL_STATUS}'
                     AND (le.user_id = $${selfUnsoldParamIndex} OR le.sent_to_parent = $${selfUnsoldParamIndex})
                   )
-                ) AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS unsold_piece
+                )
+                AND le.box_value ~ '^\\d+(\\.\\d+)?$'
+                AND NOT EXISTS (
+                  SELECT 1
+                  FROM lottery_entry_history removed_h
+                  WHERE removed_h.entry_id = le.id
+                    AND removed_h.action_type = 'unsold_removed'
+                    AND removed_h.actor_user_id = $${selfUnsoldParamIndex}
+                    AND removed_h.created_at >= COALESCE(le.sent_at, le.created_at)
+                )
+                THEN le.box_value::numeric ELSE 0 END), 0) AS unsold_piece
          FROM lottery_entries le
          INNER JOIN branch_users bu ON bu.id = le.user_id
          WHERE ${conditions.join(' AND ')}
@@ -5959,7 +5977,15 @@ const getPurchasePieceSummary = async (req, res) => {
               'user_id = $1',
               'entry_source = $2',
               `LOWER(TRIM(status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`,
-              '(sent_to_parent = $3 OR forwarded_by = $3)'
+              '(sent_to_parent = $3 OR forwarded_by = $3)',
+              `NOT EXISTS (
+                SELECT 1
+                FROM lottery_entry_history removed_h
+                WHERE removed_h.entry_id = lottery_entries.id
+                  AND removed_h.action_type = 'unsold_removed'
+                  AND removed_h.actor_user_id = $3
+                  AND removed_h.created_at >= COALESCE(lottery_entries.sent_at, lottery_entries.created_at)
+              )`
             ];
 
             if (bookingDate) {
