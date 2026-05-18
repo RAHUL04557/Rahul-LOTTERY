@@ -6026,68 +6026,39 @@ const getPurchasePieceSummary = async (req, res) => {
               localSavedFilters.push(`amount = $${localSavedParams.length}::numeric`);
             }
 
-            const [snapshotRows, localSavedResult, manualRows] = await Promise.all([
-              getLatestAcceptedUnsoldSnapshotRows({
-                targetSellerId: seller.id,
+            const [snapshotRowsBySeller, localSavedResult, manualRowsBySeller] = await Promise.all([
+              Promise.all(scopedSellerIds.map((branchSellerId) => getLatestAcceptedUnsoldSnapshotRows({
+                targetSellerId: branchSellerId,
                 viewerUserId: req.user.id,
                 bookingDate,
                 sessionMode,
                 purchaseCategory,
                 amount: normalizedAmount,
                 boxValue: ''
-              }),
+              }))),
               query(
                 `SELECT user_id, booking_date, session_mode, purchase_category, amount, box_value, number
                  FROM lottery_entries
                  WHERE ${localSavedFilters.join(' AND ')}`,
                 localSavedParams
               ),
-              query(
-                `SELECT
-                   h.entry_id,
-                   le.user_id,
-                   h.booking_date,
-                   h.session_mode,
-                   h.purchase_category,
-                   h.amount,
-                   h.box_value,
-                   h.number
-                 FROM lottery_entry_history h
-                 INNER JOIN lottery_entries le ON le.id = h.entry_id
-                 WHERE le.user_id = ANY($1::int[])
-                   AND h.actor_user_id = $2
-                   AND le.entry_source = $3
-                   AND h.action_type = $4
-                   ${latestSavedUnsoldHistoryCondition}
-                   ${bookingDate ? 'AND h.booking_date = $5::date' : ''}
-                   ${sessionMode ? `AND h.session_mode = $${bookingDate ? 6 : 5}` : ''}
-                   ${purchaseCategory ? `AND h.purchase_category = $${(bookingDate ? 1 : 0) + (sessionMode ? 1 : 0) + 5}` : ''}
-                   ${normalizedAmount ? `AND h.amount = $${(bookingDate ? 1 : 0) + (sessionMode ? 1 : 0) + (purchaseCategory ? 1 : 0) + 5}::numeric` : ''}
-                   AND NOT EXISTS (
-                     SELECT 1
-                     FROM lottery_entry_history removed_h
-                     WHERE removed_h.entry_id = h.entry_id
-                       AND removed_h.action_type = 'unsold_removed'
-                       AND removed_h.actor_user_id = $2
-                       AND removed_h.created_at >= h.created_at
-                   )`,
-                [
-                  scopedSellerIds,
-                  req.user.id,
-                  PURCHASE_ENTRY_SOURCE,
-                  'saved_unsold',
-                  ...[
-                    bookingDate,
-                    sessionMode,
-                    purchaseCategory,
-                    normalizedAmount
-                  ].filter(Boolean)
-                ]
-              )
+              Promise.all(scopedSellerIds.map((branchSellerId) => getManualSavedUnsoldRows({
+                targetSellerId: branchSellerId,
+                actorUserId: req.user.id,
+                bookingDate,
+                sessionMode,
+                purchaseCategory,
+                amount: normalizedAmount,
+                boxValue: ''
+              })))
             ]);
 
             const unsoldRowsByKey = new Map();
-            [...snapshotRows, ...(localSavedResult.rows || []), ...(manualRows.rows || [])].forEach((row) => {
+            [
+              ...snapshotRowsBySeller.flat(),
+              ...(localSavedResult.rows || []),
+              ...manualRowsBySeller.flat()
+            ].forEach((row) => {
               const rowKey = [
                 row.user_id,
                 row.booking_date instanceof Date ? row.booking_date.toISOString().slice(0, 10) : String(row.booking_date || ''),
