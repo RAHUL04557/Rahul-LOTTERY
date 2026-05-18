@@ -3730,10 +3730,7 @@ const removePurchaseUnsoldEntries = async (req, res) => {
         `DELETE FROM lottery_entry_history h
          USING lottery_entries le
          WHERE h.entry_id = le.id
-           AND (
-             le.user_id = ANY($1::int[])
-             OR (h.to_user_id = ANY($1::int[]) AND h.to_user_id <> h.actor_user_id)
-           )
+           AND le.user_id = ANY($1::int[])
            AND le.entry_source = $2
            AND h.actor_user_id = $3
            AND h.action_type = $4
