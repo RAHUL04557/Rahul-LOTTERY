@@ -6887,7 +6887,7 @@ const updateReceivedEntryStatus = async (req, res) => {
     const params = [entryId, req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE, UNSOLD_SENT_STATUS];
     const amountFilter = amount ? `AND le.amount = $${params.push(amount)}::numeric` : '';
 
-    const entryResult = await query(
+    let entryResult = await query(
       `SELECT le.*, parent_user.parent_id AS current_user_parent_id
        FROM lottery_entries le
        LEFT JOIN users parent_user ON parent_user.id = $2
@@ -6904,6 +6904,36 @@ const updateReceivedEntryStatus = async (req, res) => {
     );
 
     if (entryResult.rows.length === 0) {
+      const historyParams = [entryId, req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE];
+      const historyAmountFilter = amount ? `AND h.amount = $${historyParams.push(amount)}::numeric` : '';
+      const historyStatusParamIndex = historyParams.length + 1;
+      entryResult = await query(
+        `SELECT
+           le.*,
+           h.actor_user_id AS forwarded_by,
+           h.to_user_id AS sent_to_parent,
+           h.memo_number,
+           h.memo_number AS purchase_memo_number,
+           h.booking_date,
+           h.session_mode,
+           h.purchase_category,
+           h.amount,
+           $${historyStatusParamIndex}::varchar AS status
+         FROM lottery_entry_history h
+         INNER JOIN lottery_entries le ON le.id = h.entry_id
+         WHERE h.entry_id = $1
+           AND h.to_user_id = $2
+           AND h.session_mode = $3
+           AND le.entry_source = $4
+           AND h.action_type = 'unsold_sent'
+           ${historyAmountFilter}
+         ORDER BY h.created_at DESC, h.id DESC
+         LIMIT 1`,
+        [...historyParams, UNSOLD_SENT_STATUS]
+      );
+    }
+
+    if (entryResult.rows.length === 0) {
       return res.status(404).json({ message: 'Entry not found' });
     }
 
@@ -6914,32 +6944,54 @@ const updateReceivedEntryStatus = async (req, res) => {
       await client.query('BEGIN');
 
       const memoScopeResult = await client.query(
-        `SELECT *
-         FROM lottery_entries
-         WHERE user_id = $1
-           AND memo_number = $2
-           AND booking_date = $3::date
-           AND session_mode = $4
-           AND purchase_category = $8
-           AND amount = $9::numeric
-           AND sent_to_parent = $5
-           AND entry_source = $6
-           AND status = $7
-         ORDER BY number ASC`,
+        `WITH latest_send_batch AS (
+           SELECT MAX(h.created_at) AS latest_created_at
+           FROM lottery_entry_history h
+           INNER JOIN lottery_entries le ON le.id = h.entry_id
+           WHERE le.user_id = $1
+             AND h.actor_user_id = $2
+             AND h.to_user_id = $3
+             AND h.booking_date = $4::date
+             AND h.session_mode = $5
+             AND h.purchase_category = $6
+             AND h.amount = $7::numeric
+             AND h.action_type = 'unsold_sent'
+         )
+         SELECT le.*
+         FROM lottery_entry_history h
+         INNER JOIN lottery_entries le ON le.id = h.entry_id
+         CROSS JOIN latest_send_batch batch
+         WHERE le.user_id = $1
+           AND h.actor_user_id = $2
+           AND h.to_user_id = $3
+           AND h.booking_date = $4::date
+           AND h.session_mode = $5
+           AND h.purchase_category = $6
+           AND h.amount = $7::numeric
+           AND h.action_type = 'unsold_sent'
+           AND h.created_at = batch.latest_created_at
+           AND le.entry_source = $8
+           AND le.status = $9
+         ORDER BY le.number ASC`,
         [
           entry.user_id,
-          entry.memo_number,
+          entry.forwarded_by,
+          req.user.id,
           entry.booking_date,
           entry.session_mode,
-          req.user.id,
-          PURCHASE_ENTRY_SOURCE,
-          UNSOLD_SENT_STATUS,
           entry.purchase_category,
-          entry.amount
+          entry.amount,
+          PURCHASE_ENTRY_SOURCE,
+          UNSOLD_SENT_STATUS
         ]
       );
 
       const scopedIds = memoScopeResult.rows.map((row) => row.id);
+      if (scopedIds.length === 0) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ message: 'Entry not found' });
+      }
+
       const acceptedMemoResult = await client.query(
         `SELECT DISTINCT ON (entry_id) entry_id, memo_number
          FROM lottery_entry_history
@@ -6957,6 +7009,65 @@ const updateReceivedEntryStatus = async (req, res) => {
       ]));
 
       if (action === 'accept') {
+        await client.query(
+          `UPDATE lottery_entries
+           SET status = 'accepted',
+               sent_to_parent = $2,
+               forwarded_by = $3,
+               memo_number = COALESCE(purchase_memo_number, memo_number),
+               sent_at = NULL
+           WHERE user_id = $1
+             AND entry_source = $4
+             AND booking_date = $5::date
+             AND session_mode = $6
+             AND purchase_category = $7
+             AND amount = $8::numeric
+             AND status = $9
+             AND sent_to_parent = $2
+             AND forwarded_by = $2
+             AND NOT (id = ANY($10::int[]))`,
+          [
+            entry.user_id,
+            req.user.id,
+            entry.forwarded_by,
+            PURCHASE_ENTRY_SOURCE,
+            entry.booking_date,
+            entry.session_mode,
+            entry.purchase_category,
+            entry.amount,
+            UNSOLD_ACCEPTED_STATUS,
+            scopedIds
+          ]
+        );
+
+        await client.query(
+          `UPDATE lottery_entries own_entry
+           SET status = 'accepted',
+               sent_to_parent = NULL,
+               forwarded_by = NULL,
+               memo_number = COALESCE(own_entry.purchase_memo_number, own_entry.memo_number),
+               sent_at = NULL
+           FROM lottery_entries incoming_entry
+           WHERE incoming_entry.id = ANY($1::int[])
+             AND own_entry.user_id = $2
+             AND own_entry.entry_source = $3
+             AND own_entry.booking_date = incoming_entry.booking_date
+             AND own_entry.session_mode = incoming_entry.session_mode
+             AND own_entry.purchase_category = incoming_entry.purchase_category
+             AND own_entry.amount = incoming_entry.amount
+             AND own_entry.box_value = incoming_entry.box_value
+             AND own_entry.number = incoming_entry.number
+             AND LOWER(TRIM(own_entry.status)) IN ($4, $5)
+             AND own_entry.id <> incoming_entry.id`,
+          [
+            scopedIds,
+            req.user.id,
+            PURCHASE_ENTRY_SOURCE,
+            UNSOLD_LOCAL_STATUS,
+            UNSOLD_ACCEPTED_STATUS
+          ]
+        );
+
         await client.query(
           `DELETE FROM lottery_entry_history h
            USING lottery_entries le
