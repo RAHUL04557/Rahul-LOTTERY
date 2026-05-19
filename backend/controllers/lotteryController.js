@@ -6976,7 +6976,7 @@ const updateReceivedEntryStatus = async (req, res) => {
            AND h.action_type = 'unsold_sent'
            AND h.created_at = batch.latest_created_at
            AND le.entry_source = $8
-           AND le.status = $9
+           AND LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')
          ORDER BY le.number ASC`,
         [
           entry.user_id,
@@ -6986,8 +6986,7 @@ const updateReceivedEntryStatus = async (req, res) => {
           entry.session_mode,
           entry.purchase_category,
           entry.amount,
-          PURCHASE_ENTRY_SOURCE,
-          UNSOLD_SENT_STATUS
+          PURCHASE_ENTRY_SOURCE
         ]
       );
 
