@@ -6953,33 +6953,30 @@ const updateReceivedEntryStatus = async (req, res) => {
            SELECT MAX(h.created_at) AS latest_created_at
            FROM lottery_entry_history h
            INNER JOIN lottery_entries le ON le.id = h.entry_id
-           WHERE le.user_id = $1
-             AND h.actor_user_id = $2
-             AND h.to_user_id = $3
-             AND h.booking_date = $4::date
-             AND h.session_mode = $5
-             AND h.purchase_category = $6
-             AND h.amount = $7::numeric
+           WHERE h.actor_user_id = $1
+             AND h.to_user_id = $2
+             AND h.booking_date = $3::date
+             AND h.session_mode = $4
+             AND h.purchase_category = $5
+             AND h.amount = $6::numeric
              AND h.action_type = 'unsold_sent'
          )
          SELECT le.*
          FROM lottery_entry_history h
          INNER JOIN lottery_entries le ON le.id = h.entry_id
          CROSS JOIN latest_send_batch batch
-         WHERE le.user_id = $1
-           AND h.actor_user_id = $2
-           AND h.to_user_id = $3
-           AND h.booking_date = $4::date
-           AND h.session_mode = $5
-           AND h.purchase_category = $6
-           AND h.amount = $7::numeric
+         WHERE h.actor_user_id = $1
+           AND h.to_user_id = $2
+           AND h.booking_date = $3::date
+           AND h.session_mode = $4
+           AND h.purchase_category = $5
+           AND h.amount = $6::numeric
            AND h.action_type = 'unsold_sent'
            AND h.created_at = batch.latest_created_at
-           AND le.entry_source = $8
+           AND le.entry_source = $7
            AND LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')
          ORDER BY le.number ASC`,
         [
-          entry.user_id,
           entry.forwarded_by,
           req.user.id,
           entry.booking_date,
