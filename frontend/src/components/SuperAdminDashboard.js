@@ -212,6 +212,7 @@ const SuperAdminDashboard = ({ user, onLogout }) => {
                 <th>ID</th>
                 <th>Username</th>
                 <th>Current Password</th>
+                <th>Current Result Upload Password</th>
                 <th>Created</th>
                 <th>Change Password</th>
                 <th>Result Upload Password</th>
@@ -225,6 +226,7 @@ const SuperAdminDashboard = ({ user, onLogout }) => {
                     <td>{admin.id}</td>
                     <td>{admin.username}</td>
                     <td>{admin.currentPassword || '-'}</td>
+                    <td>{admin.currentResultUploadPassword || '-'}</td>
                     <td>{admin.createdAt ? new Date(admin.createdAt).toLocaleString('en-IN') : '-'}</td>
                     <td>
                       <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -284,7 +286,7 @@ const SuperAdminDashboard = ({ user, onLogout }) => {
                 ))
               ) : (
                 <tr>
-                  <td colSpan="7">Abhi koi admin ID nahi hai</td>
+                  <td colSpan="8">Abhi koi admin ID nahi hai</td>
                 </tr>
               )}
             </tbody>
