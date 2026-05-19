@@ -1694,20 +1694,76 @@ const StokistDashboard = ({
     setError('');
 
     try {
-      const response = await lotteryService.getPurchasePieceSummary({
-        bookingDate: summaryDateValue,
-        sessionMode,
-        purchaseCategory: activePurchaseCategory,
-        amount
-      }, { skipLocalRead: true });
+      const [pieceSummaryResult, billSummaryResult] = await Promise.allSettled([
+        lotteryService.getPurchasePieceSummary({
+          bookingDate: summaryDateValue,
+          sessionMode,
+          purchaseCategory: activePurchaseCategory,
+          amount
+        }, { skipLocalRead: true }),
+        lotteryService.getPurchaseBillSummary({
+          date: summaryDateValue,
+          shift: sessionMode,
+          purchaseCategory: activePurchaseCategory,
+          amount
+        })
+      ]);
 
-      const summaryRows = (response.data || []).map((row) => ({
+      if (pieceSummaryResult.status === 'rejected' && billSummaryResult.status === 'rejected') {
+        throw pieceSummaryResult.reason || billSummaryResult.reason;
+      }
+
+      const pieceRows = (pieceSummaryResult.status === 'fulfilled' ? pieceSummaryResult.value.data || [] : []).map((row) => ({
         id: row.sellerId || row.seller_id,
         sellerName: `${row.sellerName || row.seller_name || ''}${row.isSelf || row.is_self ? ' (Self)' : ''}`,
         totalPiece: Number(row.totalPiece || row.total_piece || 0),
         unsoldPiece: Number(row.unsoldPiece || row.unsold_piece || 0),
         stockNotTransferredPiece: Number(row.stockNotTransferredPiece || row.stock_not_transferred_piece || 0)
       }));
+
+      const pieceRowMap = new Map(pieceRows.map((row) => [String(row.id), row]));
+      const billRowsBySeller = new Map();
+      (billSummaryResult.status === 'fulfilled' ? billSummaryResult.value.data || [] : []).forEach((row) => {
+        const sellerId = row.sellerId || row.seller_id;
+        if (!sellerId) {
+          return;
+        }
+
+        const key = String(sellerId);
+        const pieceRow = pieceRowMap.get(key);
+        const current = billRowsBySeller.get(key) || {
+          id: sellerId,
+          sellerName: pieceRow?.sellerName || row.sellerName || row.seller_name || '',
+          totalPiece: 0,
+          unsoldPiece: 0,
+          stockNotTransferredPiece: Number(pieceRow?.stockNotTransferredPiece || 0)
+        };
+
+        current.totalPiece += Number(row.sentPiece || row.sent_piece || 0);
+        current.unsoldPiece += Number(row.unsoldPiece || row.unsold_piece || 0);
+        billRowsBySeller.set(key, current);
+      });
+
+      const mergedBillSellerIds = new Set();
+      const summaryRows = billRowsBySeller.size > 0
+        ? [
+          ...pieceRows.map((row) => {
+            const billRow = billRowsBySeller.get(String(row.id));
+            if (!billRow) {
+              return { ...row, unsoldPiece: 0 };
+            }
+
+            mergedBillSellerIds.add(String(row.id));
+            return {
+              ...billRow,
+              sellerName: row.sellerName || billRow.sellerName,
+              stockNotTransferredPiece: row.stockNotTransferredPiece
+            };
+          }),
+          ...Array.from(billRowsBySeller.values()).filter((row) => !mergedBillSellerIds.has(String(row.id)))
+        ]
+        : pieceRows;
+
       setPieceSummaryStockNotTransferredPiece(Number(summaryRows[0]?.stockNotTransferredPiece || 0));
       setPieceSummaryRows(summaryRows.filter((row) => Number(row.totalPiece || 0) > 0));
     } catch (err) {
