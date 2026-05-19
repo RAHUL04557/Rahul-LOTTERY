@@ -6772,21 +6772,100 @@ const getReceivedEntries = async (req, res) => {
        WHERE le.sent_to_parent = $1
          AND le.session_mode = $2
          AND le.booking_date = $5::date
-         AND (
-           le.status = 'sent'
-           OR (le.entry_source = $3 AND le.status IN ($4, '${UNSOLD_ACCEPTED_STATUS}'))
-         )
+         AND COALESCE(le.entry_source, '${BOOKING_ENTRY_SOURCE}') <> $3
+         AND le.status IN ('sent', 'accepted')
          ${amountFilter}
        ORDER BY le.sent_at DESC NULLS LAST`,
       params
     );
 
-    res.json(entriesResult.rows.map((row) => mapLotteryEntry({
+    const f11Params = [req.user.id, sessionMode, bookingDate];
+    const f11AmountFilter = amount ? `AND h.amount = $${f11Params.push(amount)}::numeric` : '';
+    const f11SnapshotResult = await query(
+      `WITH latest_send_batches AS (
+         SELECT
+           h.actor_user_id,
+           le.user_id,
+           h.booking_date,
+           h.session_mode,
+           h.purchase_category,
+           h.amount,
+           MAX(h.created_at) AS latest_created_at
+         FROM lottery_entry_history h
+         INNER JOIN lottery_entries le ON le.id = h.entry_id
+         WHERE h.to_user_id = $1
+           AND h.session_mode = $2
+           AND h.booking_date = $3::date
+           ${f11AmountFilter}
+           AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted')
+         GROUP BY h.actor_user_id, le.user_id, h.booking_date, h.session_mode, h.purchase_category, h.amount
+       )
+       SELECT
+         h.entry_id AS id,
+         le.user_id,
+         seller_user.username,
+         parent_user.username AS parent_username,
+         h.actor_user_id AS forwarded_by,
+         actor_user.username AS forwarded_by_username,
+         NULL::varchar AS series,
+         h.number,
+         h.box_value,
+         h.unique_code,
+         h.amount,
+         h.session_mode,
+         CASE
+           WHEN h.action_type = 'unsold_auto_accepted'
+             OR EXISTS (
+               SELECT 1
+               FROM lottery_entry_history accepted_h
+               WHERE accepted_h.entry_id = h.entry_id
+                 AND accepted_h.to_user_id = h.to_user_id
+                 AND accepted_h.action_type = 'unsold_accepted'
+                 AND accepted_h.created_at >= h.created_at
+             )
+           THEN 'accepted'
+           ELSE 'sent'
+         END AS status,
+         '${PURCHASE_ENTRY_SOURCE}'::varchar AS entry_source,
+         h.memo_number,
+         h.memo_number AS purchase_memo_number,
+         NULL::int AS memo_row_order,
+         h.purchase_category,
+         h.to_user_id AS sent_to_parent,
+         h.booking_date,
+         h.created_at,
+         h.created_at AS sent_at
+       FROM lottery_entry_history h
+       INNER JOIN lottery_entries le ON le.id = h.entry_id
+       INNER JOIN latest_send_batches batch
+         ON batch.actor_user_id = h.actor_user_id
+        AND batch.user_id = le.user_id
+        AND batch.booking_date = h.booking_date
+        AND batch.session_mode = h.session_mode
+        AND batch.purchase_category = h.purchase_category
+        AND batch.amount = h.amount
+        AND batch.latest_created_at = h.created_at
+       LEFT JOIN users seller_user ON seller_user.id = le.user_id
+       LEFT JOIN users parent_user ON parent_user.id = h.to_user_id
+       LEFT JOIN users actor_user ON actor_user.id = h.actor_user_id
+       WHERE h.to_user_id = $1
+         AND h.session_mode = $2
+         AND h.booking_date = $3::date
+         ${f11AmountFilter}
+         AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted')
+       ORDER BY h.created_at DESC, seller_user.username ASC, h.number ASC`,
+      f11Params
+    );
+
+    const mappedNormalEntries = entriesResult.rows.map((row) => mapLotteryEntry({
       ...row,
       status: row.entry_source === PURCHASE_ENTRY_SOURCE && row.status === UNSOLD_ACCEPTED_STATUS
         ? 'accepted'
         : row.status
-    })));
+    }));
+    const mappedF11Entries = f11SnapshotResult.rows.map(mapLotteryEntry);
+
+    res.json([...mappedF11Entries, ...mappedNormalEntries]);
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
