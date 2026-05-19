@@ -5784,7 +5784,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const receivedUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const receivedUnsoldConditions = [
         'le.entry_source = $2',
-        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')",
+        "h.action_type IN ('unsold_auto_accepted', 'unsold_accepted')",
         'h.to_user_id = $1'
       ];
 
@@ -5871,7 +5871,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const sentUnsoldConditions = [
         'le.entry_source = $2',
-        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')",
+        "h.action_type IN ('unsold_auto_accepted', 'unsold_accepted')",
         'h.to_user_id = $1'
       ];
 
@@ -6299,7 +6299,7 @@ const getPurchaseBillSummary = async (req, res) => {
     const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
     const sentUnsoldConditions = [
       'le.entry_source = $2',
-      "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
+      "h.action_type IN ('unsold_auto_accepted', 'unsold_accepted')",
       'h.to_user_id = $1'
     ];
 

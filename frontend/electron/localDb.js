@@ -2304,7 +2304,10 @@ const setupLocalDbIpc = (ipcMain) => {
         .prepare(`
           SELECT DISTINCT user_id, booking_date, session_mode, purchase_category, amount
           FROM local_purchase_entries
-          WHERE LOWER(TRIM(status)) IN ('unsold_sent', 'unsold_accepted', 'unsold')
+          WHERE (
+              LOWER(TRIM(status)) IN ('unsold_accepted', 'unsold')
+              OR (LOWER(TRIM(status)) = 'unsold_sent' AND forwarded_by = ?)
+            )
             AND (sent_to_parent = ? OR forwarded_by = ?)
             ${fromDate && toDate ? 'AND booking_date BETWEEN ? AND ?' : ''}
             ${filters.shift || filters.sessionMode ? 'AND session_mode = ?' : ''}
@@ -2312,6 +2315,7 @@ const setupLocalDbIpc = (ipcMain) => {
             ${filters.amount ? 'AND amount = ?' : ''}
         `)
         .all(
+          currentUserId,
           currentUserId,
           currentUserId,
           ...[
@@ -2338,10 +2342,13 @@ const setupLocalDbIpc = (ipcMain) => {
         });
       });
 
-      const rawUnsoldParams = [currentUserId, currentUserId];
+      const rawUnsoldParams = [currentUserId, currentUserId, currentUserId];
       const rawUnsoldConditions = [
         "entry_source = 'purchase'",
-        "LOWER(TRIM(status)) IN ('unsold_sent', 'unsold_accepted', 'unsold')",
+        `(
+          LOWER(TRIM(status)) IN ('unsold_accepted', 'unsold')
+          OR (LOWER(TRIM(status)) = 'unsold_sent' AND forwarded_by = ?)
+        )`,
         '(sent_to_parent = ? OR forwarded_by = ?)'
       ];
       if (fromDate && toDate) {
