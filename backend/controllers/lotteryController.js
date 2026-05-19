@@ -110,6 +110,57 @@ const getPurchaseShiftKey = ({ sessionMode, purchaseCategory }) => {
   return 'MORNING';
 };
 
+const getF11UnsoldSendDeadline = ({ sessionMode, purchaseCategory }) => {
+  const shiftKey = getPurchaseShiftKey({ sessionMode, purchaseCategory });
+  if (shiftKey === 'DAY') {
+    return { hour: 18, minute: 0, second: 0, label: '6:00 PM' };
+  }
+  if (shiftKey === 'EVENING') {
+    return { hour: 20, minute: 0, second: 0, label: '8:00 PM' };
+  }
+  return { hour: 13, minute: 0, second: 0, label: '1:00 PM' };
+};
+
+const getF11UnsoldSendAvailability = ({ bookingDate, sessionMode, purchaseCategory }) => {
+  const indiaNow = getIndiaNowParts();
+  const deadline = getF11UnsoldSendDeadline({ sessionMode, purchaseCategory });
+  const shiftKey = getPurchaseShiftKey({ sessionMode, purchaseCategory }).toLowerCase();
+
+  if (bookingDate !== indiaNow.date) {
+    return {
+      canSend: false,
+      reason: `F11 se ${shiftKey} unsold sirf ${bookingDate} ko ${deadline.label} tak send hoga`
+    };
+  }
+
+  const currentTotalSeconds = (indiaNow.hour * 60 * 60) + (indiaNow.minute * 60) + indiaNow.second;
+  const deadlineTotalSeconds = (deadline.hour * 60 * 60) + (deadline.minute * 60) + (deadline.second || 0);
+  if (currentTotalSeconds > deadlineTotalSeconds) {
+    return {
+      canSend: false,
+      reason: `F11 se ${shiftKey} unsold ka time khatam ho gaya. Last time ${deadline.label} tha`
+    };
+  }
+
+  return { canSend: true, reason: '' };
+};
+
+const hasF11UnsoldSendForShift = async ({ actorUserId, toUserId, bookingDate, sessionMode, purchaseCategory }) => {
+  const result = await query(
+    `SELECT 1
+     FROM lottery_entry_history
+     WHERE actor_user_id = $1
+       AND to_user_id = $2
+       AND booking_date = $3::date
+       AND session_mode = $4
+       AND purchase_category = $5
+       AND action_type IN ('unsold_sent', 'unsold_auto_accepted')
+     LIMIT 1`,
+    [actorUserId, toUserId, bookingDate, sessionMode, purchaseCategory]
+  );
+  return result.rows.length > 0;
+};
+
 const getUnsoldAutoAcceptDeadline = ({ sellerType, sessionMode, purchaseCategory }) => {
   const normalizedSellerType = normalizeSellerType(sellerType);
   const shiftKey = getPurchaseShiftKey({ sessionMode, purchaseCategory });
@@ -4653,6 +4704,18 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
 
     const parentResult = await query('SELECT id, username, role FROM users WHERE id = $1 LIMIT 1', [req.user.parentId]);
     const parentUser = parentResult.rows[0];
+    const f11Availability = bookingDate && sessionMode && purchaseCategory
+      ? getF11UnsoldSendAvailability({ bookingDate, sessionMode, purchaseCategory })
+      : { canSend: true, reason: '' };
+    const alreadySentForShift = bookingDate && sessionMode && purchaseCategory
+      ? await hasF11UnsoldSendForShift({
+        actorUserId: req.user.id,
+        toUserId: req.user.parentId,
+        bookingDate,
+        sessionMode,
+        purchaseCategory
+      })
+      : false;
     const visibleUserIds = await getVisibleBranchIds(req.user.id, true);
     const params = [visibleUserIds, PURCHASE_ENTRY_SOURCE];
     const filters = [
@@ -4886,7 +4949,8 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
     const currentUnsoldChanged = currentUnsoldKeySet.size !== alreadySentKeySet.size
       || [...currentUnsoldKeySet].some((entryKey) => !alreadySentKeySet.has(entryKey))
       || [...alreadySentKeySet].some((entryKey) => !currentUnsoldKeySet.has(entryKey));
-    const pendingSendEntries = currentUnsoldChanged ? currentUnsoldEntries : [];
+    const canSendF11 = f11Availability.canSend && !alreadySentForShift;
+    const pendingSendEntries = currentUnsoldChanged && canSendF11 ? currentUnsoldEntries : [];
 
     const totalPiece = allEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
     const alreadySentPiece = alreadySentEntries.reduce((sum, entry) => sum + numericPiece(entry), 0);
@@ -4904,7 +4968,7 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
         pendingSendPiece,
         soldPiece: Math.max(totalPiece - unsoldPiece, 0),
         unsoldCount,
-        hasPendingUpdate: currentUnsoldChanged
+        hasPendingUpdate: currentUnsoldChanged && canSendF11
       }]
       : [];
 
@@ -4923,7 +4987,11 @@ const getPurchaseUnsoldSendSummary = async (req, res) => {
       unsoldPiece,
       alreadySentPiece,
       pendingSendPiece,
-      hasPendingUpdate: currentUnsoldChanged,
+      hasPendingUpdate: currentUnsoldChanged && canSendF11,
+      f11SendAllowed: canSendF11,
+      f11SendBlockedReason: alreadySentForShift
+        ? 'F11 se is date aur session ka unsold already send ho chuka hai'
+        : f11Availability.reason,
       soldPiece: Math.max(totalPiece - unsoldPiece, 0),
       rows: aggregatedRow
     });
@@ -4986,6 +5054,22 @@ const sendPurchaseUnsoldToParent = async (req, res) => {
 
     const parentResult = await query('SELECT id, username, role FROM users WHERE id = $1 LIMIT 1', [req.user.parentId]);
     const parentUser = parentResult.rows[0];
+    const f11Availability = getF11UnsoldSendAvailability({ bookingDate, sessionMode, purchaseCategory });
+    if (!f11Availability.canSend) {
+      return res.status(400).json({ message: f11Availability.reason });
+    }
+
+    const alreadySentForShift = await hasF11UnsoldSendForShift({
+      actorUserId: req.user.id,
+      toUserId: req.user.parentId,
+      bookingDate,
+      sessionMode,
+      purchaseCategory
+    });
+    if (alreadySentForShift) {
+      return res.status(400).json({ message: 'F11 se is date aur session ka unsold already send ho chuka hai' });
+    }
+
     const visibleUserIds = await getVisibleBranchIds(req.user.id, true);
     const params = [
       visibleUserIds,
