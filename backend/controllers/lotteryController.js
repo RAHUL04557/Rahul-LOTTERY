@@ -6759,7 +6759,7 @@ const getReceivedEntries = async (req, res) => {
 
     await normalizeQueuedEntries([req.user.id]);
 
-    const params = [req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE, UNSOLD_SENT_STATUS, bookingDate];
+    const params = [req.user.id, sessionMode, PURCHASE_ENTRY_SOURCE, bookingDate];
     const amountFilter = amount ? `AND le.amount = $${params.push(amount)}::numeric` : '';
 
     const entriesResult = await query(
@@ -6771,7 +6771,7 @@ const getReceivedEntries = async (req, res) => {
        LEFT JOIN users forwarded_user ON forwarded_user.id = le.forwarded_by
        WHERE le.sent_to_parent = $1
          AND le.session_mode = $2
-         AND le.booking_date = $5::date
+         AND le.booking_date = $4::date
          AND COALESCE(le.entry_source, '${BOOKING_ENTRY_SOURCE}') <> $3
          AND le.status IN ('sent', 'accepted')
          ${amountFilter}
