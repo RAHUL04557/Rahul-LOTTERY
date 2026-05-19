@@ -5682,6 +5682,7 @@ const getPurchasePieceSummary = async (req, res) => {
                   OR (
                     LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}'
                     AND le.forwarded_by = $${selfUnsoldParamIndex}
+                    AND le.user_id = $${selfUnsoldParamIndex}
                   )
                   OR (
                     LOWER(TRIM(le.status)) = '${UNSOLD_LOCAL_STATUS}'

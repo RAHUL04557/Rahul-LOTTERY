@@ -914,7 +914,7 @@ const getLocalPieceSummary = (filters = {}) => {
           || Number(row.sent_to_parent) === currentUserId
           || Number(row.forwarded_by) === currentUserId
         ))
-        || (status === 'unsold_sent' && Number(row.forwarded_by) === currentUserId)
+        || (status === 'unsold_sent' && rowUserId === currentUserId && Number(row.forwarded_by) === currentUserId)
       );
     const summary = summaryMap.get(Number(summaryUserId)) || { totalPiece: 0, unsoldPiece: 0 };
     summary.totalPiece += piece;
