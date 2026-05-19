@@ -111,6 +111,9 @@ const SuperAdminDashboard = ({ user, onLogout }) => {
     try {
       await userService.changeAdminPassword(admin.id, newPassword);
       setPasswordInputs((current) => ({ ...current, [admin.id]: '' }));
+      setAdmins((current) => current.map((item) => (
+        item.id === admin.id ? { ...item, currentPassword: newPassword } : item
+      )));
       setSuccess(`${admin.username} ka password change ho gaya`);
     } catch (err) {
       setError(err.response?.data?.message || 'Password change nahi ho paya');
@@ -132,6 +135,9 @@ const SuperAdminDashboard = ({ user, onLogout }) => {
     try {
       await userService.changeAdminResultUploadPassword(admin.id, newPassword);
       setResultUploadPasswordInputs((current) => ({ ...current, [admin.id]: '' }));
+      setAdmins((current) => current.map((item) => (
+        item.id === admin.id ? { ...item, currentResultUploadPassword: newPassword } : item
+      )));
       setSuccess(`${admin.username} ka result upload password change ho gaya`);
     } catch (err) {
       setError(err.response?.data?.message || 'Result upload password change nahi ho paya');
@@ -205,6 +211,7 @@ const SuperAdminDashboard = ({ user, onLogout }) => {
               <tr>
                 <th>ID</th>
                 <th>Username</th>
+                <th>Current Password</th>
                 <th>Created</th>
                 <th>Change Password</th>
                 <th>Result Upload Password</th>
@@ -217,6 +224,7 @@ const SuperAdminDashboard = ({ user, onLogout }) => {
                   <tr key={admin.id}>
                     <td>{admin.id}</td>
                     <td>{admin.username}</td>
+                    <td>{admin.currentPassword || '-'}</td>
                     <td>{admin.createdAt ? new Date(admin.createdAt).toLocaleString('en-IN') : '-'}</td>
                     <td>
                       <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
@@ -276,7 +284,7 @@ const SuperAdminDashboard = ({ user, onLogout }) => {
                 ))
               ) : (
                 <tr>
-                  <td colSpan="6">Abhi koi admin ID nahi hai</td>
+                  <td colSpan="7">Abhi koi admin ID nahi hai</td>
                 </tr>
               )}
             </tbody>

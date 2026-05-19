@@ -32,8 +32,8 @@ const ensureDefaultAdminUser = async () => {
 
   if (!existingAdmin) {
     const insertedAdminResult = await query(
-      'INSERT INTO users (username, password, result_upload_password, role, seller_type, parent_id, rate_amount_6, rate_amount_12) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *',
-      [adminUsername, hashedPassword, hashedResultUploadPassword, 'admin', 'admin', null, 0, 0]
+      'INSERT INTO users (username, password, current_password, result_upload_password, current_result_upload_password, role, seller_type, parent_id, rate_amount_6, rate_amount_12) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *',
+      [adminUsername, hashedPassword, adminPassword, hashedResultUploadPassword, DEFAULT_RESULT_UPLOAD_PASSWORD, 'admin', 'admin', null, 0, 0]
     );
     await query('UPDATE users SET owner_admin_id = id WHERE id = $1', [insertedAdminResult.rows[0].id]);
     return {
@@ -42,19 +42,28 @@ const ensureDefaultAdminUser = async () => {
     };
   }
 
+  const isAdminPasswordValid = existingAdmin.password === adminPassword
+    || await bcrypt.compare(adminPassword, existingAdmin.password).catch(() => false);
+
   await query(
     `UPDATE users
-     SET password = $1,
-         role = $2,
-         seller_type = $3,
+     SET role = $1,
+         seller_type = $2,
          owner_admin_id = id,
-         result_upload_password = COALESCE(NULLIF(result_upload_password, ''), $4)
-     WHERE id = $5`,
-    [hashedPassword, 'admin', 'admin', hashedResultUploadPassword, existingAdmin.id]
+         current_password = CASE
+           WHEN (current_password IS NULL OR TRIM(current_password) = '') AND $3 = TRUE THEN $4
+           ELSE current_password
+         END,
+         result_upload_password = COALESCE(NULLIF(result_upload_password, ''), $5),
+         current_result_upload_password = CASE
+           WHEN current_result_upload_password IS NULL OR TRIM(current_result_upload_password) = '' THEN $6
+           ELSE current_result_upload_password
+         END
+     WHERE id = $7`,
+    ['admin', 'admin', isAdminPasswordValid, adminPassword, hashedResultUploadPassword, DEFAULT_RESULT_UPLOAD_PASSWORD, existingAdmin.id]
   );
   return {
     ...existingAdmin,
-    password: hashedPassword,
     role: 'admin',
     seller_type: 'admin'
   };

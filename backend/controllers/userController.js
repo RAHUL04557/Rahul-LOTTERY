@@ -3,19 +3,31 @@ const { getClient, query } = require('../config/database');
 
 const DEFAULT_RESULT_UPLOAD_PASSWORD = 'rahul@9749';
 
-const mapSeller = (row) => ({
-  id: row.id,
-  username: row.username,
-  keyword: row.keyword || '',
-  role: row.role,
-  sellerType: row.seller_type || (row.role === 'seller' ? 'seller' : 'admin'),
-  parentId: row.parent_id,
-  ownerAdminId: row.owner_admin_id,
-  canLogin: row.can_login !== undefined ? Boolean(row.can_login) : true,
-  rateAmount6: row.rate_amount_6 !== undefined ? Number(row.rate_amount_6) : 0,
-  rateAmount12: row.rate_amount_12 !== undefined ? Number(row.rate_amount_12) : 0,
-  createdAt: row.created_at
-});
+const mapSeller = (row) => {
+  const mapped = {
+    id: row.id,
+    username: row.username,
+    keyword: row.keyword || '',
+    role: row.role,
+    sellerType: row.seller_type || (row.role === 'seller' ? 'seller' : 'admin'),
+    parentId: row.parent_id,
+    ownerAdminId: row.owner_admin_id,
+    canLogin: row.can_login !== undefined ? Boolean(row.can_login) : true,
+    rateAmount6: row.rate_amount_6 !== undefined ? Number(row.rate_amount_6) : 0,
+    rateAmount12: row.rate_amount_12 !== undefined ? Number(row.rate_amount_12) : 0,
+    createdAt: row.created_at
+  };
+
+  if (Object.prototype.hasOwnProperty.call(row, 'current_password')) {
+    mapped.currentPassword = row.current_password || '';
+  }
+
+  if (Object.prototype.hasOwnProperty.call(row, 'current_result_upload_password')) {
+    mapped.currentResultUploadPassword = row.current_result_upload_password || '';
+  }
+
+  return mapped;
+};
 
 const buildTree = (rows, rootId, currentUser) => {
   const nodes = new Map(
@@ -373,10 +385,10 @@ const createAdmin = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     const hashedResultUploadPassword = await bcrypt.hash(resultUploadPassword, 10);
     const adminResult = await query(
-      `INSERT INTO users (username, password, result_upload_password, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12)
-       VALUES ($1, $2, $3, 'admin', 'admin', $4, NULL, TRUE, 0, 0)
-       RETURNING id, username, keyword, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12, created_at`,
-      [username, hashedPassword, hashedResultUploadPassword, req.user.id]
+      `INSERT INTO users (username, password, current_password, result_upload_password, current_result_upload_password, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12)
+       VALUES ($1, $2, $3, $4, $5, 'admin', 'admin', $6, NULL, TRUE, 0, 0)
+       RETURNING id, username, keyword, current_password, current_result_upload_password, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12, created_at`,
+      [username, hashedPassword, password, hashedResultUploadPassword, resultUploadPassword, req.user.id]
     );
     await query('UPDATE users SET owner_admin_id = id WHERE id = $1', [adminResult.rows[0].id]);
 
@@ -450,7 +462,7 @@ const getAdmins = async (req, res) => {
     }
 
     const adminsResult = await query(
-      `SELECT id, username, keyword, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12, created_at
+      `SELECT id, username, keyword, current_password, current_result_upload_password, role, seller_type, parent_id, owner_admin_id, can_login, rate_amount_6, rate_amount_12, created_at
        FROM users
        WHERE role = 'admin'
        ORDER BY created_at DESC`
@@ -597,7 +609,7 @@ const changeAdminPassword = async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await query('UPDATE users SET password = $1 WHERE id = $2', [hashedPassword, targetAdminId]);
+    await query('UPDATE users SET password = $1, current_password = $2 WHERE id = $3', [hashedPassword, newPassword, targetAdminId]);
 
     res.json({
       message: `Password updated successfully for ${targetAdminResult.rows[0].username}`
@@ -634,7 +646,7 @@ const changeAdminResultUploadPassword = async (req, res) => {
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await query('UPDATE users SET result_upload_password = $1 WHERE id = $2', [hashedPassword, targetAdminId]);
+    await query('UPDATE users SET result_upload_password = $1, current_result_upload_password = $2 WHERE id = $3', [hashedPassword, newPassword, targetAdminId]);
 
     res.json({
       message: `Result upload password updated successfully for ${targetAdminResult.rows[0].username}`

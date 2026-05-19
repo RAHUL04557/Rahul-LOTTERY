@@ -66,7 +66,9 @@ const initDB = async () => {
       username VARCHAR(255) UNIQUE NOT NULL,
       keyword VARCHAR(30),
       password VARCHAR(255) NOT NULL,
+      current_password VARCHAR(255),
       result_upload_password VARCHAR(255),
+      current_result_upload_password VARCHAR(255),
       role VARCHAR(20) NOT NULL DEFAULT 'seller',
       seller_type VARCHAR(30) NOT NULL DEFAULT 'seller',
       parent_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -91,6 +93,34 @@ const initDB = async () => {
   await query(`
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS result_upload_password VARCHAR(255)
+  `);
+
+  await query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS current_password VARCHAR(255)
+  `);
+
+  await query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS current_result_upload_password VARCHAR(255)
+  `);
+
+  await query(`
+    UPDATE users
+    SET current_password = password
+    WHERE role = 'admin'
+      AND (current_password IS NULL OR TRIM(current_password) = '')
+      AND password IS NOT NULL
+      AND password NOT LIKE '$2%'
+  `);
+
+  await query(`
+    UPDATE users
+    SET current_result_upload_password = result_upload_password
+    WHERE role = 'admin'
+      AND (current_result_upload_password IS NULL OR TRIM(current_result_upload_password) = '')
+      AND result_upload_password IS NOT NULL
+      AND result_upload_password NOT LIKE '$2%'
   `);
 
   const defaultResultUploadPasswordHash = await bcrypt.hash(DEFAULT_RESULT_UPLOAD_PASSWORD, 10);
