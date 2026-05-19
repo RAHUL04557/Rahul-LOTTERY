@@ -5592,7 +5592,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const adminParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const adminConditions = [
         'le.entry_source = $2',
-        `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
+        `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
       ];
 
       if (bookingDate) {
@@ -5640,7 +5640,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const params = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const conditions = [
         'le.entry_source = $2',
-        `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
+        `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
       ];
 
       if (bookingDate) {
@@ -5679,6 +5679,10 @@ const getPurchasePieceSummary = async (req, res) => {
                 COALESCE(SUM(CASE WHEN le.memo_number IS NOT NULL AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS total_piece,
                 COALESCE(SUM(CASE WHEN (
                   LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
+                  OR (
+                    LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}'
+                    AND le.forwarded_by = $${selfUnsoldParamIndex}
+                  )
                   OR (
                     LOWER(TRIM(le.status)) = '${UNSOLD_LOCAL_STATUS}'
                     AND (le.user_id = $${selfUnsoldParamIndex} OR le.sent_to_parent = $${selfUnsoldParamIndex})
@@ -5780,7 +5784,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const receivedUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const receivedUnsoldConditions = [
         'le.entry_source = $2',
-        "h.action_type IN ('unsold_auto_accepted', 'unsold_accepted')",
+        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')",
         'h.to_user_id = $1'
       ];
 
@@ -5867,7 +5871,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const sentUnsoldConditions = [
         'le.entry_source = $2',
-        "h.action_type IN ('unsold_auto_accepted', 'unsold_accepted')",
+        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')",
         'h.to_user_id = $1'
       ];
 
