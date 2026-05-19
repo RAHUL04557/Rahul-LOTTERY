@@ -2006,7 +2006,7 @@ const AdminDashboard = ({
 
     try {
       const reviewEntries = groupedEntries.some((currentEntry) => String(currentEntry.entrySource || currentEntry.entry_source || '').trim() === 'purchase')
-        ? groupedEntries.slice(0, 1)
+        ? [groupedEntries.find((currentEntry) => String(currentEntry.status || '').trim().toLowerCase() !== 'accepted') || groupedEntries[0]]
         : groupedEntries;
 
       await Promise.all(reviewEntries.map((currentEntry) => (

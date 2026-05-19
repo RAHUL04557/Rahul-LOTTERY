@@ -70,8 +70,7 @@ const EntriesTableView = ({
           sellerName,
           entry.sentAt || entry.createdAt || '',
           entry.bookingDate || '',
-          entry.amount,
-          entry.status || ''
+          entry.amount
         ].join('|');
         if (!groups[key]) {
           groups[key] = {
@@ -87,6 +86,9 @@ const EntriesTableView = ({
         }
         groups[key].totalUnsold += Number(entry.sem || 0);
         groups[key].rows.push(entry);
+        if (String(groups[key].status || '').trim().toLowerCase() !== 'sent') {
+          groups[key].status = entry.status || groups[key].status || '-';
+        }
         return groups;
       }, {}));
 
