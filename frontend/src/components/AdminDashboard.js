@@ -779,7 +779,8 @@ const mapApiEntry = (entry) => ({
   purchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M'),
   createdAt: entry.createdAt,
   sentAt: entry.sentAt,
-  status: entry.status
+  status: entry.status,
+  entrySource: entry.entrySource || entry.entry_source || ''
 });
 
 const mapHistoryRecord = (record) => ({
@@ -2004,7 +2005,11 @@ const AdminDashboard = ({
     setError('');
 
     try {
-      await Promise.all(groupedEntries.map((currentEntry) => (
+      const reviewEntries = groupedEntries.some((currentEntry) => String(currentEntry.entrySource || currentEntry.entry_source || '').trim() === 'purchase')
+        ? groupedEntries.slice(0, 1)
+        : groupedEntries;
+
+      await Promise.all(reviewEntries.map((currentEntry) => (
         lotteryService.updateReceivedEntryStatus(currentEntry.id, action, { amount: initialAmount })
       )));
       setSuccess(`${groupedEntries.length > 1 ? `${groupedEntries.length} entries` : 'Entry'} ${action === 'accept' ? 'accepted' : 'rejected'} successfully`);

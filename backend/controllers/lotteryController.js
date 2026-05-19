@@ -829,7 +829,7 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
   }
 
   if (respectLiveMemoState) {
-    historyConditions.push(`LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')`);
+    historyConditions.push(`LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')`);
   }
 
   params.push(viewerUserId);
@@ -3170,7 +3170,7 @@ const getPurchaseEntries = async (req, res) => {
 
     if (status) {
       if (status === UNSOLD_ACCEPTED_STATUS) {
-        conditions.push(`LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`);
+        conditions.push(`LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`);
         if (req.user.role === 'admin') {
           params.push(req.user.id);
           const adminUserParamIndex = params.length;
@@ -3181,7 +3181,7 @@ const getPurchaseEntries = async (req, res) => {
         }
       } else {
         if (status === 'unsold') {
-          conditions.push(`LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')`);
+          conditions.push(`LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')`);
           if (req.user.role !== 'admin' && (!sellerId || sellerId === Number(req.user.id))) {
             params.push(req.user.id);
             conditions.push(`(le.sent_to_parent = $${params.length} OR le.forwarded_by = $${params.length})`);
@@ -3778,7 +3778,7 @@ const removePurchaseUnsoldEntries = async (req, res) => {
          AND le.purchase_category = $4
          AND le.booking_date = $5::date
          AND le.number = ANY($6::varchar[])
-         AND LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')
+         AND LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')
          ${stockFilters.join('\n         ')}
          ${ownershipFilter}
        ORDER BY le.number ASC`,
@@ -3821,7 +3821,7 @@ const removePurchaseUnsoldEntries = async (req, res) => {
         INNER JOIN branch_users bu ON bu.id = le.user_id
         WHERE le.entry_source = $2
           AND h.to_user_id = $3
-          AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')
+          AND h.action_type IN ('unsold_auto_accepted', 'unsold_accepted')
           AND h.session_mode = $4
           AND h.purchase_category = $5
           AND h.booking_date = $6::date
@@ -4050,7 +4050,7 @@ const checkPurchaseUnsoldRemoveEntries = async (req, res) => {
          AND le.purchase_category = $4
          AND le.booking_date = $5::date
          AND le.number = ANY($6::varchar[])
-         AND LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')
+         AND LOWER(TRIM(le.status)) IN ('${UNSOLD_LOCAL_STATUS}', '${UNSOLD_ACCEPTED_STATUS}', 'unsold')
          ${stockFilters.join('\n         ')}
          ${ownershipFilter}
        ORDER BY le.number ASC`,
@@ -4093,7 +4093,7 @@ const checkPurchaseUnsoldRemoveEntries = async (req, res) => {
         INNER JOIN branch_users bu ON bu.id = le.user_id
         WHERE le.entry_source = $2
           AND h.to_user_id = $3
-          AND h.action_type IN ('unsold_sent', 'unsold_auto_accepted', 'unsold_accepted')
+          AND h.action_type IN ('unsold_auto_accepted', 'unsold_accepted')
           AND h.session_mode = $4
           AND h.purchase_category = $5
           AND h.booking_date = $6::date
@@ -5592,7 +5592,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const adminParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const adminConditions = [
         'le.entry_source = $2',
-        `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
+        `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
       ];
 
       if (bookingDate) {
@@ -5640,7 +5640,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const params = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const conditions = [
         'le.entry_source = $2',
-        `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
+        `LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')`
       ];
 
       if (bookingDate) {
@@ -5679,10 +5679,6 @@ const getPurchasePieceSummary = async (req, res) => {
                 COALESCE(SUM(CASE WHEN le.memo_number IS NOT NULL AND le.box_value ~ '^\\d+(\\.\\d+)?$' THEN le.box_value::numeric ELSE 0 END), 0) AS total_piece,
                 COALESCE(SUM(CASE WHEN (
                   LOWER(TRIM(le.status)) = '${UNSOLD_ACCEPTED_STATUS}'
-                  OR (
-                    LOWER(TRIM(le.status)) = '${UNSOLD_SENT_STATUS}'
-                    AND le.forwarded_by = $${selfUnsoldParamIndex}
-                  )
                   OR (
                     LOWER(TRIM(le.status)) = '${UNSOLD_LOCAL_STATUS}'
                     AND (le.user_id = $${selfUnsoldParamIndex} OR le.sent_to_parent = $${selfUnsoldParamIndex})
@@ -5784,7 +5780,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const receivedUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const receivedUnsoldConditions = [
         'le.entry_source = $2',
-        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
+        "h.action_type IN ('unsold_auto_accepted', 'unsold_accepted')",
         'h.to_user_id = $1'
       ];
 
@@ -5871,7 +5867,7 @@ const getPurchasePieceSummary = async (req, res) => {
       const sentUnsoldParams = [req.user.id, PURCHASE_ENTRY_SOURCE];
       const sentUnsoldConditions = [
         'le.entry_source = $2',
-        "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')",
+        "h.action_type IN ('unsold_auto_accepted', 'unsold_accepted')",
         'h.to_user_id = $1'
       ];
 

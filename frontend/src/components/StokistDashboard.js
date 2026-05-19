@@ -72,7 +72,8 @@ const mapApiEntry = (entry) => ({
   purchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M'),
   createdAt: entry.createdAt,
   sentAt: entry.sentAt,
-  status: entry.status
+  status: entry.status,
+  entrySource: entry.entrySource || entry.entry_source || ''
 });
 
 const mapHistoryRecord = (record) => ({
@@ -5018,8 +5019,12 @@ const StokistDashboard = ({
     setSuccess('');
 
     try {
+      const reviewEntries = groupedEntries.some((currentEntry) => String(currentEntry.entrySource || currentEntry.entry_source || '').trim() === 'purchase')
+        ? groupedEntries.slice(0, 1)
+        : groupedEntries;
+
       await Promise.all(
-        groupedEntries.map((currentEntry) => lotteryService.updateReceivedEntryStatus(currentEntry.id, action, { amount }))
+        reviewEntries.map((currentEntry) => lotteryService.updateReceivedEntryStatus(currentEntry.id, action, { amount }))
       );
 
       const successLabel = action === 'accept' ? 'accepted' : 'rejected';
