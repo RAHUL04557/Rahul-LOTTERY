@@ -85,6 +85,7 @@ const requestWithOfflineQueue = async ({ method = 'POST', url, data, config = {}
       ...(response.data?.entry ? [response.data.entry] : [])
     ];
     const responseResults = Array.isArray(response.data?.results) ? response.data.results : [];
+    const responseResult = response.data?.result ? [response.data.result] : [];
     const responseUsers = [
       ...(response.data?.seller ? [response.data.seller] : []),
       ...(Array.isArray(response.data?.users) ? response.data.users : [])
@@ -112,9 +113,22 @@ const requestWithOfflineQueue = async ({ method = 'POST', url, data, config = {}
         console.warn('Local purchase update failed:', error.message);
       });
     }
-    if (localDb?.upsertPrizeResults && responseResults.length > 0) {
-      await localDb.upsertPrizeResults(responseResults).catch((error) => {
+    if (localDb?.upsertPrizeResults && [...responseResults, ...responseResult].length > 0 && !['delete_prize_result', 'delete_prize_results'].includes(operationType)) {
+      await localDb.upsertPrizeResults([...responseResults, ...responseResult]).catch((error) => {
         console.warn('Local prize result update failed:', error.message);
+      });
+    }
+    if (localDb?.removePrizeResults && operationType === 'delete_prize_result' && responseResult.length > 0) {
+      await localDb.removePrizeResults({ results: responseResult }).catch((error) => {
+        console.warn('Local prize result delete failed:', error.message);
+      });
+    }
+    if (localDb?.removePrizeResults && operationType === 'delete_prize_results') {
+      await localDb.removePrizeResults({
+        results: responseResults,
+        filters: data || {}
+      }).catch((error) => {
+        console.warn('Local prize results bulk delete failed:', error.message);
       });
     }
     if (responseUsers.length > 0) {
@@ -150,7 +164,8 @@ const getPurchasesFromLocalDb = async (params = {}) => {
   }
   const data = await localDb.listPurchases({
     ...scopedParams,
-    currentUserId: currentUser?.id
+    currentUserId: currentUser?.id,
+    user: currentUser
   });
   return { data };
 };
@@ -397,22 +412,24 @@ const getLocalChildSellers = async () => {
 
 const traceFromLocalDb = async (params = {}) => {
   const localDb = getLocalDb();
+  const currentUser = getCurrentUser();
 
-  if (!localDb?.tracePurchases || !(await canUseLocalRead())) {
+  if (!localDb?.tracePurchases || !(await canUseLocalRead()) || !currentUser?.id) {
     return null;
   }
 
-  return { data: await localDb.tracePurchases(params) };
+  return { data: await localDb.tracePurchases({ ...params, user: currentUser }) };
 };
 
 const getLocalPrizeResults = async (params = {}) => {
   const localDb = getLocalDb();
+  const currentUser = getCurrentUser();
 
-  if (!localDb?.listPrizeResults || !(await canUseLocalRead())) {
+  if (!localDb?.listPrizeResults || !(await canUseLocalRead()) || !currentUser?.id) {
     return null;
   }
 
-  return { data: await localDb.listPrizeResults(params) };
+  return { data: await localDb.listPrizeResults({ ...params, user: currentUser }) };
 };
 
 const getLocalBillPrizes = async (params = {}) => {
@@ -433,12 +450,13 @@ const getLocalBillPrizes = async (params = {}) => {
 
 const checkPrizeFromLocalDb = async (params = {}) => {
   const localDb = getLocalDb();
+  const currentUser = getCurrentUser();
 
-  if (!localDb?.checkPrize || !(await canUseLocalRead())) {
+  if (!localDb?.checkPrize || !(await canUseLocalRead()) || !currentUser?.id) {
     return null;
   }
 
-  return { data: await localDb.checkPrize(params) };
+  return { data: await localDb.checkPrize({ ...params, user: currentUser }) };
 };
 
 const getFilteredPrizeResultsFromLocalDb = async (params = {}) => {

@@ -429,6 +429,41 @@ const upsertPrizeResultsLocal = (results = [], syncStatus = 'synced') => {
   return { ok: true, saved: normalizedResults.length };
 };
 
+const removePrizeResultsLocal = ({ results = [], ids = [], filters = {} } = {}) => {
+  const resultIds = [
+    ...(Array.isArray(ids) ? ids : []),
+    ...(Array.isArray(results) ? results.map((result) => result?.id || result?.serverId || result?.server_id) : [])
+  ]
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id > 0);
+
+  if (resultIds.length > 0) {
+    const placeholders = resultIds.map(() => '?').join(', ');
+    const deleted = initLocalDb()
+      .prepare(`DELETE FROM local_prize_results WHERE server_id IN (${placeholders})`)
+      .run(...resultIds);
+    return { ok: true, removed: deleted.changes || 0 };
+  }
+
+  const resultForDate = toLocalDate(filters.resultForDate || filters.result_for_date || filters.date);
+  const sessionMode = String(filters.sessionMode || filters.session_mode || '').trim();
+  const purchaseCategory = String(filters.purchaseCategory || filters.purchase_category || '').trim();
+
+  if (resultForDate && sessionMode && purchaseCategory) {
+    const deleted = initLocalDb()
+      .prepare(`
+        DELETE FROM local_prize_results
+        WHERE result_for_date = ?
+          AND session_mode = ?
+          AND purchase_category = ?
+      `)
+      .run(resultForDate, sessionMode, purchaseCategory);
+    return { ok: true, removed: deleted.changes || 0 };
+  }
+
+  return { ok: true, removed: 0 };
+};
+
 const mapLocalPrizeResult = (row) => ({
   id: row.server_id,
   localId: row.local_id,
@@ -647,6 +682,17 @@ const buildPrizeFilters = (filters = {}) => {
     conditions.push('purchase_category = ?');
   }
 
+  const currentUser = filters.user || {};
+  const currentUserId = Number(filters.currentUserId || filters.userId || currentUser.id || 0);
+  const prizeOwnerId = String(currentUser.role || '').toLowerCase() === 'admin'
+    ? currentUserId
+    : Number(currentUser.ownerAdminId || currentUser.owner_admin_id || 0);
+
+  if (prizeOwnerId) {
+    params.push(prizeOwnerId);
+    conditions.push('uploaded_by = ?');
+  }
+
   return { params, conditions };
 };
 
@@ -667,6 +713,8 @@ const listLocalPurchaseRowsForPrize = (filters = {}) => {
   const params = [];
   const conditions = ["entry_source = 'purchase'"];
   const { fromDate, toDate } = getDateRange(filters);
+  const currentUser = filters.user || {};
+  const currentUserId = Number(filters.currentUserId || filters.userId || currentUser.id || 0);
 
   if (fromDate && toDate) {
     params.push(fromDate, toDate);
@@ -686,6 +734,13 @@ const listLocalPurchaseRowsForPrize = (filters = {}) => {
   }
 
   const usersById = new Map(getSavedVisibleUsers().map((user) => [Number(user.id), user]));
+  if (!filters.sellerId && currentUserId) {
+    const branchUserIds = getBranchUserIds(currentUserId, usersById);
+    if (branchUserIds.length > 0) {
+      params.push(...branchUserIds);
+      conditions.push(`user_id IN (${branchUserIds.map(() => '?').join(', ')})`);
+    }
+  }
   const manualUnsoldLookup = getManualUnsoldLookup({ filters });
 
   return initLocalDb()
@@ -847,6 +902,30 @@ const getDirectChildRootId = (userId, currentUserId, usersById) => {
   }
 
   return root?.id || null;
+};
+
+const getBranchUserIds = (rootUserId, usersById) => {
+  const rootId = Number(rootUserId || 0);
+  if (!rootId) {
+    return [];
+  }
+
+  const branchIds = new Set([rootId]);
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    usersById.forEach((user) => {
+      const userId = Number(user.id || 0);
+      const parentId = Number(user.parentId || user.parent_id || 0);
+      if (userId && parentId && branchIds.has(parentId) && !branchIds.has(userId)) {
+        branchIds.add(userId);
+        changed = true;
+      }
+    });
+  }
+
+  return [...branchIds];
 };
 
 const getLocalPieceSummary = (filters = {}) => {
@@ -1472,6 +1551,12 @@ const setupLocalDbIpc = (ipcMain) => {
   ipcMain.handle('local-db:list-purchases', (_event, filters = {}) => {
     const params = [];
     const conditions = ["entry_source = 'purchase'"];
+    const currentUser = filters.user || {};
+    const currentUserId = Number(filters.currentUserId || currentUser.id || 0);
+    const users = getSavedVisibleUsers();
+    const usersById = new Map(users.map((user) => [Number(user.id), user]));
+    const currentUserFromStore = usersById.get(currentUserId) || currentUser;
+    const currentUserIsAdmin = String(currentUserFromStore.role || currentUser.role || '').toLowerCase() === 'admin';
 
     if (filters.bookingDate) {
       params.push(toLocalDate(filters.bookingDate));
@@ -1484,8 +1569,12 @@ const setupLocalDbIpc = (ipcMain) => {
     }
 
     if (filters.sellerId) {
-      params.push(Number(filters.sellerId));
-      conditions.push(`user_id = ?`);
+      const sellerIds = currentUserIsAdmin || Number(filters.sellerId) !== currentUserId
+        ? getBranchUserIds(Number(filters.sellerId), usersById)
+        : [Number(filters.sellerId)];
+      const scopedSellerIds = sellerIds.length > 0 ? sellerIds : [Number(filters.sellerId)];
+      params.push(...scopedSellerIds);
+      conditions.push(`user_id IN (${scopedSellerIds.map(() => '?').join(', ')})`);
     }
 
     if (filters.purchaseCategory) {
@@ -1506,7 +1595,11 @@ const setupLocalDbIpc = (ipcMain) => {
     if (filters.status) {
       const status = String(filters.status).trim().toLowerCase();
       if (status === 'unsold' || status === 'unsold_accepted') {
-        conditions.push(`LOWER(TRIM(status)) IN ('unsold_saved', 'unsold_sent', 'unsold_accepted', 'unsold')`);
+        conditions.push(
+          filters.latestSentOnly
+            ? `LOWER(TRIM(status)) IN ('unsold_sent', 'unsold_accepted', 'unsold')`
+            : `LOWER(TRIM(status)) IN ('unsold_saved', 'unsold_sent', 'unsold_accepted', 'unsold')`
+        );
       } else if (status === 'accepted' && filters.includeLocalUnsoldAsAccepted) {
         conditions.push(`LOWER(TRIM(status)) IN ('accepted', 'unsold_saved')`);
       } else {
@@ -1526,16 +1619,19 @@ const setupLocalDbIpc = (ipcMain) => {
       .all(...params);
 
     const mappedRows = rows.map(mapLocalPurchaseEntry);
-    const currentUserId = Number(filters.currentUserId || 0);
     const requestedStatus = String(filters.status || '').trim().toLowerCase();
 
-    if (currentUserId && (!requestedStatus || requestedStatus === 'unsold' || requestedStatus === 'unsold_accepted')) {
+    if (currentUserId && !filters.latestSentOnly && (!requestedStatus || requestedStatus === 'unsold' || requestedStatus === 'unsold_accepted')) {
       const manualParams = [currentUserId];
       const manualConditions = ['actor_user_id = ?'];
 
       if (filters.sellerId) {
-        manualParams.push(Number(filters.sellerId));
-        manualConditions.push('user_id = ?');
+        const sellerIds = currentUserIsAdmin || Number(filters.sellerId) !== currentUserId
+          ? getBranchUserIds(Number(filters.sellerId), usersById)
+          : [Number(filters.sellerId)];
+        const scopedSellerIds = sellerIds.length > 0 ? sellerIds : [Number(filters.sellerId)];
+        manualParams.push(...scopedSellerIds);
+        manualConditions.push(`user_id IN (${scopedSellerIds.map(() => '?').join(', ')})`);
       }
       if (filters.bookingDate) {
         manualParams.push(toLocalDate(filters.bookingDate));
@@ -1581,6 +1677,8 @@ const setupLocalDbIpc = (ipcMain) => {
   ipcMain.handle('local-db:upsert-prize-results', (_event, results = []) => {
     return upsertPrizeResultsLocal(results, 'synced');
   });
+
+  ipcMain.handle('local-db:remove-prize-results', (_event, payload = {}) => removePrizeResultsLocal(payload));
 
   ipcMain.handle('local-db:list-prize-results', (_event, filters = {}) => listLocalPrizeResults(filters));
 
@@ -2541,6 +2639,9 @@ const setupLocalDbIpc = (ipcMain) => {
   ipcMain.handle('local-db:trace-purchases', (_event, filters = {}) => {
     const params = [];
     const conditions = ['1 = 1'];
+    const currentUser = filters.user || {};
+    const currentUserId = Number(filters.currentUserId || filters.userId || currentUser.id || 0);
+    const usersById = new Map(getSavedVisibleUsers().map((user) => [Number(user.id), user]));
     const tokens = [
       ...String(filters.number || '').split(','),
       ...String(filters.uniqueCode || '').split(',')
@@ -2563,6 +2664,14 @@ const setupLocalDbIpc = (ipcMain) => {
       amount: filters.amount,
       sem: filters.sem
     });
+
+    if (currentUserId) {
+      const branchUserIds = getBranchUserIds(currentUserId, usersById);
+      if (branchUserIds.length > 0) {
+        params.push(...branchUserIds);
+        conditions.push(`user_id IN (${branchUserIds.map(() => '?').join(', ')})`);
+      }
+    }
 
     return initLocalDb()
       .prepare(`
