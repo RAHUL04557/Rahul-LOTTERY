@@ -766,6 +766,8 @@ const mapApiEntry = (entry) => ({
   userId: entry.userId || entry.user_id,
   username: entry.username,
   displaySeller: entry.forwardedByUsername || entry.username,
+  forwardedBy: entry.forwardedBy || entry.forwarded_by || null,
+  sentToParent: entry.sentToParent || entry.sent_to_parent || null,
   uniqueCode: entry.uniqueCode,
   sem: entry.boxValue,
   amount: String(entry.amount),
@@ -4932,6 +4934,11 @@ const AdminDashboard = ({
   const directAdminSellers = (treeData?.children || []).filter((node) => node.role === 'seller');
   const activeAmountAdminSellers = directAdminSellers.filter((seller) => sellerSupportsAmount(seller, purchaseAmount || initialAmount));
   const selectedAdminSendSeller = activeAmountAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId));
+  const selectedAdminSellerBranchIdSet = new Set(
+    flattenSellerNodes(selectedAdminSendSeller)
+      .map((seller) => String(seller.id || ''))
+      .filter(Boolean)
+  );
   const shouldShowAmountTreeNode = (node) => node?.role !== 'seller' || sellerSupportsAmount(node, initialAmount || purchaseAmount);
   const adminPrizeTrackerSellerOptions = [
     { id: '', username: 'All Sellers', keyword: 'ALL' },
@@ -5352,7 +5359,11 @@ const AdminDashboard = ({
   const isEditingExistingPurchaseMemo = purchaseMemoSummaries.some((memo) => Number(memo.memoNumber) === Number(purchaseMemoNumber));
   const highlightedPurchaseMemoOption = purchaseMemoOptions[purchaseMemoSelectionIndex] || selectedPurchaseMemoOption || null;
   const adminOwnedUnsoldPurchaseEntries = unsoldPurchaseEntries.filter((entry) => (
-    String(entry.userId || '') === String(purchaseSellerId || '')
+    (
+      selectedAdminSellerBranchIdSet.size > 0
+        ? selectedAdminSellerBranchIdSet.has(String(entry.userId || ''))
+        : String(entry.userId || '') === String(purchaseSellerId || '')
+    )
     && getDateOnlyValue(entry.bookingDate) === purchaseBookingDate
     && String(entry.sessionMode || '') === String(purchaseSessionMode || '')
     && String(entry.purchaseCategory || '') === String(purchaseCategory || '')

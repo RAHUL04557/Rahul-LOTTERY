@@ -906,6 +906,124 @@ const getLatestAcceptedUnsoldSnapshotRows = async ({
   return result.rows;
 };
 
+const getLatestBranchSentUnsoldSnapshotRows = async ({
+  branchUserIds = [],
+  viewerUserId,
+  bookingDate = null,
+  sessionMode = null,
+  purchaseCategory = null,
+  amount = '',
+  boxValue = ''
+}) => {
+  const scopedBranchIds = [...new Set((branchUserIds || [])
+    .map((id) => Number(id))
+    .filter((id) => Number.isInteger(id) && id > 0))];
+
+  if (scopedBranchIds.length === 0) {
+    return [];
+  }
+
+  const params = [scopedBranchIds, [viewerUserId, ...scopedBranchIds]];
+  const conditions = [
+    'le.user_id = ANY($1::int[])',
+    'h.to_user_id = ANY($2::int[])',
+    "h.action_type IN ('unsold_sent', 'unsold_auto_accepted')"
+  ];
+
+  if (bookingDate) {
+    params.push(bookingDate);
+    conditions.push(`h.booking_date = $${params.length}::date`);
+  }
+
+  if (sessionMode) {
+    params.push(sessionMode);
+    conditions.push(`h.session_mode = $${params.length}`);
+  }
+
+  if (purchaseCategory) {
+    params.push(purchaseCategory);
+    conditions.push(`h.purchase_category = $${params.length}`);
+  }
+
+  if (amount) {
+    params.push(amount);
+    conditions.push(`h.amount = $${params.length}::numeric`);
+  }
+
+  if (boxValue) {
+    params.push(boxValue);
+    conditions.push(`h.box_value = $${params.length}`);
+  }
+
+  const result = await query(
+    `WITH latest_send_batches AS (
+       SELECT
+         h.actor_user_id,
+         h.to_user_id,
+         le.user_id,
+         h.booking_date,
+         h.session_mode,
+         h.purchase_category,
+         h.amount,
+         MAX(h.created_at) AS latest_created_at
+       FROM lottery_entry_history h
+       INNER JOIN lottery_entries le ON le.id = h.entry_id
+       WHERE ${conditions.join(' AND ')}
+       GROUP BY h.actor_user_id, h.to_user_id, le.user_id, h.booking_date, h.session_mode, h.purchase_category, h.amount
+     )
+     SELECT DISTINCT ON (h.entry_id)
+       h.entry_id AS id,
+       le.user_id,
+       seller_user.username,
+       parent_user.username AS parent_username,
+       h.actor_user_id AS forwarded_by,
+       actor_user.username AS forwarded_by_username,
+       NULL::varchar AS series,
+       h.number,
+       h.box_value,
+       h.unique_code,
+       h.amount,
+       h.session_mode,
+       CASE WHEN h.to_user_id = $${params.push(viewerUserId)} THEN '${UNSOLD_ACCEPTED_STATUS}' ELSE '${UNSOLD_SENT_STATUS}' END AS status,
+       '${PURCHASE_ENTRY_SOURCE}'::varchar AS entry_source,
+       h.memo_number,
+       h.memo_number AS purchase_memo_number,
+       NULL::int AS memo_row_order,
+       h.purchase_category,
+       h.to_user_id AS sent_to_parent,
+       h.booking_date,
+       h.created_at,
+       h.created_at AS sent_at
+     FROM lottery_entry_history h
+     INNER JOIN lottery_entries le ON le.id = h.entry_id
+     INNER JOIN latest_send_batches batch
+       ON batch.actor_user_id = h.actor_user_id
+      AND batch.to_user_id = h.to_user_id
+      AND batch.user_id = le.user_id
+      AND batch.booking_date = h.booking_date
+      AND batch.session_mode = h.session_mode
+      AND batch.purchase_category = h.purchase_category
+      AND batch.amount = h.amount
+      AND batch.latest_created_at = h.created_at
+     LEFT JOIN users seller_user ON seller_user.id = le.user_id
+     LEFT JOIN users parent_user ON parent_user.id = h.to_user_id
+     LEFT JOIN users actor_user ON actor_user.id = h.actor_user_id
+     WHERE ${conditions.join(' AND ')}
+       AND NOT EXISTS (
+         SELECT 1
+         FROM lottery_entry_history removed_h
+         WHERE removed_h.entry_id = h.entry_id
+           AND removed_h.action_type = 'unsold_removed'
+           AND removed_h.actor_user_id = $${params.length}
+           AND removed_h.created_at >= h.created_at
+       )
+     ORDER BY h.entry_id, h.created_at DESC, h.id DESC`,
+    params
+  );
+
+  return result.rows;
+};
+
 const getManualSavedUnsoldRows = async ({
   targetSellerId,
   actorUserId,
@@ -3233,6 +3351,17 @@ const getPurchaseEntries = async (req, res) => {
         boxValue
       })))).flat()
       : [];
+    const adminBranchSentSnapshotRows = [UNSOLD_ACCEPTED_STATUS, 'unsold'].includes(status) && adminSnapshotSellerIds.length > 0
+      ? await getLatestBranchSentUnsoldSnapshotRows({
+        branchUserIds: adminSnapshotSellerIds,
+        viewerUserId: req.user.id,
+        bookingDate,
+        sessionMode,
+        purchaseCategory,
+        amount,
+        boxValue
+      })
+      : [];
 
     const manualSavedRows = [UNSOLD_ACCEPTED_STATUS, 'unsold', UNSOLD_LOCAL_STATUS].includes(status) && sellerId && sellerId !== Number(req.user.id)
       ? (await Promise.all((adminSnapshotSellerIds.length > 0 ? adminSnapshotSellerIds : [sellerId]).map((targetId) => getManualSavedUnsoldRows({
@@ -3247,7 +3376,7 @@ const getPurchaseEntries = async (req, res) => {
       : [];
 
     if (latestSentOnly && req.user.role === 'admin' && sellerId && status === 'unsold') {
-      const latestRows = [...adminAcceptedSnapshotRows, ...manualSavedRows].filter((row, index, rows) => {
+      const latestRows = [...adminBranchSentSnapshotRows, ...adminAcceptedSnapshotRows, ...manualSavedRows].filter((row, index, rows) => {
         const rowKey = buildUnsoldIdentityKey(row);
         return rows.findIndex((currentRow) => buildUnsoldIdentityKey(currentRow) === rowKey) === index;
       });
@@ -3283,7 +3412,7 @@ const getPurchaseEntries = async (req, res) => {
       }
     }
 
-    const uniqueRows = [...adminAcceptedSnapshotRows, ...manualSavedRows, ...liveRows].filter((row, index, rows) => {
+    const uniqueRows = [...adminBranchSentSnapshotRows, ...adminAcceptedSnapshotRows, ...manualSavedRows, ...liveRows].filter((row, index, rows) => {
       const rowKey = buildUnsoldIdentityKey(row);
       return rows.findIndex((currentRow) => buildUnsoldIdentityKey(currentRow) === rowKey) === index;
     });
