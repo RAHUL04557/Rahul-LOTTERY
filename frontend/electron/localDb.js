@@ -829,6 +829,10 @@ const getNumericPieceSql = (columnName = 'box_value') => (
 );
 
 const getDirectChildRootId = (userId, currentUserId, usersById) => {
+  if (Number(userId) === Number(currentUserId)) {
+    return Number(currentUserId);
+  }
+
   let user = usersById.get(Number(userId));
   let root = null;
   const visited = new Set();

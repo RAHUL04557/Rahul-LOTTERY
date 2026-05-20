@@ -292,9 +292,12 @@ export const buildBillAmountSummariesWithPrize = (records = [], adjustmentTotals
 };
 
 export const buildBillData = ({ records = [], prizeRecords = [], treeData, selectedSellerUsername = '', selectedSellerUsernames = [] }) => {
-  const directChildSellers = (treeData?.children || []).filter((node) => node.role === 'seller');
+  const directRootSellers = [
+    treeData?.role === 'seller' ? treeData : null,
+    ...(treeData?.children || []).filter((node) => node.role === 'seller')
+  ].filter(Boolean);
 
-  if (directChildSellers.length === 0) {
+  if (directRootSellers.length === 0) {
     return {
       records: [],
       groupedRecords: {},
@@ -314,12 +317,12 @@ export const buildBillData = ({ records = [], prizeRecords = [], treeData, selec
 
   const selectedRootSet = new Set(
     (selectedSellerSet.size > 0
-      ? directChildSellers.filter((node) => selectedSellerSet.has(node.username))
-      : directChildSellers
+      ? directRootSellers.filter((node) => selectedSellerSet.has(node.username))
+      : directRootSellers
     ).map((node) => node.username)
   );
 
-  const usernameMap = directChildSellers.reduce((accumulator, directChild) => (
+  const usernameMap = directRootSellers.reduce((accumulator, directChild) => (
     flattenSellerTree(directChild, directChild.username, accumulator)
   ), new Map());
 
@@ -474,7 +477,7 @@ export const buildBillData = ({ records = [], prizeRecords = [], treeData, selec
     accumulator[rootName] = buildBillAmountSummariesWithPrize(rootRecords, adjustmentTotalsByRootAndAmount[rootName] || {});
     return accumulator;
   }, {});
-  const rootSellerMeta = directChildSellers.reduce((accumulator, node) => {
+  const rootSellerMeta = directRootSellers.reduce((accumulator, node) => {
     accumulator[node.username] = {
       username: node.username,
       allowedAmountsLabel: getAllowedAmountsLabel(node)
