@@ -716,7 +716,7 @@ export const lotteryService = {
   sendPurchase: (payload) => postWithOfflineQueue('/lottery/purchases/send', payload, 'purchase_send'),
   transferRemainingStock: (payload) => postWithOfflineQueue('/lottery/purchases/stock-transfer', payload, 'stock_transfer'),
   assignPurchase: (payload) => requestWithOfflineQueue({ method: 'POST', url: '/lottery/purchases/assign', data: payload }, 'assign_purchase'),
-  getPurchases: async ({ bookingDate, sessionMode, sellerId, status, purchaseCategory, amount, boxValue, remaining, latestSentOnly } = {}, requestOptions = {}) => {
+  getPurchases: async ({ bookingDate, sessionMode, sellerId, status, purchaseCategory, amount, boxValue, remaining, latestSentOnly, includeLocalUnsoldAsAccepted } = {}, requestOptions = {}) => {
     const params = {
       ...(bookingDate && { bookingDate }),
       ...(sessionMode && { sessionMode }),
@@ -726,7 +726,8 @@ export const lotteryService = {
       ...(amount && { amount }),
       ...(boxValue && { boxValue }),
       ...(remaining !== undefined && { remaining }),
-      ...(latestSentOnly !== undefined && { latestSentOnly })
+      ...(latestSentOnly !== undefined && { latestSentOnly }),
+      ...(includeLocalUnsoldAsAccepted !== undefined && { includeLocalUnsoldAsAccepted })
     };
 
     try {

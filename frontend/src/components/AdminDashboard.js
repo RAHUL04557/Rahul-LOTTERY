@@ -3675,7 +3675,8 @@ const AdminDashboard = ({
       status: 'accepted',
       purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
       amount: row.bookingAmount || purchaseAmount,
-      boxValue: row.semValue
+      boxValue: row.semValue,
+      includeLocalUnsoldAsAccepted: true
     });
 
     const availableNumbers = new Set(

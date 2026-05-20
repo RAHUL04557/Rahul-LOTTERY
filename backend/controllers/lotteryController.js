@@ -2971,6 +2971,7 @@ const getPurchaseEntries = async (req, res) => {
     const purchaseCategory = normalizePurchaseCategory(req.query.purchaseCategory);
     const remainingOnly = String(req.query.remaining || '').trim().toLowerCase() === 'true';
     const latestSentOnly = String(req.query.latestSentOnly || '').trim().toLowerCase() === 'true';
+    const includeLocalUnsoldAsAccepted = String(req.query.includeLocalUnsoldAsAccepted || '').trim().toLowerCase() === 'true';
     const params = [PURCHASE_ENTRY_SOURCE];
     const conditions = ['le.entry_source = $1'];
     let childSellerVisibilityParamIndex = null;
@@ -3187,8 +3188,17 @@ const getPurchaseEntries = async (req, res) => {
             conditions.push(`(le.sent_to_parent = $${params.length} OR le.forwarded_by = $${params.length})`);
           }
         } else {
-          params.push(status);
-          conditions.push(`LOWER(TRIM(le.status)) = $${params.length}`);
+          if (
+            status === 'accepted'
+            && includeLocalUnsoldAsAccepted
+            && req.user.role === 'admin'
+            && sellerId
+          ) {
+            conditions.push(`LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}')`);
+          } else {
+            params.push(status);
+            conditions.push(`LOWER(TRIM(le.status)) = $${params.length}`);
+          }
         }
       }
     }
@@ -3531,7 +3541,7 @@ const markPurchaseEntriesUnsold = async (req, res) => {
            AND h.purchase_category = $6
            AND h.booking_date = $7::date
            AND h.number = ANY($8::varchar[])
-           AND LOWER(TRIM(le.status)) = 'accepted'
+           AND LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}')
            ${adminSentFilters.join('\n           ')}
          ORDER BY le.id, h.created_at DESC`,
         adminSentParams
@@ -4457,7 +4467,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
            FROM lottery_entries le
            WHERE le.user_id = $1
              AND le.entry_source = $2
-             AND LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
+             AND LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
              AND le.session_mode = $3
              AND le.purchase_category = $4
              AND le.booking_date = $5::date
@@ -4621,7 +4631,7 @@ const replacePurchaseUnsoldMemoEntries = async (req, res) => {
          FROM lottery_entries le
          WHERE le.user_id = $1
            AND le.entry_source = $2
-           AND LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
+           AND LOWER(TRIM(le.status)) IN ('accepted', '${UNSOLD_LOCAL_STATUS}', '${UNSOLD_SENT_STATUS}', '${UNSOLD_ACCEPTED_STATUS}')
            AND le.session_mode = $3
            AND le.purchase_category = $4
            AND le.booking_date = $5::date

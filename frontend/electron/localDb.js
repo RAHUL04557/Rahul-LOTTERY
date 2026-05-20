@@ -1507,6 +1507,8 @@ const setupLocalDbIpc = (ipcMain) => {
       const status = String(filters.status).trim().toLowerCase();
       if (status === 'unsold' || status === 'unsold_accepted') {
         conditions.push(`LOWER(TRIM(status)) IN ('unsold_saved', 'unsold_sent', 'unsold_accepted', 'unsold')`);
+      } else if (status === 'accepted' && filters.includeLocalUnsoldAsAccepted) {
+        conditions.push(`LOWER(TRIM(status)) IN ('accepted', 'unsold_saved')`);
       } else {
         params.push(status);
         conditions.push(`LOWER(TRIM(status)) = ?`);
