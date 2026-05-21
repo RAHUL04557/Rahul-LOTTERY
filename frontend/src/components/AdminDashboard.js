@@ -8545,9 +8545,9 @@ const AdminDashboard = ({
               </div>
 
               {Object.keys(adminBillVisibleGroups).length > 0 ? (
-                <div className="entries-list-block" style={{ marginTop: '20px' }}>
+                <div className="entries-list-block bill-preview-block" style={{ marginTop: '20px' }}>
                   <h3>Seller Totals</h3>
-                  <table className="entries-table">
+                  <table className="entries-table bill-preview-table">
                     <thead>
                       <tr>
                         <th>Seller</th>
@@ -8592,7 +8592,7 @@ const AdminDashboard = ({
               )}
 
               {Object.keys(adminBillVisibleGroups).length > 0 && (
-                <div style={{ marginTop: '20px', padding: '18px 22px', borderRadius: '16px', background: '#eef2ff', fontSize: '28px', lineHeight: 1.45 }}>
+                <div className="bill-grand-total" style={{ marginTop: '20px', padding: '18px 22px', borderRadius: '16px', background: '#eef2ff', fontSize: '28px', lineHeight: 1.45 }}>
                   <strong>Grand Total:</strong> Unsold %{' '}
                   {(Number(adminVisibleBillTotals.totalSentPiece || 0) > 0 ? ((Number(adminVisibleBillTotals.totalUnsoldPiece || 0) / Number(adminVisibleBillTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% | Sold %{' '}
                   {(Number(adminVisibleBillTotals.totalSentPiece || 0) > 0 ? ((Number(adminVisibleBillTotals.totalSoldPiece || 0) / Number(adminVisibleBillTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% | Net {formatSignedRupees(adminVisibleBillTotals.netBill)}

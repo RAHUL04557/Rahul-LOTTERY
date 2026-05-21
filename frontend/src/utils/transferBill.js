@@ -552,7 +552,7 @@ export const openTransferBill = ({
   const sellerTotalsTableHtml = `
     <section style="margin-top:24px;">
       <h3 style="margin:0 0 10px;">Seller Totals</h3>
-      <table style="width:100%;border-collapse:collapse;font-size:20px;">
+      <table style="width:100%;border-collapse:collapse;font-size:24px;color:#111827;font-weight:700;">
         <thead>
           <tr>
             <th>Seller</th>
@@ -580,11 +580,11 @@ export const openTransferBill = ({
         <meta charset="UTF-8" />
         <title>${escapeHtml(title)} - ${escapeHtml(username)}</title>
         <style>
-          body { font-family: Arial, sans-serif; margin: 24px; color: #1f2937; }
+          body { font-family: Arial, sans-serif; margin: 24px; color: #111827; }
           h1, h2, h3 { margin: 0; }
           table, th, td { border: 1px solid #cbd5e1; }
-          th, td { padding: 12px; text-align: left; font-size: 20px; }
-          th { background: #eef2ff; }
+          th, td { padding: 12px; text-align: left; font-size: 24px; font-weight: 700; color: #111827; }
+          th { background: #eef2ff; color: #0f172a; }
           @media print {
             body { margin: 12px; }
             button { display: none; }
@@ -593,7 +593,7 @@ export const openTransferBill = ({
       </head>
       <body>
         ${sellerTotalsTableHtml}
-        <div style="margin-top:24px;padding:22px 26px;border:1px solid #cbd5e1;border-radius:16px;background:#eef2ff;font-size:32px;line-height:1.45;">
+        <div style="margin-top:24px;padding:22px 26px;border:1px solid #cbd5e1;border-radius:16px;background:#eef2ff;font-size:36px;font-weight:800;color:#0f172a;line-height:1.45;">
           <strong>Grand Total:</strong>
           Unsold % ${(Number(totals.totalSentPiece || 0) > 0 ? ((Number(totals.totalUnsoldPiece || 0) / Number(totals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% |
           Sold % ${(Number(totals.totalSentPiece || 0) > 0 ? ((Number(totals.totalSoldPiece || 0) / Number(totals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% |

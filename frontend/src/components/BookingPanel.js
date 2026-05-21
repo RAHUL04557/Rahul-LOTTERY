@@ -2168,8 +2168,8 @@ const BookingBillTable = ({ rows }) => {
   }), { totalSentPiece: 0, totalSoldPiece: 0, totalSales: 0, totalPrize: 0, totalVc: 0, totalSvc: 0, netBill: 0 });
 
   return (
-    <div className="entries-list-block" style={{ marginTop: '20px' }}>
-      <table className="entries-table">
+    <div className="entries-list-block bill-preview-block" style={{ marginTop: '20px' }}>
+      <table className="entries-table bill-preview-table">
         <thead>
           <tr>
             <th>Seller</th>
@@ -2200,7 +2200,7 @@ const BookingBillTable = ({ rows }) => {
         </tbody>
       </table>
       {rows.length > 0 ? (
-        <div style={{ marginTop: '16px', padding: '14px 16px', background: '#eef2ff', borderRadius: '8px' }}>
+        <div className="bill-grand-total" style={{ marginTop: '16px', padding: '14px 16px', background: '#eef2ff', borderRadius: '8px' }}>
           <strong>Grand Total:</strong> Booking {totals.totalSentPiece.toFixed(2)} | Sold {totals.totalSoldPiece.toFixed(2)} | Net Value Rs. {totals.totalSales.toFixed(2)} | Prize Rs. {totals.totalPrize.toFixed(2)} | VC Rs. {totals.totalVc.toFixed(2)} | SVC Rs. {totals.totalSvc.toFixed(2)} | Net {formatSignedRupees(totals.netBill)}
         </div>
       ) : null}

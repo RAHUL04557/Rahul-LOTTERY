@@ -8191,9 +8191,9 @@ const SubStokistDashboard = ({
               </div>
 
               {Object.keys(billTransferHistoryByActor).length > 0 ? (
-                <div className="entries-list-block" style={{ marginTop: '20px' }}>
+                <div className="entries-list-block bill-preview-block" style={{ marginTop: '20px' }}>
                   <h3>Seller Totals</h3>
-                  <table className="entries-table" style={{ fontSize: '20px' }}>
+                  <table className="entries-table bill-preview-table" style={{ fontSize: '20px' }}>
                     <thead>
                       <tr>
                         <th>Seller</th>
@@ -8238,7 +8238,7 @@ const SubStokistDashboard = ({
               )}
 
               {Object.keys(billTransferHistoryByActor).length > 0 && (
-                <div style={{ marginTop: '20px', padding: '22px 26px', borderRadius: '16px', background: '#eef2ff', fontSize: '38px', lineHeight: 1.45 }}>
+                <div className="bill-grand-total" style={{ marginTop: '20px', padding: '22px 26px', borderRadius: '16px', background: '#eef2ff', fontSize: '38px', lineHeight: 1.45 }}>
                   <strong>Grand Total:</strong> Unsold % {(Number(billTransferHistoryTotals.totalSentPiece || 0) > 0 ? ((Number(billTransferHistoryTotals.totalUnsoldPiece || 0) / Number(billTransferHistoryTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% | Sold % {(Number(billTransferHistoryTotals.totalSentPiece || 0) > 0 ? ((Number(billTransferHistoryTotals.totalSoldPiece || 0) / Number(billTransferHistoryTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% | Net {formatSignedRupees(billTransferHistoryTotals.netBill)}
                 </div>
               )}
