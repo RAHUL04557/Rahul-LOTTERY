@@ -1388,6 +1388,7 @@ const AdminDashboard = ({
   const [editingPendingPrizeId, setEditingPendingPrizeId] = useState(null);
   const [editingPendingPrizeValue, setEditingPendingPrizeValue] = useState('');
   const [uploadedPrizeResults, setUploadedPrizeResults] = useState([]);
+  const [replaceUploadedPrizeResultsOnNextUpload, setReplaceUploadedPrizeResultsOnNextUpload] = useState(false);
   const [editingUploadedResultId, setEditingUploadedResultId] = useState(null);
   const [editingUploadedValue, setEditingUploadedValue] = useState('');
   const [editingUploadedLoading, setEditingUploadedLoading] = useState(false);
@@ -2070,6 +2071,7 @@ const AdminDashboard = ({
         purchaseCategory: selectedPurchaseCategory
       });
       setUploadedPrizeResults(response.data);
+      setReplaceUploadedPrizeResultsOnNextUpload(false);
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading uploaded results');
     }
@@ -4145,16 +4147,18 @@ const AdminDashboard = ({
   const mergeScannedPrizeEntries = (scannedPrizes) => {
     let addedCount = 0;
     const skippedNumbers = [];
+    const scannedNumberCount = Object.values(scannedPrizes || {}).reduce(
+      (count, numbers) => count + (Array.isArray(numbers) ? numbers.length : 0),
+      0
+    );
+    const shouldReplaceUploadedResults = scannedNumberCount > 0 && uploadedPrizeResults.length > 0;
 
     setPendingPrizeEntries((current) => {
       const nextEntries = PRIZE_OPTIONS.reduce((accumulator, prize) => {
-        accumulator[prize.key] = [...(current[prize.key] || [])];
+        accumulator[prize.key] = [];
         return accumulator;
       }, {});
-      const usedNumbers = new Set([
-        ...Object.values(nextEntries).flat().map((entry) => entry.winningNumber),
-        ...uploadedPrizeResults.map((entry) => entry.winningNumber)
-      ]);
+      const usedNumbers = new Set();
 
       PRIZE_OPTIONS.forEach((prize) => {
         sortPrizeNumbersAscending(scannedPrizes[prize.key] || []).forEach((number) => {
@@ -4175,12 +4179,19 @@ const AdminDashboard = ({
       return nextEntries;
     });
 
+    if (shouldReplaceUploadedResults) {
+      setReplaceUploadedPrizeResultsOnNextUpload(true);
+      setUploadedPrizeResults([]);
+      setEditingUploadedResultId(null);
+      setEditingUploadedValue('');
+    }
+
     setEditingPendingPrizeId(null);
     setEditingPendingPrizeValue('');
     setError('');
     setSuccess(
       addedCount > 0
-        ? `Scan se ${addedCount} prize numbers add ho gaye${skippedNumbers.length ? `, ${skippedNumbers.length} duplicate/invalid skip hua` : ''}`
+        ? `Scan se ${addedCount} prize numbers set ho gaye${shouldReplaceUploadedResults ? '. Upload karne par purane uploaded results replace ho jayenge' : ''}${skippedNumbers.length ? `, ${skippedNumbers.length} duplicate/invalid skip hua` : ''}`
         : 'Scan me koi naya prize number nahi mila'
     );
   };
@@ -4510,6 +4521,15 @@ const AdminDashboard = ({
     setLoading(true);
 
     try {
+      if (replaceUploadedPrizeResultsOnNextUpload) {
+        await priceService.deletePrizeResults({
+          resultForDate: uploadResultDate,
+          sessionMode: uploadSessionMode,
+          purchaseCategory: uploadPurchaseCategory,
+          resultUploadPassword: resultUploadPasswordValue
+        });
+      }
+
       const response = await priceService.uploadPrice({
         entries: entriesToUpload,
         sessionMode: uploadSessionMode,
@@ -4531,6 +4551,7 @@ const AdminDashboard = ({
         });
       }
       setPendingPrizeEntries(createPendingPrizeEntries());
+      setReplaceUploadedPrizeResultsOnNextUpload(false);
       setManualPrizeInputs(createManualPrizeInputs());
       setEditingPendingPrizeId(null);
       setEditingPendingPrizeValue('');
