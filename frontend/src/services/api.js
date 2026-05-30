@@ -124,9 +124,17 @@ const requestWithOfflineQueue = async ({ method = 'POST', url, data, config = {}
       });
     }
     if (localDb?.removePrizeResults && operationType === 'delete_prize_results') {
+      const currentUser = getCurrentUser();
+      const prizeOwnerId = String(currentUser?.role || '').toLowerCase() === 'admin'
+        ? Number(currentUser?.id || 0)
+        : Number(currentUser?.ownerAdminId || currentUser?.owner_admin_id || 0);
+
       await localDb.removePrizeResults({
         results: responseResults,
-        filters: data || {}
+        filters: {
+          ...(data || {}),
+          ...(prizeOwnerId ? { uploadedBy: prizeOwnerId } : {})
+        }
       }).catch((error) => {
         console.warn('Local prize results bulk delete failed:', error.message);
       });

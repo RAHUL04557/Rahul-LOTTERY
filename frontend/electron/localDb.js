@@ -448,16 +448,18 @@ const removePrizeResultsLocal = ({ results = [], ids = [], filters = {} } = {}) 
   const resultForDate = toLocalDate(filters.resultForDate || filters.result_for_date || filters.date);
   const sessionMode = String(filters.sessionMode || filters.session_mode || '').trim();
   const purchaseCategory = String(filters.purchaseCategory || filters.purchase_category || '').trim();
+  const uploadedBy = Number(filters.uploadedBy || filters.uploaded_by || 0);
 
-  if (resultForDate && sessionMode && purchaseCategory) {
+  if (resultForDate && sessionMode && purchaseCategory && uploadedBy) {
     const deleted = initLocalDb()
       .prepare(`
         DELETE FROM local_prize_results
         WHERE result_for_date = ?
           AND session_mode = ?
           AND purchase_category = ?
+          AND uploaded_by = ?
       `)
-      .run(resultForDate, sessionMode, purchaseCategory);
+      .run(resultForDate, sessionMode, purchaseCategory, uploadedBy);
     return { ok: true, removed: deleted.changes || 0 };
   }
 

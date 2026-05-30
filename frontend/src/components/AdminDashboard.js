@@ -4404,7 +4404,11 @@ const AdminDashboard = ({
       setSuccess(`${sanitizedValue} updated in ${prizeConfig.title}`);
       setEditingUploadedResultId(null);
       setEditingUploadedValue('');
-      await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
+      setUploadedPrizeResults((current) => current.map((uploadedEntry) => (
+        uploadedEntry.id === entry.id
+          ? { ...uploadedEntry, winningNumber: sanitizedValue }
+          : uploadedEntry
+      )));
     } catch (err) {
       setError(err.response?.data?.message || 'Error updating uploaded result');
     } finally {
@@ -4425,11 +4429,11 @@ const AdminDashboard = ({
     try {
       await priceService.deletePrizeResult(entry.id, resultUploadPasswordValue);
       setSuccess(`${entry.winningNumber} deleted from uploaded result`);
+      setUploadedPrizeResults((current) => current.filter((uploadedEntry) => uploadedEntry.id !== entry.id));
       if (editingUploadedResultId === entry.id) {
         setEditingUploadedResultId(null);
         setEditingUploadedValue('');
       }
-      await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
     } catch (err) {
       setError(err.response?.data?.message || 'Error deleting uploaded result');
     } finally {
@@ -4461,9 +4465,13 @@ const AdminDashboard = ({
         resultUploadPassword: resultUploadPasswordValue
       });
       setSuccess(response.data?.message || 'All uploaded results deleted successfully');
+      setUploadedPrizeResults([]);
+      setPendingPrizeEntries(createPendingPrizeEntries());
+      setManualPrizeInputs(createManualPrizeInputs());
+      setEditingPendingPrizeId(null);
+      setEditingPendingPrizeValue('');
       setEditingUploadedResultId(null);
       setEditingUploadedValue('');
-      await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
     } catch (err) {
       setError(err.response?.data?.message || 'Error deleting uploaded results');
     } finally {
@@ -4502,19 +4510,30 @@ const AdminDashboard = ({
     setLoading(true);
 
     try {
-      await priceService.uploadPrice({
+      const response = await priceService.uploadPrice({
         entries: entriesToUpload,
         sessionMode: uploadSessionMode,
         purchaseCategory: uploadPurchaseCategory,
         resultForDate: uploadResultDate,
         resultUploadPassword: resultUploadPasswordValue
       });
+      const uploadedResults = Array.isArray(response.data?.results) ? response.data.results : [];
       setSuccess('Prize results uploaded successfully');
+      if (uploadedResults.length > 0) {
+        setUploadedPrizeResults((current) => {
+          const resultById = new Map(current.map((entry) => [String(entry.id), entry]));
+
+          uploadedResults.forEach((entry) => {
+            resultById.set(String(entry.id), entry);
+          });
+
+          return Array.from(resultById.values());
+        });
+      }
       setPendingPrizeEntries(createPendingPrizeEntries());
       setManualPrizeInputs(createManualPrizeInputs());
       setEditingPendingPrizeId(null);
       setEditingPendingPrizeValue('');
-      await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
     } catch (err) {
       const apiMessage = err.response?.data?.message || '';
       setError(
