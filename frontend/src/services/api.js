@@ -440,6 +440,39 @@ const getLocalPrizeResults = async (params = {}) => {
   return { data: await localDb.listPrizeResults({ ...params, user: currentUser }) };
 };
 
+const getCurrentPrizeOwnerId = () => {
+  const currentUser = getCurrentUser();
+  return String(currentUser?.role || '').toLowerCase() === 'admin'
+    ? Number(currentUser?.id || 0)
+    : Number(currentUser?.ownerAdminId || currentUser?.owner_admin_id || 0);
+};
+
+const replaceLocalPrizeResultSlice = async (filters = {}, results = []) => {
+  const localDb = getLocalDb();
+  const prizeOwnerId = getCurrentPrizeOwnerId();
+
+  if (!localDb || !prizeOwnerId || !filters.resultForDate) {
+    return;
+  }
+
+  if (localDb.removePrizeResults) {
+    await localDb.removePrizeResults({
+      filters: {
+        ...filters,
+        uploadedBy: prizeOwnerId
+      }
+    }).catch((error) => {
+      console.warn('Local prize result slice cleanup failed:', error.message);
+    });
+  }
+
+  if (localDb.upsertPrizeResults && Array.isArray(results) && results.length > 0) {
+    await localDb.upsertPrizeResults(results).catch((error) => {
+      console.warn('Local prize result cache refresh failed:', error.message);
+    });
+  }
+};
+
 const getLocalBillPrizes = async (params = {}) => {
   const localDb = getLocalDb();
   const currentUser = getCurrentUser();
@@ -1010,19 +1043,27 @@ export const priceService = {
     };
 
     try {
-      const localResult = await checkPrizeFromLocalDb(params);
-      if (localResult) {
-        return localResult;
+      return await api.get('/prices/check', {
+        params: {
+          ...params
+        }
+      });
+    } catch (serverError) {
+      if (!isNetworkError(serverError)) {
+        throw serverError;
       }
-    } catch (error) {
-      console.warn('Local prize check failed, falling back to server:', error.message);
-    }
 
-    return api.get('/prices/check', {
-      params: {
-        ...params
+      try {
+        const localResult = await checkPrizeFromLocalDb(params);
+        if (localResult) {
+          return localResult;
+        }
+      } catch (error) {
+        console.warn('Local prize check failed:', error.message);
       }
-    });
+
+      throw serverError;
+    }
   },
   getMyPrizes: ({ sessionMode, purchaseCategory, amount, sem }) =>
     api.get('/prices/my-prizes', {
@@ -1049,15 +1090,23 @@ export const priceService = {
     };
 
     try {
-      const localResult = await getFilteredPrizeResultsFromLocalDb(params);
-      if (localResult) {
-        return localResult;
+      return await api.get('/prices/results', { params });
+    } catch (serverError) {
+      if (!isNetworkError(serverError)) {
+        throw serverError;
       }
-    } catch (error) {
-      console.warn('Local prize results failed, falling back to server:', error.message);
-    }
 
-    return api.get('/prices/results', { params });
+      try {
+        const localResult = await getFilteredPrizeResultsFromLocalDb(params);
+        if (localResult) {
+          return localResult;
+        }
+      } catch (error) {
+        console.warn('Local prize results failed:', error.message);
+      }
+
+      throw serverError;
+    }
   },
   getBillPrizes: async ({ date, fromDate, toDate, shift, amount, purchaseCategory } = {}) => {
     const params = {
@@ -1086,15 +1135,25 @@ export const priceService = {
     };
 
     try {
-      const localResult = await getLocalPrizeResults(params);
-      if (localResult) {
-        return localResult;
+      const response = await api.get('/prices', { params });
+      await replaceLocalPrizeResultSlice(params, Array.isArray(response.data) ? response.data : []);
+      return response;
+    } catch (serverError) {
+      if (!isNetworkError(serverError)) {
+        throw serverError;
       }
-    } catch (error) {
-      console.warn('Local prize list failed, falling back to server:', error.message);
-    }
 
-    return api.get('/prices', { params });
+      try {
+        const localResult = await getLocalPrizeResults(params);
+        if (localResult) {
+          return localResult;
+        }
+      } catch (error) {
+        console.warn('Local prize list failed:', error.message);
+      }
+
+      throw serverError;
+    }
   }
 };
 
