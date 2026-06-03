@@ -2122,8 +2122,8 @@ const BookingSummaryTable = ({ rows }) => (
 );
 
 const BookingPrizeTable = ({ rows }) => (
-  <div className="entries-list-block" style={{ marginTop: '20px' }}>
-    <table className="entries-table">
+  <div className="entries-list-block bill-preview-block" style={{ marginTop: '20px' }}>
+    <table className="entries-table bill-preview-table">
       <thead>
         <tr>
           <th>Date</th>

@@ -409,6 +409,7 @@ const upsertPrizeResultsLocal = (results = [], syncStatus = 'synced') => {
       AND session_mode = @sessionMode
       AND purchase_category = @purchaseCategory
       AND result_for_date = @resultForDate
+      AND uploaded_by = @uploadedBy
       AND local_id <> @localId
   `);
 
@@ -1772,7 +1773,8 @@ const setupLocalDbIpc = (ipcMain) => {
     const prizes = listLocalPrizeResults({
       resultForDate: filters.date,
       sessionMode: filters.sessionMode,
-      purchaseCategory: filters.purchaseCategory
+      purchaseCategory: filters.purchaseCategory,
+      user: filters.user
     });
     const matches = calculatePrizeRows({ purchases, prizes }).map((row) => ({
       ...row,
@@ -1802,7 +1804,8 @@ const setupLocalDbIpc = (ipcMain) => {
       }),
       prizes: listLocalPrizeResults({
         resultForDate: filters.date,
-        shift: filters.shift === 'ALL' ? '' : filters.shift
+        shift: filters.shift === 'ALL' ? '' : filters.shift,
+        user: filters.user
       })
     }).filter((row) => {
       const soldStatus = String(filters.soldStatus || 'ALL').toUpperCase();
@@ -1860,7 +1863,7 @@ const setupLocalDbIpc = (ipcMain) => {
         const config = PRIZE_CONFIG[prizeKey] || {};
         const winningNumber = String(entry.winningNumber || '').replace(/\D/g, '');
         return {
-          localId: `offline-prize-${resultForDate}-${sessionMode}-${purchaseCategory}-${prizeKey}-${winningNumber}`,
+          localId: `offline-prize-${Number(userId || 0) || 'unknown'}-${resultForDate}-${sessionMode}-${purchaseCategory}-${prizeKey}-${winningNumber}`,
           prizeKey,
           prizeLabel: config.label || prizeKey,
           fullPrizeAmount: config.fullPrizeAmount || 0,

@@ -1163,9 +1163,11 @@ const extractPrizeNumbersFromSection = (sectionText, digitLength, options = {}) 
   const {
     numbersPerLine = 0,
     minimumLineNumbers = 1,
-    maxNumbers = 0
+    maxNumbers = 0,
+    useSectionFallbackWhenIncomplete = false
   } = options;
   const seenNumbers = new Set();
+  let fallbackBaseNumbers = [];
 
   const addNumbers = (numbers, digits) => {
     if (digits.length !== digitLength || seenNumbers.has(digits)) {
@@ -1195,13 +1197,18 @@ const extractPrizeNumbersFromSection = (sectionText, digitLength, options = {}) 
         return numbers;
       }, []);
 
-    if (lineNumbers.length > 0) {
+    if (
+      lineNumbers.length > 0
+      && (!useSectionFallbackWhenIncomplete || !maxNumbers || lineNumbers.length >= maxNumbers)
+    ) {
       return maxNumbers > 0 ? lineNumbers.slice(0, maxNumbers) : lineNumbers;
     }
+
+    fallbackBaseNumbers = lineNumbers;
   }
 
   const allNumbers = getOcrNumberTokens(sectionText, digitLength)
-    .reduce((numbers, digits) => addNumbers(numbers, digits), []);
+    .reduce((numbers, digits) => addNumbers(numbers, digits), [...fallbackBaseNumbers]);
 
   return maxNumbers > 0 ? allNumbers.slice(0, maxNumbers) : allNumbers;
 };
@@ -1254,10 +1261,11 @@ const parsePrizeScanText = (ocrText) => {
   const normalizedText = String(ocrText || '').replace(/\r/g, '\n');
   const allFiveDigitNumbers = getOcrNumberTokens(normalizedText, 5);
   const firstPrizeNumber = chooseFirstPrizeNumber(normalizedText, allFiveDigitNumbers);
-  const thirdPrizeStartPatterns = [/3\s*(?:RD|R0|RO)\b/i, /THIRD/i];
-  const fourthPrizeStartPatterns = [/(?:^|\n|[^A-Z0-9])(?:4|A)\s*(?:TH|IH|H)\b/i, /FOURTH/i];
-  const fifthPrizeStartPatterns = [/5\s*(?:TH|IH|H)\b/i, /FIFTH/i];
-  const secondSection = getOcrSection(normalizedText, [/2\s*(?:ND|N0|NO)\b/i, /SECOND/i], thirdPrizeStartPatterns);
+  const secondPrizeStartPatterns = [/(?:^|\n)\s*2\s*(?:ND|N0|NO)\b/i, /(?:^|\n)\s*SECOND\b/i];
+  const thirdPrizeStartPatterns = [/(?:^|\n)\s*3\s*(?:RD|R0|RO)\b/i, /(?:^|\n)\s*THIRD\b/i];
+  const fourthPrizeStartPatterns = [/(?:^|\n)\s*(?:4|A)\s*(?:TH|IH|H)\b/i, /(?:^|\n)\s*FOURTH\b/i];
+  const fifthPrizeStartPatterns = [/(?:^|\n)\s*5\s*(?:TH|IH|H)\b/i, /(?:^|\n)\s*FIFTH\b/i];
+  const secondSection = getOcrSection(normalizedText, secondPrizeStartPatterns, thirdPrizeStartPatterns);
   const thirdSection = getOcrSection(normalizedText, thirdPrizeStartPatterns, fourthPrizeStartPatterns);
   const fourthSection = getOcrSection(normalizedText, fourthPrizeStartPatterns, fifthPrizeStartPatterns);
   const fifthSection = getOcrSection(normalizedText, fifthPrizeStartPatterns, []);
@@ -1278,7 +1286,8 @@ const parsePrizeScanText = (ocrText) => {
   const fifthNumbers = extractPrizeNumbersFromSection(fifthSection, 4, {
     numbersPerLine: PRIZE_RESULT_COLUMNS_PER_LINE,
     minimumLineNumbers: 3,
-    maxNumbers: PRIZE_RESULT_MAX_FIFTH_PRIZE_NUMBERS
+    maxNumbers: PRIZE_RESULT_MAX_FIFTH_PRIZE_NUMBERS,
+    useSectionFallbackWhenIncomplete: true
   });
   const secondNumbers = extractPrizeNumbersFromSection(secondSection, 5, {
     numbersPerLine: PRIZE_RESULT_COLUMNS_PER_LINE,
@@ -1653,7 +1662,7 @@ const AdminDashboard = ({
 
   useEffect(() => {
     loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
-  }, [uploadResultDate, uploadSessionMode, uploadPurchaseCategory]);
+  }, [uploadResultDate, uploadSessionMode, uploadPurchaseCategory, user?.id]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1672,7 +1681,7 @@ const AdminDashboard = ({
     setEditingUploadedValue('');
     setError('');
     setSuccess('');
-  }, [uploadResultDate, uploadSessionMode, uploadPurchaseCategory]);
+  }, [uploadResultDate, uploadSessionMode, uploadPurchaseCategory, user?.id]);
 
   useEffect(() => {
     const availableSemOptions = getAvailableSemOptions(adminStockAmount);
@@ -4530,26 +4539,15 @@ const AdminDashboard = ({
         });
       }
 
-      const response = await priceService.uploadPrice({
+      await priceService.uploadPrice({
         entries: entriesToUpload,
         sessionMode: uploadSessionMode,
         purchaseCategory: uploadPurchaseCategory,
         resultForDate: uploadResultDate,
         resultUploadPassword: resultUploadPasswordValue
       });
-      const uploadedResults = Array.isArray(response.data?.results) ? response.data.results : [];
       setSuccess('Prize results uploaded successfully');
-      if (uploadedResults.length > 0) {
-        setUploadedPrizeResults((current) => {
-          const resultById = new Map(current.map((entry) => [String(entry.id), entry]));
-
-          uploadedResults.forEach((entry) => {
-            resultById.set(String(entry.id), entry);
-          });
-
-          return Array.from(resultById.values());
-        });
-      }
+      await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
       setPendingPrizeEntries(createPendingPrizeEntries());
       setReplaceUploadedPrizeResultsOnNextUpload(false);
       setManualPrizeInputs(createManualPrizeInputs());
@@ -8788,9 +8786,9 @@ const AdminDashboard = ({
 
 
               {prizeTrackerSearchPerformed && (
-                <div className="entries-list-block" style={{ marginTop: '20px' }}>
+                <div className="entries-list-block bill-preview-block" style={{ marginTop: '20px' }}>
                   <h3>Daily Prize Summary</h3>
-                  <table className="entries-table">
+                  <table className="entries-table bill-preview-table">
                     <thead>
                       <tr>
                         <th>Date</th>
@@ -8829,7 +8827,7 @@ const AdminDashboard = ({
                     </tbody>
                   </table>
                   {prizeTrackerResults.length > 0 && (
-                    <div style={{ marginTop: '14px', padding: '14px 16px', borderRadius: '14px', background: '#eef2ff' }}>
+                    <div className="bill-grand-total" style={{ marginTop: '14px', padding: '14px 16px', borderRadius: '14px', background: '#eef2ff' }}>
                       <strong>Total Prize Payout:</strong> Rs. {Number(prizeTrackerTotalPrize || 0).toFixed(2)}
                     </div>
                   )}
