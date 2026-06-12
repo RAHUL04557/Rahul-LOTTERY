@@ -753,6 +753,60 @@ button:disabled {
   width: 10%;
 }
 
+.booking-bill-table-wrap {
+  overflow-x: auto;
+}
+
+.booking-bill-table {
+  min-width: 1220px;
+  table-layout: fixed;
+}
+
+.booking-bill-table th,
+.booking-bill-table td {
+  padding: 16px 14px !important;
+  font-size: 23px !important;
+}
+
+.booking-bill-table th:nth-child(1),
+.booking-bill-table td:nth-child(1) {
+  width: 14%;
+}
+
+.booking-bill-table th:nth-child(2),
+.booking-bill-table td:nth-child(2) {
+  width: 7%;
+}
+
+.booking-bill-table th:nth-child(3),
+.booking-bill-table td:nth-child(3) {
+  width: 15%;
+}
+
+.booking-bill-table th:nth-child(4),
+.booking-bill-table td:nth-child(4) {
+  width: 13%;
+}
+
+.booking-bill-table th:nth-child(5),
+.booking-bill-table td:nth-child(5),
+.booking-bill-table th:nth-child(6),
+.booking-bill-table td:nth-child(6),
+.booking-bill-table th:nth-child(7),
+.booking-bill-table td:nth-child(7) {
+  width: 9%;
+}
+
+.booking-bill-table th:nth-child(8),
+.booking-bill-table td:nth-child(8) {
+  width: 12%;
+}
+
+.booking-bill-table th:nth-child(9),
+.booking-bill-table td:nth-child(9) {
+  width: 12%;
+}
+
 .bill-grand-total {
   color: #0f172a !important;
   font-size: 36px !important;

@@ -545,6 +545,7 @@ export const openTransferBill = ({
           <td>${Number(billTotals.totalPrize || 0).toFixed(2)}</td>
           <td>${Number(billTotals.totalVc || 0).toFixed(2)}</td>
           <td>${Number(billTotals.totalSvc || 0).toFixed(2)}</td>
+          <td>${(Number(billTotals.totalVc || 0) + Number(billTotals.totalSvc || 0)).toFixed(2)}</td>
           <td>${formatSignedNumber(billTotals.netBill)}</td>
         </tr>
       `;
@@ -565,6 +566,7 @@ export const openTransferBill = ({
             <th>Prize</th>
             <th>VC</th>
             <th>SVC</th>
+            <th>Total VC</th>
             <th>Net Bill</th>
           </tr>
         </thead>

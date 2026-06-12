@@ -8206,6 +8206,7 @@ const SubStokistDashboard = ({
                         <th>Prize</th>
                         <th>VC</th>
                         <th>SVC</th>
+                        <th>Total VC</th>
                         <th>Net Bill</th>
                       </tr>
                     </thead>
@@ -8225,6 +8226,7 @@ const SubStokistDashboard = ({
                             <td>{Number(summary.totalPrize || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalVc || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalSvc || 0).toFixed(2)}</td>
+                            <td>{(Number(summary.totalVc || 0) + Number(summary.totalSvc || 0)).toFixed(2)}</td>
                             <td>{`${Number(summary.netBill || 0) < 0 ? '-' : '+'}${Math.abs(Number(summary.netBill || 0)).toFixed(2)}`}</td>
                           </tr>
                         );

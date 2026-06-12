@@ -1062,21 +1062,27 @@ const BookingPanel = ({
   };
 
   const findDuplicateBookingMatches = (row, targetRowIndex) => {
-    const rowNumbers = new Set(getEntryNumbers(row));
-    if (rowNumbers.size === 0) return [];
+    const rowNumbers = getEntryNumbers(row);
+    if (rowNumbers.length === 0) return [];
+    const rowNumberSet = new Set(rowNumbers);
+    const rowLastFourSet = new Set(rowNumbers.map((number) => String(number || '').slice(-4)));
     const currentDate = normalizeDateValue(row.bookingDate) || getTodayDateValue();
     const duplicateKeys = new Set();
     const duplicateMatches = [];
     const pushDuplicateMatches = (entry, fallbackMemoNumber) => {
       getEntryNumbers(entry).forEach((number) => {
-        if (!rowNumbers.has(number)) return;
+        const normalizedNumber = String(number || '').padStart(5, '0');
+        const matchingRowNumber = rowNumberSet.has(normalizedNumber)
+          ? normalizedNumber
+          : rowNumbers.find((rowNumber) => String(rowNumber || '').slice(-4) === normalizedNumber.slice(-4));
+        if (!matchingRowNumber || !rowLastFourSet.has(normalizedNumber.slice(-4))) return;
         const sellerName = entry.sellerName || selectedSeller?.username || 'Selected seller';
         const memoNo = Number(entry.memoNumber || fallbackMemoNumber || effectiveMemoNumber || 0);
-        const key = [number, sellerName, normalizeDateValue(entry.bookingDate), memoNo].join('|');
+        const key = [normalizedNumber, matchingRowNumber, sellerName, normalizeDateValue(entry.bookingDate), memoNo].join('|');
         if (duplicateKeys.has(key)) return;
         duplicateKeys.add(key);
         duplicateMatches.push({
-          number,
+          number: normalizedNumber,
           sellerName,
           bookingDate: normalizeDateValue(entry.bookingDate),
           sem: entry.boxValue || '-',
@@ -2164,22 +2170,23 @@ const BookingBillTable = ({ rows }) => {
     totalPrize: sum.totalPrize + Number(row.totalPrize || 0),
     totalVc: sum.totalVc + Number(row.totalVc || 0),
     totalSvc: sum.totalSvc + Number(row.totalSvc || 0),
+    totalVcSvc: sum.totalVcSvc + Number(row.totalVc || 0) + Number(row.totalSvc || 0),
     netBill: sum.netBill + Number(row.netBill || 0)
-  }), { totalSentPiece: 0, totalSoldPiece: 0, totalSales: 0, totalPrize: 0, totalVc: 0, totalSvc: 0, netBill: 0 });
+  }), { totalSentPiece: 0, totalSoldPiece: 0, totalSales: 0, totalPrize: 0, totalVc: 0, totalSvc: 0, totalVcSvc: 0, netBill: 0 });
 
   return (
-    <div className="entries-list-block bill-preview-block" style={{ marginTop: '20px' }}>
-      <table className="entries-table bill-preview-table">
+    <div className="entries-list-block bill-preview-block booking-bill-table-wrap" style={{ marginTop: '20px' }}>
+      <table className="entries-table bill-preview-table booking-bill-table">
         <thead>
           <tr>
             <th>Seller</th>
             <th>Base</th>
             <th>Booking Piece</th>
-            <th>Sold Piece</th>
             <th>Net Value</th>
             <th>Prize</th>
             <th>VC</th>
             <th>SVC</th>
+            <th>Total VC</th>
             <th>Net Bill</th>
           </tr>
         </thead>
@@ -2189,11 +2196,11 @@ const BookingBillTable = ({ rows }) => {
               <td>{row.sellerName}</td>
               <td>{row.amount}</td>
               <td>{Number(row.totalSentPiece || 0).toFixed(2)}</td>
-              <td>{Number(row.totalSoldPiece || 0).toFixed(2)}</td>
               <td>{Number(row.totalSales || 0).toFixed(2)}</td>
               <td>{Number(row.totalPrize || 0).toFixed(2)}</td>
               <td>{Number(row.totalVc || 0).toFixed(2)}</td>
               <td>{Number(row.totalSvc || 0).toFixed(2)}</td>
+              <td>{(Number(row.totalVc || 0) + Number(row.totalSvc || 0)).toFixed(2)}</td>
               <td>{formatSignedRupees(row.netBill)}</td>
             </tr>
           )) : <tr><td colSpan="9">No booking bill data found</td></tr>}
@@ -2201,7 +2208,7 @@ const BookingBillTable = ({ rows }) => {
       </table>
       {rows.length > 0 ? (
         <div className="bill-grand-total" style={{ marginTop: '16px', padding: '14px 16px', background: '#eef2ff', borderRadius: '8px' }}>
-          <strong>Grand Total:</strong> Booking {totals.totalSentPiece.toFixed(2)} | Sold {totals.totalSoldPiece.toFixed(2)} | Net Value Rs. {totals.totalSales.toFixed(2)} | Prize Rs. {totals.totalPrize.toFixed(2)} | VC Rs. {totals.totalVc.toFixed(2)} | SVC Rs. {totals.totalSvc.toFixed(2)} | Net {formatSignedRupees(totals.netBill)}
+          <strong>Grand Total:</strong> Booking {totals.totalSentPiece.toFixed(2)} | Net Value Rs. {totals.totalSales.toFixed(2)} | Prize Rs. {totals.totalPrize.toFixed(2)} | Total VC Rs. {totals.totalVcSvc.toFixed(2)} | Net {formatSignedRupees(totals.netBill)}
         </div>
       ) : null}
     </div>

@@ -188,7 +188,8 @@
 }
 
 .retro-purchase-memo-table-wrap {
-  max-height: 520px;
+  height: 280px;
+  max-height: 280px;
   overflow-y: auto;
   background: #f5f5ef;
 }
@@ -208,6 +209,9 @@
 }
 
 .retro-purchase-memo-table th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   background: #d7aa10;
   color: #201500;
   font-weight: 800;
@@ -219,6 +223,9 @@
 }
 
 .retro-purchase-memo-table tfoot td {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
   background: #e4dcc3;
   font-weight: 800;
 }
