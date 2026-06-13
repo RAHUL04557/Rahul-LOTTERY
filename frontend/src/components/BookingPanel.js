@@ -1065,20 +1065,16 @@ const BookingPanel = ({
     const rowNumbers = getEntryNumbers(row);
     if (rowNumbers.length === 0) return [];
     const rowNumberSet = new Set(rowNumbers);
-    const rowLastFourSet = new Set(rowNumbers.map((number) => String(number || '').slice(-4)));
     const currentDate = normalizeDateValue(row.bookingDate) || getTodayDateValue();
     const duplicateKeys = new Set();
     const duplicateMatches = [];
     const pushDuplicateMatches = (entry, fallbackMemoNumber) => {
       getEntryNumbers(entry).forEach((number) => {
         const normalizedNumber = String(number || '').padStart(5, '0');
-        const matchingRowNumber = rowNumberSet.has(normalizedNumber)
-          ? normalizedNumber
-          : rowNumbers.find((rowNumber) => String(rowNumber || '').slice(-4) === normalizedNumber.slice(-4));
-        if (!matchingRowNumber || !rowLastFourSet.has(normalizedNumber.slice(-4))) return;
+        if (!rowNumberSet.has(normalizedNumber)) return;
         const sellerName = entry.sellerName || selectedSeller?.username || 'Selected seller';
         const memoNo = Number(entry.memoNumber || fallbackMemoNumber || effectiveMemoNumber || 0);
-        const key = [normalizedNumber, matchingRowNumber, sellerName, normalizeDateValue(entry.bookingDate), memoNo].join('|');
+        const key = [normalizedNumber, sellerName, normalizeDateValue(entry.bookingDate), memoNo].join('|');
         if (duplicateKeys.has(key)) return;
         duplicateKeys.add(key);
         duplicateMatches.push({
