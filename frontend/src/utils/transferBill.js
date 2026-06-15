@@ -540,7 +540,6 @@ export const openTransferBill = ({
           <td>${Number(billTotals.totalUnsoldPiece || 0).toFixed(2)}</td>
           <td>${(Number(billTotals.totalSentPiece || 0) > 0 ? ((Number(billTotals.totalUnsoldPiece || 0) / Number(billTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%</td>
           <td>${Number(billTotals.totalSoldPiece || 0).toFixed(2)}</td>
-          <td>${(Number(billTotals.totalSentPiece || 0) > 0 ? ((Number(billTotals.totalSoldPiece || 0) / Number(billTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%</td>
           <td>${Number(billTotals.totalSales || 0).toFixed(2)}</td>
           <td>${Number(billTotals.totalPrize || 0).toFixed(2)}</td>
           <td>${Number(billTotals.totalVc || 0).toFixed(2)}</td>
@@ -561,7 +560,6 @@ export const openTransferBill = ({
             <th>Unsold</th>
             <th>Unsold %</th>
             <th>Sold</th>
-            <th>Sold %</th>
             <th>Net Value</th>
             <th>Prize</th>
             <th>VC</th>
@@ -597,8 +595,6 @@ export const openTransferBill = ({
         ${sellerTotalsTableHtml}
         <div style="margin-top:24px;padding:22px 26px;border:1px solid #cbd5e1;border-radius:16px;background:#eef2ff;font-size:36px;font-weight:800;color:#0f172a;line-height:1.45;">
           <strong>Grand Total:</strong>
-          Unsold % ${(Number(totals.totalSentPiece || 0) > 0 ? ((Number(totals.totalUnsoldPiece || 0) / Number(totals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% |
-          Sold % ${(Number(totals.totalSentPiece || 0) > 0 ? ((Number(totals.totalSoldPiece || 0) / Number(totals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% |
           Net ${formatSignedRupees(totals.netBill)}
         </div>
         <script>

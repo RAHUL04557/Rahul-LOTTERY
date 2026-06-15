@@ -7091,7 +7091,7 @@ const AdminDashboard = ({
       )}
       {activeTab ? (
         <div className="active-session-titlebar">
-          <span>RAHUL</span>
+          <span>{user?.username || 'RAHUL'}</span>
           <strong>{launcherTitle}</strong>
           <span>Press A-Z</span>
         </div>
@@ -7099,6 +7099,7 @@ const AdminDashboard = ({
       <div className={`dashboard-accordion ${!activeTab ? 'dashboard-launcher-active' : ''}`.trim()}>
         {!activeTab ? (
           <DashboardLauncher
+            brandName={user?.username || 'RAHUL'}
             title={launcherTitle}
             subtitle="A-Z keyboard shortcuts se admin pages kholo"
             items={adminLauncherItems}
@@ -8593,7 +8594,6 @@ const AdminDashboard = ({
                         <th>Unsold</th>
                         <th>Unsold %</th>
                         <th>Sold</th>
-                        <th>Sold %</th>
                         <th>Net Value</th>
                         <th>Prize</th>
                         <th>VC</th>
@@ -8613,7 +8613,6 @@ const AdminDashboard = ({
                             <td>{Number(summary.totalUnsoldPiece || 0).toFixed(2)}</td>
                             <td>{`${(Number(summary.totalSentPiece || 0) > 0 ? ((Number(summary.totalUnsoldPiece || 0) / Number(summary.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%`}</td>
                             <td>{Number(summary.totalSoldPiece || 0).toFixed(2)}</td>
-                            <td>{`${(Number(summary.totalSentPiece || 0) > 0 ? ((Number(summary.totalSoldPiece || 0) / Number(summary.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%`}</td>
                             <td>{Number(summary.totalSales || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalPrize || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalVc || 0).toFixed(2)}</td>
@@ -8633,9 +8632,7 @@ const AdminDashboard = ({
 
               {Object.keys(adminBillVisibleGroups).length > 0 && (
                 <div className="bill-grand-total" style={{ marginTop: '20px', padding: '18px 22px', borderRadius: '16px', background: '#eef2ff', fontSize: '28px', lineHeight: 1.45 }}>
-                  <strong>Grand Total:</strong> Unsold %{' '}
-                  {(Number(adminVisibleBillTotals.totalSentPiece || 0) > 0 ? ((Number(adminVisibleBillTotals.totalUnsoldPiece || 0) / Number(adminVisibleBillTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% | Sold %{' '}
-                  {(Number(adminVisibleBillTotals.totalSentPiece || 0) > 0 ? ((Number(adminVisibleBillTotals.totalSoldPiece || 0) / Number(adminVisibleBillTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% | Net {formatSignedRupees(adminVisibleBillTotals.netBill)}
+                  <strong>Grand Total:</strong> Net {formatSignedRupees(adminVisibleBillTotals.netBill)}
                 </div>
               )}
             </div>

@@ -20,7 +20,8 @@ const DashboardLauncher = ({
   actions = [],
   onSelect,
   onAction,
-  onExit
+  onExit,
+  brandName = 'RAHUL'
 }) => {
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [exitConfirmSelected, setExitConfirmSelected] = useState('no');
@@ -120,7 +121,7 @@ const DashboardLauncher = ({
 
       <div className="dashboard-launcher-window">
         <div className="dashboard-launcher-titlebar">
-          <span className="dashboard-launcher-brand">RAHUL</span>
+          <span className="dashboard-launcher-brand">{brandName}</span>
           <strong>{title}</strong>
           <span className="dashboard-launcher-hint">Press A-Z</span>
         </div>

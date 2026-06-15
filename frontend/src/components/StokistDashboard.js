@@ -6844,7 +6844,7 @@ const StokistDashboard = ({
       )}
       {activeTab ? (
         <div className="active-session-titlebar">
-          <span>RAHUL</span>
+          <span>{user?.username || 'RAHUL'}</span>
           <strong>{launcherTitle}</strong>
           <span>Press A-Z</span>
         </div>
@@ -6853,6 +6853,7 @@ const StokistDashboard = ({
         <div className={`dashboard-accordion ${!activeTab ? 'dashboard-launcher-active' : ''}`.trim()}>
         {!activeTab ? (
           <DashboardLauncher
+            brandName={user?.username || 'RAHUL'}
             title={launcherTitle}
             subtitle="A-Z keyboard shortcuts se seller pages kholo"
             items={sellerLauncherItems}
@@ -8247,7 +8248,6 @@ const StokistDashboard = ({
                         <th>Unsold</th>
                         <th>Unsold %</th>
                         <th>Sold</th>
-                        <th>Sold %</th>
                         <th>Net Value</th>
                         <th>Prize</th>
                         <th>VC</th>
@@ -8267,7 +8267,6 @@ const StokistDashboard = ({
                             <td>{Number(summary.totalUnsoldPiece || 0).toFixed(2)}</td>
                             <td>{`${(Number(summary.totalSentPiece || 0) > 0 ? ((Number(summary.totalUnsoldPiece || 0) / Number(summary.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%`}</td>
                             <td>{Number(summary.totalSoldPiece || 0).toFixed(2)}</td>
-                            <td>{`${(Number(summary.totalSentPiece || 0) > 0 ? ((Number(summary.totalSoldPiece || 0) / Number(summary.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%`}</td>
                             <td>{Number(summary.totalSales || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalPrize || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalVc || 0).toFixed(2)}</td>
@@ -8287,7 +8286,7 @@ const StokistDashboard = ({
 
               {Object.keys(billTransferHistoryByActor).length > 0 && (
                 <div className="bill-grand-total" style={{ marginTop: '20px', padding: '22px 26px', borderRadius: '16px', background: '#eef2ff', fontSize: '38px', lineHeight: 1.45 }}>
-                  <strong>Grand Total:</strong> Unsold % {(Number(billTransferHistoryTotals.totalSentPiece || 0) > 0 ? ((Number(billTransferHistoryTotals.totalUnsoldPiece || 0) / Number(billTransferHistoryTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% | Sold % {(Number(billTransferHistoryTotals.totalSentPiece || 0) > 0 ? ((Number(billTransferHistoryTotals.totalSoldPiece || 0) / Number(billTransferHistoryTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% | Net {formatSignedRupees(billTransferHistoryTotals.netBill)}
+                  <strong>Grand Total:</strong> Net {formatSignedRupees(billTransferHistoryTotals.netBill)}
                 </div>
               )}
             </div>
