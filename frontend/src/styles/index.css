@@ -753,6 +753,69 @@ button:disabled {
   width: 10%;
 }
 
+.bill-totals-block {
+  overflow-x: visible;
+}
+
+.bill-totals-table {
+  table-layout: fixed;
+  min-width: 0;
+}
+
+.bill-totals-table th,
+.bill-totals-table td {
+  font-size: 20px !important;
+  padding: 14px 7px !important;
+}
+
+.bill-totals-table th:first-child,
+.bill-totals-table td:first-child {
+  min-width: 0;
+  width: 12%;
+}
+
+.bill-totals-table th:nth-child(2),
+.bill-totals-table td:nth-child(2) {
+  min-width: 0;
+  width: 9%;
+  text-align: right;
+}
+
+.bill-totals-table th:nth-child(3),
+.bill-totals-table td:nth-child(3),
+.bill-totals-table th:nth-child(4),
+.bill-totals-table td:nth-child(4),
+.bill-totals-table th:nth-child(7),
+.bill-totals-table td:nth-child(7),
+.bill-totals-table th:nth-child(8),
+.bill-totals-table td:nth-child(8) {
+  min-width: 0;
+  width: 8%;
+  text-align: right;
+}
+
+.bill-totals-table th:nth-child(5),
+.bill-totals-table td:nth-child(5),
+.bill-totals-table th:nth-child(6),
+.bill-totals-table td:nth-child(6) {
+  min-width: 0;
+  width: 13%;
+  text-align: right;
+}
+
+.bill-totals-table th:nth-child(9),
+.bill-totals-table td:nth-child(9),
+.bill-totals-table th:nth-child(10),
+.bill-totals-table td:nth-child(10) {
+  min-width: 0;
+  width: 12%;
+  text-align: right;
+}
+
+.top-prize-label {
+  color: #d32f2f !important;
+}
+
 .booking-bill-table-wrap {
   overflow-x: auto;
 }

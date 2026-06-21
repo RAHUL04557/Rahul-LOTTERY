@@ -8192,15 +8192,14 @@ const SubStokistDashboard = ({
               </div>
 
               {Object.keys(billTransferHistoryByActor).length > 0 ? (
-                <div className="entries-list-block bill-preview-block" style={{ marginTop: '20px' }}>
+                <div className="entries-list-block bill-preview-block bill-totals-block" style={{ marginTop: '20px' }}>
                   <h3>Seller Totals</h3>
-                  <table className="entries-table bill-preview-table" style={{ fontSize: '20px' }}>
+                  <table className="entries-table bill-preview-table bill-totals-table" style={{ fontSize: '20px' }}>
                     <thead>
                       <tr>
                         <th>Seller</th>
                         <th>Purchase</th>
                         <th>Unsold</th>
-                        <th>Unsold %</th>
                         <th>Sold</th>
                         <th>Net Value</th>
                         <th>Prize</th>
@@ -8219,7 +8218,6 @@ const SubStokistDashboard = ({
                             <td>{sellerLabel}</td>
                             <td>{Number(summary.totalSentPiece || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalUnsoldPiece || 0).toFixed(2)}</td>
-                            <td>{`${(Number(summary.totalSentPiece || 0) > 0 ? ((Number(summary.totalUnsoldPiece || 0) / Number(summary.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%`}</td>
                             <td>{Number(summary.totalSoldPiece || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalSales || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalPrize || 0).toFixed(2)}</td>

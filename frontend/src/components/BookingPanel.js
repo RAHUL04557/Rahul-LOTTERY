@@ -88,6 +88,8 @@ const flattenSellerTree = (node) => {
 
 const numberInput = (value) => String(value || '').replace(/[^0-9]/g, '').slice(0, 5);
 
+const isTopPrizeLabel = (label) => /^(1st|first|2nd|second)\s+prize$/i.test(String(label || '').trim());
+
 const buildBookingCode = (shift, semValue) => `${getPurchaseCategory(shift)}${String(semValue || '').replace(/[^0-9]/g, '')}`;
 
 const getAvailableSemOptions = (selectedAmount) => {
@@ -2148,7 +2150,7 @@ const BookingPrizeTable = ({ rows }) => (
             <td>{row.amount}</td>
             <td>{row.boxValue}</td>
             <td>{row.number}</td>
-            <td>{row.prizeLabel}</td>
+            <td className={isTopPrizeLabel(row.prizeLabel) ? 'top-prize-label' : undefined}>{row.prizeLabel}</td>
             <td>{row.winningNumber}</td>
             <td>{Number(row.calculatedPrize || 0).toFixed(2)}</td>
           </tr>

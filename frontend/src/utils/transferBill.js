@@ -538,7 +538,6 @@ export const openTransferBill = ({
           <td>${escapeHtml(`${billName}${sellerMetaLabel}`)}</td>
           <td>${Number(billTotals.totalSentPiece || 0).toFixed(2)}</td>
           <td>${Number(billTotals.totalUnsoldPiece || 0).toFixed(2)}</td>
-          <td>${(Number(billTotals.totalSentPiece || 0) > 0 ? ((Number(billTotals.totalUnsoldPiece || 0) / Number(billTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%</td>
           <td>${Number(billTotals.totalSoldPiece || 0).toFixed(2)}</td>
           <td>${Number(billTotals.totalSales || 0).toFixed(2)}</td>
           <td>${Number(billTotals.totalPrize || 0).toFixed(2)}</td>
@@ -552,13 +551,12 @@ export const openTransferBill = ({
   const sellerTotalsTableHtml = `
     <section style="margin-top:24px;">
       <h3 style="margin:0 0 10px;">Seller Totals</h3>
-      <table style="width:100%;border-collapse:collapse;font-size:24px;color:#111827;font-weight:700;">
+      <table style="width:100%;border-collapse:collapse;table-layout:fixed;font-size:20px;color:#111827;font-weight:700;">
         <thead>
           <tr>
             <th>Seller</th>
             <th>Purchase</th>
             <th>Unsold</th>
-            <th>Unsold %</th>
             <th>Sold</th>
             <th>Net Value</th>
             <th>Prize</th>
@@ -583,8 +581,18 @@ export const openTransferBill = ({
           body { font-family: Arial, sans-serif; margin: 24px; color: #111827; }
           h1, h2, h3 { margin: 0; }
           table, th, td { border: 1px solid #cbd5e1; }
-          th, td { padding: 12px; text-align: left; font-size: 24px; font-weight: 700; color: #111827; }
+          th, td { padding: 12px 7px; text-align: left; font-size: 20px; font-weight: 700; color: #111827; white-space: nowrap; vertical-align: middle; }
           th { background: #eef2ff; color: #0f172a; }
+          th:first-child, td:first-child { width: 12%; white-space: normal; overflow-wrap: anywhere; }
+          th:nth-child(2), td:nth-child(2) { width: 9%; text-align: right; }
+          th:nth-child(3), td:nth-child(3),
+          th:nth-child(4), td:nth-child(4),
+          th:nth-child(7), td:nth-child(7),
+          th:nth-child(8), td:nth-child(8) { width: 8%; text-align: right; }
+          th:nth-child(5), td:nth-child(5),
+          th:nth-child(6), td:nth-child(6) { width: 13%; text-align: right; }
+          th:nth-child(9), td:nth-child(9),
+          th:nth-child(10), td:nth-child(10) { width: 12%; text-align: right; }
           @media print {
             body { margin: 12px; }
             button { display: none; }

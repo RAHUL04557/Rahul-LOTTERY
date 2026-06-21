@@ -113,6 +113,9 @@ const PRIZE_OPTIONS = [
   { key: 'fourth', title: '4th Prize', amountLabel: '700', amountValue: 700, digitLength: 4 },
   { key: 'fifth', title: '5th Prize', amountLabel: '300', amountValue: 300, digitLength: 4 }
 ];
+
+const isTopPrizeLabel = (label) => /^(1st|first|2nd|second)\s+prize$/i.test(String(label || '').trim());
+
 const ADMIN_PURCHASE_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F8-Clear', 'Esc-Exit'];
 const ADMIN_UNSOLD_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F4-View', 'F8-Clear', 'Esc-Exit'];
 const REMOVABLE_UNSOLD_STATUSES = new Set(['unsold_saved', 'unsold_sent', 'unsold']);
@@ -8584,15 +8587,14 @@ const AdminDashboard = ({
               </div>
 
               {Object.keys(adminBillVisibleGroups).length > 0 ? (
-                <div className="entries-list-block bill-preview-block" style={{ marginTop: '20px' }}>
+                <div className="entries-list-block bill-preview-block bill-totals-block" style={{ marginTop: '20px' }}>
                   <h3>Seller Totals</h3>
-                  <table className="entries-table bill-preview-table">
+                  <table className="entries-table bill-preview-table bill-totals-table">
                     <thead>
                       <tr>
                         <th>Seller</th>
                         <th>Purchase</th>
                         <th>Unsold</th>
-                        <th>Unsold %</th>
                         <th>Sold</th>
                         <th>Net Value</th>
                         <th>Prize</th>
@@ -8611,7 +8613,6 @@ const AdminDashboard = ({
                             <td>{sellerLabel}</td>
                             <td>{Number(summary.totalSentPiece || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalUnsoldPiece || 0).toFixed(2)}</td>
-                            <td>{`${(Number(summary.totalSentPiece || 0) > 0 ? ((Number(summary.totalUnsoldPiece || 0) / Number(summary.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%`}</td>
                             <td>{Number(summary.totalSoldPiece || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalSales || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalPrize || 0).toFixed(2)}</td>
@@ -8798,7 +8799,7 @@ const AdminDashboard = ({
                         <th>SEM</th>
                         <th>Number</th>
                         <th>Prize</th>
-                        <th>Winning Number</th>
+                        <th>Winning<br />Number</th>
                         <th>Price</th>
                       </tr>
                     </thead>
@@ -8813,7 +8814,7 @@ const AdminDashboard = ({
                             <td>{entry.amount ?? '-'}</td>
                             <td>{entry.sem ?? '-'}</td>
                             <td>{entry.number || '-'}</td>
-                            <td>{entry.prizeLabel}</td>
+                            <td className={isTopPrizeLabel(entry.prizeLabel) ? 'top-prize-label' : undefined}>{entry.prizeLabel}</td>
                             <td>{entry.winningNumber}</td>
                             <td>{entry.calculatedPrize !== null && entry.calculatedPrize !== undefined ? `Rs. ${Number(entry.calculatedPrize).toFixed(2)}` : '-'}</td>
                           </tr>
