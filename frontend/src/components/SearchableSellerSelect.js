@@ -19,6 +19,7 @@ const SearchableSellerSelect = ({
   getOptionSearchLabel = null,
   inputRef = null,
   onEnter = null,
+  enterMovesWhenSelected = false,
   disabled = false,
   required = false,
   form
@@ -278,7 +279,7 @@ const SearchableSellerSelect = ({
           if (event.key === 'Enter') {
             event.preventDefault();
             if (!isOpen) {
-              if (advanceOnEnter && selectedOption) {
+              if ((advanceOnEnter || (enterMovesWhenSelected && String(query || '').trim())) && selectedOption) {
                 commitSelection(selectedOption, true);
                 return;
               }

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { authService } from '../services/api';
+import { bootstrapLocalData } from '../services/localSync';
 import '../styles/Login.css';
 
 const Login = ({ onLoginSuccess }) => {
@@ -21,6 +22,9 @@ const Login = ({ onLoginSuccess }) => {
       const response = await authService.login(username, password);
       localStorage.setItem('token', response.data.token);
       localStorage.setItem('user', JSON.stringify(response.data.user));
+      await bootstrapLocalData().catch((syncError) => {
+        console.warn('Local bootstrap failed:', syncError.message);
+      });
       onLoginSuccess(response.data.user);
     } catch (err) {
       setError(err.response?.data?.message || 'Login failed');

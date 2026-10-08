@@ -5,6 +5,7 @@ const {
   replaceAdminPurchaseMemoEntries,
   assignPurchasedEntries,
   getAdminPurchaseEntries,
+  getAdminPurchaseSentHistory,
   getPurchaseEntries,
   getSellerPurchaseView,
   getPurchasePieceSummary,
@@ -45,6 +46,9 @@ router.put('/admin-purchases/memo', authenticateToken, authorizeRole(['admin']),
 
 // Admin views purchase stock
 router.get('/admin-purchases', authenticateToken, authorizeRole(['admin']), getAdminPurchaseEntries);
+
+// Admin views purchase sent history independent from seller transfer
+router.get('/admin-purchases/sent-history', authenticateToken, authorizeRole(['admin']), getAdminPurchaseSentHistory);
 
 // Admin or seller sends purchase stock to seller/sub-seller
 router.post('/purchases/send', authenticateToken, authorizeRole(['admin', 'seller']), sendAdminPurchaseEntries);

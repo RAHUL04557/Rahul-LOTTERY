@@ -1,4 +1,7 @@
 const { getClient, query } = require('../config/database');
+const bcrypt = require('bcryptjs');
+
+const DEFAULT_RESULT_UPLOAD_PASSWORD = 'rahul@9749';
 
 const PRIZE_CONFIG = {
   first: { label: 'First Prize', fullPrizeAmount: 25000, digitLength: 5 },
@@ -27,6 +30,51 @@ const getPrizeOwnerId = (user) => (
     ? user.id
     : user?.ownerAdminId || user?.parentId || user?.id
 );
+
+const verifyResultUploadPassword = async (user, passwordValue) => {
+  if (user?.role !== 'admin') {
+    return { valid: false, status: 403, message: 'Only admin can manage result upload' };
+  }
+
+  const password = String(passwordValue || '');
+  if (!password) {
+    return { valid: false, status: 401, message: 'Result upload password required' };
+  }
+
+  const adminResult = await query(
+    "SELECT id, result_upload_password FROM users WHERE id = $1 AND role = 'admin' LIMIT 1",
+    [user.id]
+  );
+
+  if (adminResult.rows.length === 0) {
+    return { valid: false, status: 404, message: 'Admin not found' };
+  }
+
+  const savedPassword = adminResult.rows[0].result_upload_password || '';
+  let isValid = false;
+
+  try {
+    isValid = await bcrypt.compare(password, savedPassword);
+  } catch (error) {
+    isValid = false;
+  }
+
+  if (!isValid && savedPassword === password) {
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await query('UPDATE users SET result_upload_password = $1 WHERE id = $2', [hashedPassword, user.id]);
+    isValid = true;
+  }
+
+  if (!isValid && password === DEFAULT_RESULT_UPLOAD_PASSWORD) {
+    const hashedPassword = await bcrypt.hash(DEFAULT_RESULT_UPLOAD_PASSWORD, 10);
+    await query('UPDATE users SET result_upload_password = $1 WHERE id = $2', [hashedPassword, user.id]);
+    isValid = true;
+  }
+
+  return isValid
+    ? { valid: true }
+    : { valid: false, status: 401, message: 'Invalid result upload password' };
+};
 
 const getNormalizedPrizeConfig = (prizeKey, fallbackLabel = '', fallbackDigitLength = 0) => {
   const normalizedKey = String(prizeKey || '').trim().toLowerCase();
@@ -350,8 +398,100 @@ const getPrizeMultiplier = (amountValue, sameValue) => {
   return parsedSame * (isHalfPrizeAmount ? 0.5 : 1);
 };
 
+const buildPrizeEntryLookupKey = ({
+  sellerId,
+  bookingDate,
+  sessionMode,
+  purchaseCategory,
+  amount,
+  boxValue,
+  number
+}) => ([
+  Number(sellerId || 0),
+  String(bookingDate || ''),
+  String(sessionMode || ''),
+  String(purchaseCategory || ''),
+  String(amount || ''),
+  String(boxValue || ''),
+  String(number || '')
+].join('|'));
+
+const loadManualUnsoldLookup = async ({
+  actorUserId,
+  visibleUserIds,
+  date,
+  fromDate,
+  toDate,
+  shift,
+  sellerId,
+  amount,
+  purchaseCategory
+}) => {
+  const params = [visibleUserIds, actorUserId, 'saved_unsold'];
+  const conditions = [
+    'le.user_id = ANY($1::int[])',
+    'h.actor_user_id = $2',
+    'h.action_type = $3'
+  ];
+
+  const dateFilterResult = buildDateRangeFilter({ date, fromDate, toDate }, params, 'h.booking_date');
+  if (dateFilterResult.error) {
+    throw new Error(dateFilterResult.error);
+  }
+  if (dateFilterResult.clause) {
+    conditions.push(dateFilterResult.clause.replace(/^AND\s+/i, ''));
+  }
+
+  if (sellerId) {
+    params.push(sellerId);
+    conditions.push(`le.user_id = $${params.length}`);
+  }
+
+  appendEntryShiftFilter(shift, params, conditions, 'h');
+
+  if (amount) {
+    params.push(amount);
+    conditions.push(`h.amount = $${params.length}::numeric`);
+  }
+
+  if (purchaseCategory) {
+    params.push(purchaseCategory);
+    conditions.push(`h.purchase_category = $${params.length}`);
+  }
+
+  const result = await query(
+    `SELECT DISTINCT
+       le.user_id AS seller_id,
+       h.booking_date,
+       h.session_mode,
+       h.purchase_category,
+       h.amount,
+       h.box_value,
+       h.number
+     FROM lottery_entry_history h
+     INNER JOIN lottery_entries le ON le.id = h.entry_id
+     WHERE ${conditions.join(' AND ')}`,
+    params
+  );
+
+  return new Set(result.rows.map((row) => buildPrizeEntryLookupKey({
+    sellerId: row.seller_id,
+    bookingDate: row.booking_date,
+    sessionMode: row.session_mode,
+    purchaseCategory: row.purchase_category,
+    amount: row.amount,
+    boxValue: row.box_value,
+    number: row.number
+  })));
+};
+
 const uploadPrice = async (req, res) => {
   const entries = Array.isArray(req.body?.entries) ? req.body.entries : [];
+  const passwordCheck = await verifyResultUploadPassword(req.user, req.body?.resultUploadPassword);
+  if (!passwordCheck.valid) {
+    return res.status(passwordCheck.status).json({ message: passwordCheck.message });
+  }
+
   const resultShift = resolveResultShift({
     sessionMode: req.body?.sessionMode,
     purchaseCategory: req.body?.purchaseCategory,
@@ -471,6 +611,11 @@ const uploadPrice = async (req, res) => {
 
 const updatePrizeResult = async (req, res) => {
   try {
+    const passwordCheck = await verifyResultUploadPassword(req.user, req.body?.resultUploadPassword);
+    if (!passwordCheck.valid) {
+      return res.status(passwordCheck.status).json({ message: passwordCheck.message });
+    }
+
     const resultId = Number(req.params.id);
     const winningNumber = normalizeWinningNumber(req.body?.winningNumber);
     const prizeOwnerId = getPrizeOwnerId(req.user);
@@ -538,6 +683,11 @@ const updatePrizeResult = async (req, res) => {
 
 const deletePrizeResult = async (req, res) => {
   try {
+    const passwordCheck = await verifyResultUploadPassword(req.user, req.body?.resultUploadPassword || req.query?.resultUploadPassword);
+    if (!passwordCheck.valid) {
+      return res.status(passwordCheck.status).json({ message: passwordCheck.message });
+    }
+
     const resultId = Number(req.params.id);
     const prizeOwnerId = getPrizeOwnerId(req.user);
 
@@ -565,6 +715,11 @@ const deletePrizeResult = async (req, res) => {
 
 const deletePrizeResults = async (req, res) => {
   try {
+    const passwordCheck = await verifyResultUploadPassword(req.user, req.body?.resultUploadPassword || req.query?.resultUploadPassword);
+    if (!passwordCheck.valid) {
+      return res.status(passwordCheck.status).json({ message: passwordCheck.message });
+    }
+
     const resultShift = resolveResultShift({
       sessionMode: req.body?.sessionMode || req.query?.sessionMode,
       purchaseCategory: req.body?.purchaseCategory || req.query?.purchaseCategory,
@@ -805,12 +960,6 @@ const getFilteredPrizeResults = async (req, res) => {
 
     appendEntryShiftFilter(shift, params, conditions, 'le');
 
-    if (soldStatus === 'UNSOLD') {
-      conditions.push("LOWER(TRIM(le.status)) IN ('unsold_saved', 'unsold_sent', 'unsold')");
-    } else if (soldStatus === 'SOLD') {
-      conditions.push("LOWER(TRIM(le.status)) NOT IN ('unsold_saved', 'unsold_sent', 'unsold')");
-    }
-
     const result = await query(
       `SELECT
          CONCAT(pr.id, '-', le.id) AS id,
@@ -821,10 +970,6 @@ const getFilteredPrizeResults = async (req, res) => {
          le.session_mode,
          COALESCE(le.purchase_category, CASE WHEN le.session_mode = 'NIGHT' THEN 'E' ELSE 'M' END) AS purchase_category,
          le.status,
-         CASE
-           WHEN LOWER(TRIM(le.status)) IN ('unsold_saved', 'unsold_sent', 'unsold') THEN 'UNSOLD'
-           ELSE 'SOLD'
-         END AS sold_status,
          le.number,
          le.amount,
          le.box_value AS sem,
@@ -841,11 +986,42 @@ const getFilteredPrizeResults = async (req, res) => {
        AND COALESCE(pr.purchase_category, CASE WHEN pr.session_mode = 'NIGHT' THEN 'E' ELSE 'M' END) = COALESCE(le.purchase_category, CASE WHEN le.session_mode = 'NIGHT' THEN 'E' ELSE 'M' END)
         AND RIGHT(le.number, pr.digit_length) = pr.winning_number
        WHERE ${conditions.join(' AND ')}
-       ORDER BY le.booking_date DESC, le.session_mode ASC, u.username ASC, le.amount ASC, le.box_value ASC, le.number ASC, pr.prize_amount DESC`,
+      ORDER BY le.booking_date DESC, le.session_mode ASC, u.username ASC, le.amount ASC, le.box_value ASC, le.number ASC, pr.prize_amount DESC`,
       params
     );
 
-    const rows = result.rows.map(mapPrizeFilterResultRow);
+    const manualUnsoldLookup = await loadManualUnsoldLookup({
+      actorUserId: req.user.id,
+      visibleUserIds,
+      date,
+      shift,
+      sellerId,
+      purchaseCategory: '',
+      amount: ''
+    });
+
+    const rows = result.rows
+      .map((row) => {
+        const soldStatusValue = (
+          manualUnsoldLookup.has(buildPrizeEntryLookupKey({
+            sellerId: row.seller_id,
+            bookingDate: row.booking_date,
+            sessionMode: row.session_mode,
+            purchaseCategory: row.purchase_category,
+            amount: row.amount,
+            boxValue: row.sem,
+            number: row.number
+          }))
+          || ['unsold_saved', 'unsold_sent', 'unsold_accepted', 'unsold'].includes(String(row.status || '').trim().toLowerCase())
+        ) ? 'UNSOLD' : 'SOLD';
+
+        return mapPrizeFilterResultRow({
+          ...row,
+          sold_status: soldStatusValue
+        });
+      })
+      .filter((row) => soldStatus === 'ALL' || row.soldStatus === soldStatus);
+
     return res.json({
       rows,
       totalPrize: rows.reduce((sum, row) => sum + Number(row.calculatedPrize || 0), 0)
@@ -928,6 +1104,7 @@ const getBillPrizes = async (req, res) => {
     const entriesResponse = await query(
       `SELECT
          le.id,
+         le.user_id,
          le.number,
          le.booking_date,
          le.session_mode,
@@ -944,20 +1121,45 @@ const getBillPrizes = async (req, res) => {
          ${entryShiftFilter}
          ${entryAmountFilter}
          ${entryPurchaseCategoryFilter}
-       ORDER BY le.booking_date DESC, le.session_mode ASC, u.username ASC, le.number ASC`,
+      ORDER BY le.booking_date DESC, le.session_mode ASC, u.username ASC, le.number ASC`,
       entryParams
     );
+
+    const manualUnsoldLookup = await loadManualUnsoldLookup({
+      actorUserId: req.user.id,
+      visibleUserIds,
+      date,
+      fromDate,
+      toDate,
+      shift: sessionMode,
+      amount,
+      purchaseCategory: normalizedPurchaseCategory
+    });
 
     const results = entriesResponse.rows.flatMap((entry) => {
       const bookedNumber = String(entry.number || '');
       const entryAmount = String(entry.amount);
       const entrySame = String(entry.box_value);
+      const entryPurchaseCategory = entry.purchase_category || (entry.session_mode === 'NIGHT' ? 'E' : 'M');
+      const isManualUnsold = manualUnsoldLookup.has(buildPrizeEntryLookupKey({
+        sellerId: entry.user_id,
+        bookingDate: entry.booking_date,
+        sessionMode: entry.session_mode,
+        purchaseCategory: entryPurchaseCategory,
+        amount: entry.amount,
+        boxValue: entry.box_value,
+        number: entry.number
+      }));
+
+      if (isManualUnsold || ['unsold_saved', 'unsold_sent', 'unsold_accepted', 'unsold'].includes(String(entry.status || '').trim().toLowerCase())) {
+        return [];
+      }
 
       return prizeResults
         .filter((prize) => (
           normalizeDateValue(prize.resultForDate) === normalizeDateValue(entry.booking_date)
           && prize.sessionMode === entry.session_mode
-          && (prize.purchaseCategory || (prize.sessionMode === 'NIGHT' ? 'E' : 'M')) === (entry.purchase_category || (entry.session_mode === 'NIGHT' ? 'E' : 'M'))
+          && (prize.purchaseCategory || (prize.sessionMode === 'NIGHT' ? 'E' : 'M')) === entryPurchaseCategory
           && bookedNumber.endsWith(prize.winningNumber)
         ))
         .map((prize) => ({
@@ -975,7 +1177,7 @@ const getBillPrizes = async (req, res) => {
           fullPrizeAmount: prize.fullPrizeAmount,
           calculatedPrize: prize.fullPrizeAmount * getPrizeMultiplier(entryAmount, entrySame),
           sessionMode: prize.sessionMode,
-          purchaseCategory: entry.purchase_category || (entry.session_mode === 'NIGHT' ? 'E' : 'M'),
+          purchaseCategory: entryPurchaseCategory,
           resultForDate: prize.resultForDate
         }));
     });

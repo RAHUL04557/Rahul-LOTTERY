@@ -1,0 +1,56 @@
+name: Build Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Check release version
+        shell: pwsh
+        run: |
+          $releaseVersion = (Get-Content frontend/package.json | ConvertFrom-Json).version
+          "APP_VERSION=$releaseVersion" >> $env:GITHUB_ENV
+          if ((Get-Content package.json | ConvertFrom-Json).version -ne $releaseVersion) { throw 'Package versions differ' }
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$releaseVersion") { throw 'Tag and package version differ' }
+      - name: Install dependencies
+        run: npm.cmd --prefix frontend ci
+      - name: Renderer tests
+        env:
+          CI: 'true'
+        run: npm.cmd --prefix frontend test -- --watchAll=false --runInBand --runTestsByPath src/utils/dateStorage.test.js
+      - name: Prepare Electron native database
+        run: npm.cmd --prefix frontend run rebuild:native
+      - name: Isolated migration tests
+        shell: pwsh
+        run: |
+          $env:ELECTRON_RUN_AS_NODE = '1'
+          & .\frontend\node_modules\electron\dist\electron.exe .\frontend\electron\tests\dateStorage.test.js | Out-Host
+          if ($LASTEXITCODE -ne 0) { throw 'Migration tests failed' }
+      - name: Build installer without publishing
+        env:
+          CI: 'false'
+        run: npm.cmd --prefix frontend run dist -- --publish never
+      - name: Upload installer assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          if-no-files-found: error
+          path: |
+            frontend/release/Lottery-Booking-Setup-${{ env.APP_VERSION }}.exe
+            frontend/release/Lottery-Booking-Setup-${{ env.APP_VERSION }}.exe.blockmap
+            frontend/release/latest.yml

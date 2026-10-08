@@ -72,7 +72,8 @@ const mapApiEntry = (entry) => ({
   purchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M'),
   createdAt: entry.createdAt,
   sentAt: entry.sentAt,
-  status: entry.status
+  status: entry.status,
+  entrySource: entry.entrySource || entry.entry_source || ''
 });
 
 const mapHistoryRecord = (record) => ({
@@ -981,7 +982,7 @@ const formatMissingNumberLabel = (numbers = []) => (
     : numbers.join(', ')
 );
 
-const SellerDashboard = ({
+const SubStokistDashboard = ({
   user,
   onLogout,
   sessionMode,
@@ -5028,8 +5029,12 @@ const SellerDashboard = ({
     setSuccess('');
 
     try {
+      const reviewEntries = groupedEntries.some((currentEntry) => String(currentEntry.entrySource || currentEntry.entry_source || '').trim() === 'purchase')
+        ? [groupedEntries.find((currentEntry) => String(currentEntry.status || '').trim().toLowerCase() !== 'accepted') || groupedEntries[0]]
+        : groupedEntries;
+
       await Promise.all(
-        groupedEntries.map((currentEntry) => lotteryService.updateReceivedEntryStatus(currentEntry.id, action, { amount }))
+        reviewEntries.map((currentEntry) => lotteryService.updateReceivedEntryStatus(currentEntry.id, action, { amount }))
       );
 
       const successLabel = action === 'accept' ? 'accepted' : 'rejected';
@@ -8232,7 +8237,7 @@ const SellerDashboard = ({
               )}
 
               {Object.keys(billTransferHistoryByActor).length > 0 && (
-                <div style={{ marginTop: '20px', padding: '22px 26px', borderRadius: '16px', background: '#eef2ff', fontSize: '38px', lineHeight: 1.45 }}>
+                <div className="bill-grand-total" style={{ marginTop: '20px', padding: '22px 26px', borderRadius: '16px', background: '#eef2ff', fontSize: '38px', lineHeight: 1.45 }}>
                   <strong>Grand Total:</strong> Net {formatSignedRupees(billTransferHistoryTotals.netBill)}
                 </div>
               )}
@@ -8470,4 +8475,4 @@ const AddSellerForm = ({ currentUser, selectedAmount = '', onSuccess, onError })
   );
 };
 
-export default SellerDashboard;
+export default SubStokistDashboard;

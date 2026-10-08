@@ -6,10 +6,14 @@ const SELLER_TYPE_LABELS = {
   normal_seller: 'SELLER'
 };
 
-const TreeNode = ({ node, onDelete, deletingUserId }) => {
+const TreeNode = ({ node, onDelete, deletingUserId, shouldShowNode }) => {
   if (!node) {
     return null;
   }
+
+  const visibleChildren = (node.children || []).filter((child) => (
+    typeof shouldShowNode === 'function' ? shouldShowNode(child) : true
+  ));
 
   return (
     <li className="tree-node">
@@ -41,10 +45,16 @@ const TreeNode = ({ node, onDelete, deletingUserId }) => {
           <span>Rate 12: {Number(node.rateAmount12 || 0)}</span>
         </div>
       </div>
-      {node.children && node.children.length > 0 && (
+      {visibleChildren.length > 0 && (
         <ul className="tree-children">
-          {node.children.map((child) => (
-            <TreeNode key={child.id} node={child} onDelete={onDelete} deletingUserId={deletingUserId} />
+          {visibleChildren.map((child) => (
+            <TreeNode
+              key={child.id}
+              node={child}
+              onDelete={onDelete}
+              deletingUserId={deletingUserId}
+              shouldShowNode={shouldShowNode}
+            />
           ))}
         </ul>
       )}
@@ -52,7 +62,7 @@ const TreeNode = ({ node, onDelete, deletingUserId }) => {
   );
 };
 
-const UserTreeView = ({ treeData, emptyMessage, onDelete, deletingUserId }) => {
+const UserTreeView = ({ treeData, emptyMessage, onDelete, deletingUserId, shouldShowNode }) => {
   if (!treeData) {
     return <p>{emptyMessage || 'No tree data found'}</p>;
   }
@@ -60,7 +70,12 @@ const UserTreeView = ({ treeData, emptyMessage, onDelete, deletingUserId }) => {
   return (
     <div className="tree-wrapper">
       <ul className="tree-root">
-        <TreeNode node={treeData} onDelete={onDelete} deletingUserId={deletingUserId} />
+        <TreeNode
+          node={treeData}
+          onDelete={onDelete}
+          deletingUserId={deletingUserId}
+          shouldShowNode={shouldShowNode}
+        />
       </ul>
     </div>
   );

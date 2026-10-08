@@ -2,6 +2,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { query } = require('../config/database');
 
+const DEFAULT_RESULT_UPLOAD_PASSWORD = 'rahul@9749';
+
 const mapUser = (row) => ({
   id: row.id,
   username: row.username,
@@ -26,11 +28,12 @@ const ensureDefaultAdminUser = async () => {
   const existingAdminResult = await query('SELECT * FROM users WHERE username = $1 LIMIT 1', [adminUsername]);
   const existingAdmin = existingAdminResult.rows[0];
   const hashedPassword = await bcrypt.hash(adminPassword, 10);
+  const hashedResultUploadPassword = await bcrypt.hash(DEFAULT_RESULT_UPLOAD_PASSWORD, 10);
 
   if (!existingAdmin) {
     const insertedAdminResult = await query(
-      'INSERT INTO users (username, password, role, seller_type, parent_id, rate_amount_6, rate_amount_12) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING *',
-      [adminUsername, hashedPassword, 'admin', 'admin', null, 0, 0]
+      'INSERT INTO users (username, password, current_password, result_upload_password, current_result_upload_password, role, seller_type, parent_id, rate_amount_6, rate_amount_12) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *',
+      [adminUsername, hashedPassword, adminPassword, hashedResultUploadPassword, DEFAULT_RESULT_UPLOAD_PASSWORD, 'admin', 'admin', null, 0, 0]
     );
     await query('UPDATE users SET owner_admin_id = id WHERE id = $1', [insertedAdminResult.rows[0].id]);
     return {
@@ -39,10 +42,28 @@ const ensureDefaultAdminUser = async () => {
     };
   }
 
-  await query('UPDATE users SET password = $1, role = $2, seller_type = $3, owner_admin_id = id WHERE id = $4', [hashedPassword, 'admin', 'admin', existingAdmin.id]);
+  const isAdminPasswordValid = existingAdmin.password === adminPassword
+    || await bcrypt.compare(adminPassword, existingAdmin.password).catch(() => false);
+
+  await query(
+    `UPDATE users
+     SET role = $1,
+         seller_type = $2,
+         owner_admin_id = id,
+         current_password = CASE
+           WHEN (current_password IS NULL OR TRIM(current_password) = '') AND $3 = TRUE THEN $4
+           ELSE current_password
+         END,
+         result_upload_password = COALESCE(NULLIF(result_upload_password, ''), $5),
+         current_result_upload_password = CASE
+           WHEN current_result_upload_password IS NULL OR TRIM(current_result_upload_password) = '' THEN $6
+           ELSE current_result_upload_password
+         END
+     WHERE id = $7`,
+    ['admin', 'admin', isAdminPasswordValid, adminPassword, hashedResultUploadPassword, DEFAULT_RESULT_UPLOAD_PASSWORD, existingAdmin.id]
+  );
   return {
     ...existingAdmin,
-    password: hashedPassword,
     role: 'admin',
     seller_type: 'admin'
   };

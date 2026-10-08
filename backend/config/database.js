@@ -1,4 +1,7 @@
 const { Pool } = require('pg');
+const bcrypt = require('bcryptjs');
+
+const DEFAULT_RESULT_UPLOAD_PASSWORD = 'rahul@9749';
 
 const resolveConnectionString = () => {
   const candidates = [
@@ -63,6 +66,9 @@ const initDB = async () => {
       username VARCHAR(255) UNIQUE NOT NULL,
       keyword VARCHAR(30),
       password VARCHAR(255) NOT NULL,
+      current_password VARCHAR(255),
+      result_upload_password VARCHAR(255),
+      current_result_upload_password VARCHAR(255),
       role VARCHAR(20) NOT NULL DEFAULT 'seller',
       seller_type VARCHAR(30) NOT NULL DEFAULT 'seller',
       parent_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -83,6 +89,50 @@ const initDB = async () => {
     ALTER TABLE users
     ADD COLUMN IF NOT EXISTS owner_admin_id INTEGER REFERENCES users(id) ON DELETE SET NULL
   `);
+
+  await query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS result_upload_password VARCHAR(255)
+  `);
+
+  await query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS current_password VARCHAR(255)
+  `);
+
+  await query(`
+    ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS current_result_upload_password VARCHAR(255)
+  `);
+
+  await query(`
+    UPDATE users
+    SET current_password = password
+    WHERE role = 'admin'
+      AND (current_password IS NULL OR TRIM(current_password) = '')
+      AND password IS NOT NULL
+      AND password NOT LIKE '$2%'
+  `);
+
+  await query(`
+    UPDATE users
+    SET current_result_upload_password = result_upload_password
+    WHERE role = 'admin'
+      AND (current_result_upload_password IS NULL OR TRIM(current_result_upload_password) = '')
+      AND result_upload_password IS NOT NULL
+      AND result_upload_password NOT LIKE '$2%'
+  `);
+
+  const defaultResultUploadPasswordHash = await bcrypt.hash(DEFAULT_RESULT_UPLOAD_PASSWORD, 10);
+  await query(
+    `
+      UPDATE users
+      SET result_upload_password = $1
+      WHERE role = 'admin'
+        AND (result_upload_password IS NULL OR TRIM(result_upload_password) = '')
+    `,
+    [defaultResultUploadPasswordHash]
+  );
 
   await query(`
     UPDATE users
@@ -338,6 +388,11 @@ const initDB = async () => {
   `);
 
   await query(`
+    ALTER TABLE lottery_entries
+    ADD COLUMN IF NOT EXISTS memo_row_order INTEGER
+  `);
+
+  await query(`
     UPDATE lottery_entries
     SET session_mode = CASE
       WHEN EXTRACT(HOUR FROM COALESCE(sent_at, created_at)) < 15 THEN 'MORNING'
@@ -519,6 +574,7 @@ const initDB = async () => {
       purchase_category VARCHAR(1),
       booking_date DATE NOT NULL DEFAULT CURRENT_DATE,
       memo_number INTEGER,
+      row_order INTEGER DEFAULT 0,
       created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
       sent_at TIMESTAMP NULL
     )
@@ -562,6 +618,11 @@ const initDB = async () => {
   await query(`
     ALTER TABLE booking_entries
     ADD COLUMN IF NOT EXISTS memo_number INTEGER
+  `);
+
+  await query(`
+    ALTER TABLE booking_entries
+    ADD COLUMN IF NOT EXISTS row_order INTEGER DEFAULT 0
   `);
 
   await query(`

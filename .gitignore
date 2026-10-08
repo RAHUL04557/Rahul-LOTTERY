@@ -15,3 +15,11 @@ yarn-error.log*
 *~
 .prettierrc
 .eslintrc
+frontend/release/*.exe
+frontend/release/*.exe.blockmap
+frontend/release/*.zip
+frontend/release/latest.yml
+frontend/release/win-unpacked/
+frontend/release/*.nsis.7z
+frontend/release/*.incomplete
+frontend/release-ci/

@@ -72,7 +72,8 @@ const mapApiEntry = (entry) => ({
   purchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M'),
   createdAt: entry.createdAt,
   sentAt: entry.sentAt,
-  status: entry.status
+  status: entry.status,
+  entrySource: entry.entrySource || entry.entry_source || ''
 });
 
 const mapHistoryRecord = (record) => ({
@@ -981,7 +982,7 @@ const formatMissingNumberLabel = (numbers = []) => (
     : numbers.join(', ')
 );
 
-const SellerDashboard = ({
+const StokistDashboard = ({
   user,
   onLogout,
   sessionMode,
@@ -1693,20 +1694,76 @@ const SellerDashboard = ({
     setError('');
 
     try {
-      const response = await lotteryService.getPurchasePieceSummary({
-        bookingDate: summaryDateValue,
-        sessionMode,
-        purchaseCategory: activePurchaseCategory,
-        amount
-      });
+      const [pieceSummaryResult, billSummaryResult] = await Promise.allSettled([
+        lotteryService.getPurchasePieceSummary({
+          bookingDate: summaryDateValue,
+          sessionMode,
+          purchaseCategory: activePurchaseCategory,
+          amount
+        }, { skipLocalRead: true }),
+        lotteryService.getPurchaseBillSummary({
+          date: summaryDateValue,
+          shift: sessionMode,
+          purchaseCategory: activePurchaseCategory,
+          amount
+        })
+      ]);
 
-      const summaryRows = (response.data || []).map((row) => ({
+      if (pieceSummaryResult.status === 'rejected' && billSummaryResult.status === 'rejected') {
+        throw pieceSummaryResult.reason || billSummaryResult.reason;
+      }
+
+      const pieceRows = (pieceSummaryResult.status === 'fulfilled' ? pieceSummaryResult.value.data || [] : []).map((row) => ({
         id: row.sellerId || row.seller_id,
         sellerName: `${row.sellerName || row.seller_name || ''}${row.isSelf || row.is_self ? ' (Self)' : ''}`,
         totalPiece: Number(row.totalPiece || row.total_piece || 0),
         unsoldPiece: Number(row.unsoldPiece || row.unsold_piece || 0),
         stockNotTransferredPiece: Number(row.stockNotTransferredPiece || row.stock_not_transferred_piece || 0)
       }));
+
+      const pieceRowMap = new Map(pieceRows.map((row) => [String(row.id), row]));
+      const billRowsBySeller = new Map();
+      (billSummaryResult.status === 'fulfilled' ? billSummaryResult.value.data || [] : []).forEach((row) => {
+        const sellerId = row.sellerId || row.seller_id;
+        if (!sellerId) {
+          return;
+        }
+
+        const key = String(sellerId);
+        const pieceRow = pieceRowMap.get(key);
+        const current = billRowsBySeller.get(key) || {
+          id: sellerId,
+          sellerName: pieceRow?.sellerName || row.sellerName || row.seller_name || '',
+          totalPiece: 0,
+          unsoldPiece: 0,
+          stockNotTransferredPiece: Number(pieceRow?.stockNotTransferredPiece || 0)
+        };
+
+        current.totalPiece += Number(row.sentPiece || row.sent_piece || 0);
+        current.unsoldPiece += Number(row.unsoldPiece || row.unsold_piece || 0);
+        billRowsBySeller.set(key, current);
+      });
+
+      const mergedBillSellerIds = new Set();
+      const summaryRows = billRowsBySeller.size > 0
+        ? [
+          ...pieceRows.map((row) => {
+            const billRow = billRowsBySeller.get(String(row.id));
+            if (!billRow) {
+              return { ...row, unsoldPiece: 0 };
+            }
+
+            mergedBillSellerIds.add(String(row.id));
+            return {
+              ...billRow,
+              sellerName: row.sellerName || billRow.sellerName,
+              stockNotTransferredPiece: row.stockNotTransferredPiece
+            };
+          }),
+          ...Array.from(billRowsBySeller.values()).filter((row) => !mergedBillSellerIds.has(String(row.id)))
+        ]
+        : pieceRows;
+
       setPieceSummaryStockNotTransferredPiece(Number(summaryRows[0]?.stockNotTransferredPiece || 0));
       setPieceSummaryRows(summaryRows.filter((row) => Number(row.totalPiece || 0) > 0));
     } catch (err) {
@@ -3795,16 +3852,11 @@ const SellerDashboard = ({
         : isUnsoldLookup
         ? (response.data || []).filter((entry) => {
           const normalizedStatus = String(entry.status || '').trim().toLowerCase();
-          if (normalizedStatus && normalizedStatus !== 'accepted') {
+          if (normalizedStatus && !['unsold', 'unsold_saved', 'unsold_sent', 'accepted'].includes(normalizedStatus)) {
             return false;
           }
 
-          if (savedUnsoldNumberKeys.has(buildUnsoldStockKey(entry))) {
-            return false;
-          }
-
-          const hasMemo = entry.memoNumber !== null && entry.memoNumber !== undefined && String(entry.memoNumber).trim() !== '';
-          if (!hasMemo) {
+          if (normalizedStatus === 'accepted' && savedUnsoldNumberKeys.has(buildUnsoldStockKey(entry))) {
             return false;
           }
 
@@ -4512,11 +4564,6 @@ const SellerDashboard = ({
     const partyId = String(row.partyId || user?.id || '');
     const partyOption = unsoldPartyOptions.find((party) => String(party.id) === partyId) || selectedUnsoldParty || {};
     const memoStockEntries = (response.data || []).filter((entry) => {
-      const hasMemo = entry.memoNumber !== null && entry.memoNumber !== undefined && String(entry.memoNumber).trim() !== '';
-      if (!hasMemo) {
-        return false;
-      }
-
       if (partyId === String(user?.id || '')) {
         return String(entry.forwardedBy || '') === String(user?.id || '');
       }
@@ -5028,8 +5075,12 @@ const SellerDashboard = ({
     setSuccess('');
 
     try {
+      const reviewEntries = groupedEntries.some((currentEntry) => String(currentEntry.entrySource || currentEntry.entry_source || '').trim() === 'purchase')
+        ? [groupedEntries.find((currentEntry) => String(currentEntry.status || '').trim().toLowerCase() !== 'accepted') || groupedEntries[0]]
+        : groupedEntries;
+
       await Promise.all(
-        groupedEntries.map((currentEntry) => lotteryService.updateReceivedEntryStatus(currentEntry.id, action, { amount }))
+        reviewEntries.map((currentEntry) => lotteryService.updateReceivedEntryStatus(currentEntry.id, action, { amount }))
       );
 
       const successLabel = action === 'accept' ? 'accepted' : 'rejected';
@@ -8232,7 +8283,7 @@ const SellerDashboard = ({
               )}
 
               {Object.keys(billTransferHistoryByActor).length > 0 && (
-                <div style={{ marginTop: '20px', padding: '22px 26px', borderRadius: '16px', background: '#eef2ff', fontSize: '38px', lineHeight: 1.45 }}>
+                <div className="bill-grand-total" style={{ marginTop: '20px', padding: '22px 26px', borderRadius: '16px', background: '#eef2ff', fontSize: '38px', lineHeight: 1.45 }}>
                   <strong>Grand Total:</strong> Net {formatSignedRupees(billTransferHistoryTotals.netBill)}
                 </div>
               )}
@@ -8470,4 +8521,4 @@ const AddSellerForm = ({ currentUser, selectedAmount = '', onSuccess, onError })
   );
 };
 
-export default SellerDashboard;
+export default StokistDashboard;

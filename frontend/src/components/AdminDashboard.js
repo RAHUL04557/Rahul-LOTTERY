@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createWorker } from 'tesseract.js';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/build/pdf';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.entry';
-import { lotteryService, priceService, userService } from '../services/api';
+import { billCacheService, lotteryService, priceService, userService } from '../services/api';
 import UserTreeView from './UserTreeView';
 import EntriesTableView from './EntriesTableView';
 import PasswordSettingsMenu from './PasswordSettingsMenu';
@@ -10,9 +10,11 @@ import RetroPurchasePanel from './RetroPurchasePanel';
 import DashboardLauncher from './DashboardLauncher';
 import ExitConfirmPrompt from './ExitConfirmPrompt';
 import SearchableSellerSelect from './SearchableSellerSelect';
+import BookingPanel from './BookingPanel';
 import { buildBillAmountSummariesWithPrize, buildBillData, buildBillSummaryWithPrize, formatDisplayDate, formatDisplayDateTime, formatSignedRupees, getAllowedAmountsLabel, getNormalizedPrizeBaseAmount, getNormalizedPrizeCalculatedAmount, groupTransferHistoryByActor, openTransferBill, summarizeTransferHistory } from '../utils/transferBill';
 import { groupConsecutiveNumberRows, sortRowsForConsecutiveNumbers } from '../utils/numberRanges';
 import { useFunctionShortcuts } from '../utils/functionShortcuts';
+import { buildDraftStorageKey, clearDraftRows, listDraftRows, loadDraftRows, saveDraftRows } from '../utils/localDraftStorage';
 import '../styles/AdminDashboard.css';
 
 GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -111,6 +113,9 @@ const PRIZE_OPTIONS = [
   { key: 'fourth', title: '4th Prize', amountLabel: '700', amountValue: 700, digitLength: 4 },
   { key: 'fifth', title: '5th Prize', amountLabel: '300', amountValue: 300, digitLength: 4 }
 ];
+
+const isTopPrizeLabel = (label) => /^(1st|first|2nd|second)\s+prize$/i.test(String(label || '').trim());
+
 const ADMIN_PURCHASE_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F8-Clear', 'Esc-Exit'];
 const ADMIN_UNSOLD_SHORTCUTS = ['F2-Save', 'F3-Delete', 'A-Add', 'F4-View', 'F8-Clear', 'Esc-Exit'];
 const REMOVABLE_UNSOLD_STATUSES = new Set(['unsold_saved', 'unsold_sent', 'unsold']);
@@ -403,12 +408,16 @@ const resolveRangeEndValue = (fromValue, toValue) => {
     resolvedToNumber += suffixBase;
   }
 
-  return String(resolvedToNumber);
+  if (resolvedToNumber > 99999) {
+    return '';
+  }
+
+  return String(resolvedToNumber).padStart(5, '0');
 };
 
-const getRetroRangeMetrics = (codeValue, fallbackSessionMode, fromValue, toValue, fallbackPurchaseCategory = '') => {
+const getRetroRangeMetrics = (codeValue, fallbackSessionMode, fromValue, toValue, fallbackPurchaseCategory = '', referenceFromValue = '') => {
   const parsed = parseRetroCodeValue(codeValue, fallbackSessionMode, fallbackPurchaseCategory);
-  const fromNumber = normalizeNumericInput(fromValue);
+  const fromNumber = normalizeRangeStartInput(fromValue, referenceFromValue);
   const resolvedToNumber = resolveRangeEndValue(fromNumber, toValue || fromValue);
 
   if (parsed.error) {
@@ -586,7 +595,7 @@ const buildPurchaseMemoSummaries = (entries = []) => {
   const memoMap = new Map();
 
   entries.forEach((entry) => {
-    const memoNumber = Number(entry.memoNumber || 0);
+    const memoNumber = Number(entry.purchaseMemoNumber || entry.purchase_memo_number || entry.memoNumber || entry.memo_number || 0);
     if (!Number.isInteger(memoNumber) || memoNumber <= 0) {
       return;
     }
@@ -626,28 +635,58 @@ const buildPurchaseMemoSummaries = (entries = []) => {
     }));
 };
 
-const buildAdminStockDraftRowsFromEntries = (entries = [], amountValue) => (
-  groupConsecutiveNumberRows(
-    sortRowsForConsecutiveNumbers(
-      [...entries],
+const getPurchaseEntryMemoNumber = (entry = {}) => Number(
+  entry.purchaseMemoNumber
+  || entry.purchase_memo_number
+  || entry.memoNumber
+  || entry.memo_number
+  || 0
+);
+
+const buildAdminStockDraftRowsFromEntries = (entries = [], amountValue, options = {}) => {
+  const sortedEntries = sortRowsForConsecutiveNumbers(
+    [...entries],
+    (entry) => [
+      entry.memoRowOrder ?? 999999,
+      entry.bookingDate,
+      entry.sessionMode,
+      entry.purchaseCategory,
+      entry.amount,
+      entry.sem,
+      entry.series || '',
+      entry.memoRowOrder !== null && entry.memoRowOrder !== undefined ? '' : (entry.createdAt || entry.sentAt || '')
+    ]
+  );
+  const groups = !options.ignoreMemoRowOrder && entries.some((entry) => entry.memoRowOrder !== null && entry.memoRowOrder !== undefined)
+    ? Array.from(sortedEntries.reduce((groupMap, entry) => {
+      const key = [
+        entry.memoRowOrder ?? 'old',
+        entry.bookingDate,
+        entry.sessionMode,
+        entry.purchaseCategory,
+        entry.amount,
+        entry.sem,
+        entry.series || '',
+        entry.memoRowOrder !== null && entry.memoRowOrder !== undefined ? '' : (entry.createdAt || entry.sentAt || '')
+      ].join('|');
+      if (!groupMap.has(key)) groupMap.set(key, []);
+      groupMap.get(key).push(entry);
+      return groupMap;
+    }, new Map()).values()).map((rows) => ({ rows, firstRow: rows[0], lastRow: rows[rows.length - 1] }))
+    : groupConsecutiveNumberRows(
+      sortedEntries,
       (entry) => [
         entry.bookingDate,
         entry.sessionMode,
         entry.purchaseCategory,
         entry.amount,
         entry.sem,
-        entry.series || ''
-      ]
-    ),
-    (entry) => [
-      entry.bookingDate,
-      entry.sessionMode,
-      entry.purchaseCategory,
-      entry.amount,
-      entry.sem,
-      entry.series || ''
-    ].join('|')
-  ).map((group, index) => {
+        entry.series || '',
+        entry.createdAt || entry.sentAt || ''
+      ].join('|')
+    );
+
+  return groups.map((group, index) => {
     const entry = group.firstRow || {};
     const count = group.rows.length;
     const semValue = Number(entry.sem || 0);
@@ -669,13 +708,14 @@ const buildAdminStockDraftRowsFromEntries = (entries = [], amountValue) => (
       semValue: String(entry.sem || ''),
       bookingAmount: String(entry.amount || amountValue || ''),
       resolvedSessionMode: entry.sessionMode || 'MORNING',
-      resolvedPurchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M')
+      resolvedPurchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M'),
+      memoRowOrder: entry.memoRowOrder ?? index
     };
-  })
-);
+  });
+};
 
 const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, options = {}) => (
-  buildAdminStockDraftRowsFromEntries(entries, amountValue).map((row, index) => {
+  buildAdminStockDraftRowsFromEntries(entries, amountValue, options).map((row, index) => {
     const firstEntry = entries.find((entry) => String(entry.number || '') === String(row.from || '')) || entries[index] || {};
 
     return {
@@ -694,8 +734,16 @@ const buildPurchaseSendDraftRowsFromEntries = (entries = [], amountValue, option
           && String(entry.bookingDate || '') === String(row.drawDate || '')
           && String(entry.number || '') >= String(row.from || '')
           && String(entry.number || '') <= String(row.to || '')
+          && (
+            row.memoRowOrder === null
+            || row.memoRowOrder === undefined
+            || entry.memoRowOrder === null
+            || entry.memoRowOrder === undefined
+            || Number(entry.memoRowOrder) === Number(row.memoRowOrder)
+          )
         ))
-        .map((entry) => entry.id)
+        .map((entry) => entry.entryId || entry.id)
+        .filter(Boolean)
     };
   })
 );
@@ -721,18 +769,23 @@ const mapApiEntry = (entry) => ({
   userId: entry.userId || entry.user_id,
   username: entry.username,
   displaySeller: entry.forwardedByUsername || entry.username,
+  forwardedBy: entry.forwardedBy || entry.forwarded_by || null,
+  sentToParent: entry.sentToParent || entry.sent_to_parent || null,
   uniqueCode: entry.uniqueCode,
   sem: entry.boxValue,
   amount: String(entry.amount),
   number: entry.number,
   price: Number(entry.boxValue || 0) * Number(entry.amount || 0),
   memoNumber: entry.memoNumber ?? entry.memo_number ?? null,
+  purchaseMemoNumber: entry.purchaseMemoNumber ?? entry.purchase_memo_number ?? entry.memoNumber ?? entry.memo_number ?? null,
+  memoRowOrder: entry.memoRowOrder ?? entry.memo_row_order ?? null,
   bookingDate: entry.bookingDate || entry.booking_date || null,
   sessionMode: entry.sessionMode,
   purchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' ? 'E' : 'M'),
   createdAt: entry.createdAt,
   sentAt: entry.sentAt,
-  status: entry.status
+  status: entry.status,
+  entrySource: entry.entrySource || entry.entry_source || ''
 });
 
 const mapHistoryRecord = (record) => ({
@@ -771,7 +824,7 @@ const normalizeSeePurchaseEntry = (entry = {}, sourceType) => ({
   sessionMode: entry.sessionMode || entry.session_mode || '',
   purchaseCategory: entry.purchaseCategory || (entry.sessionMode === 'NIGHT' || entry.session_mode === 'NIGHT' ? 'E' : 'M'),
   memoNumber: entry.memoNumber ?? entry.memo_number ?? '',
-  sellerName: entry.displaySeller || entry.username || '',
+  sellerName: entry.displaySeller || entry.username || entry.sellerUsername || entry.seller_username || entry.toUsername || entry.to_username || '',
   status: entry.status || '',
   sourceType
 });
@@ -902,6 +955,17 @@ const getLatestRecordPerEntry = (records = []) => {
   return Array.from(latestMap.values()).sort((a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0));
 };
 
+const getLatestEntryBatch = (entries = []) => {
+  const latestTime = entries.reduce((maxTime, entry) => {
+    const entryTime = new Date(entry.sentAt || entry.createdAt || 0).getTime();
+    return Number.isFinite(entryTime) && entryTime > maxTime ? entryTime : maxTime;
+  }, 0);
+
+  return latestTime > 0
+    ? entries.filter((entry) => new Date(entry.sentAt || entry.createdAt || 0).getTime() === latestTime)
+    : [];
+};
+
 const createPendingPrizeEntries = () => PRIZE_OPTIONS.reduce((accumulator, prize) => {
   accumulator[prize.key] = [];
   return accumulator;
@@ -953,11 +1017,28 @@ const getOcrSection = (text, startPatterns = [], endPatterns = []) => {
 const buildCurrentMemoSummaries = (entries = []) => {
   const normalizedEntries = entries.map((entry) => ({
     ...entry,
-    purchaseMemoNumber: entry.memoNumber ?? entry.memo_number ?? null
+    purchaseMemoNumber: entry.purchaseMemoNumber ?? entry.purchase_memo_number ?? entry.memoNumber ?? entry.memo_number ?? null
   }));
 
   return buildPurchaseMemoSummaries(normalizedEntries);
 };
+
+const buildAdminUnsoldMemoSummaries = (entries = []) => {
+  const normalizedEntries = entries.map((entry) => ({
+    ...entry,
+    purchaseMemoNumber: entry.memoNumber ?? entry.memo_number ?? entry.purchaseMemoNumber ?? entry.purchase_memo_number ?? null
+  }));
+
+  return buildPurchaseMemoSummaries(normalizedEntries);
+};
+
+const getAdminUnsoldEntryMemoNumber = (entry = {}) => Number(
+  entry.memoNumber
+  || entry.memo_number
+  || entry.purchaseMemoNumber
+  || entry.purchase_memo_number
+  || 0
+);
 
 const PRIZE_RESULT_COLUMNS_PER_LINE = 5;
 const PRIZE_RESULT_MAX_STANDARD_FOUR_DIGIT_NUMBERS = 10;
@@ -1085,9 +1166,11 @@ const extractPrizeNumbersFromSection = (sectionText, digitLength, options = {}) 
   const {
     numbersPerLine = 0,
     minimumLineNumbers = 1,
-    maxNumbers = 0
+    maxNumbers = 0,
+    useSectionFallbackWhenIncomplete = false
   } = options;
   const seenNumbers = new Set();
+  let fallbackBaseNumbers = [];
 
   const addNumbers = (numbers, digits) => {
     if (digits.length !== digitLength || seenNumbers.has(digits)) {
@@ -1117,13 +1200,18 @@ const extractPrizeNumbersFromSection = (sectionText, digitLength, options = {}) 
         return numbers;
       }, []);
 
-    if (lineNumbers.length > 0) {
+    if (
+      lineNumbers.length > 0
+      && (!useSectionFallbackWhenIncomplete || !maxNumbers || lineNumbers.length >= maxNumbers)
+    ) {
       return maxNumbers > 0 ? lineNumbers.slice(0, maxNumbers) : lineNumbers;
     }
+
+    fallbackBaseNumbers = lineNumbers;
   }
 
   const allNumbers = getOcrNumberTokens(sectionText, digitLength)
-    .reduce((numbers, digits) => addNumbers(numbers, digits), []);
+    .reduce((numbers, digits) => addNumbers(numbers, digits), [...fallbackBaseNumbers]);
 
   return maxNumbers > 0 ? allNumbers.slice(0, maxNumbers) : allNumbers;
 };
@@ -1176,10 +1264,11 @@ const parsePrizeScanText = (ocrText) => {
   const normalizedText = String(ocrText || '').replace(/\r/g, '\n');
   const allFiveDigitNumbers = getOcrNumberTokens(normalizedText, 5);
   const firstPrizeNumber = chooseFirstPrizeNumber(normalizedText, allFiveDigitNumbers);
-  const thirdPrizeStartPatterns = [/3\s*(?:RD|R0|RO)\b/i, /THIRD/i];
-  const fourthPrizeStartPatterns = [/(?:^|\n|[^A-Z0-9])(?:4|A)\s*(?:TH|IH|H)\b/i, /FOURTH/i];
-  const fifthPrizeStartPatterns = [/5\s*(?:TH|IH|H)\b/i, /FIFTH/i];
-  const secondSection = getOcrSection(normalizedText, [/2\s*(?:ND|N0|NO)\b/i, /SECOND/i], thirdPrizeStartPatterns);
+  const secondPrizeStartPatterns = [/(?:^|\n)\s*2\s*(?:ND|N0|NO)\b/i, /(?:^|\n)\s*SECOND\b/i];
+  const thirdPrizeStartPatterns = [/(?:^|\n)\s*3\s*(?:RD|R0|RO)\b/i, /(?:^|\n)\s*THIRD\b/i];
+  const fourthPrizeStartPatterns = [/(?:^|\n)\s*(?:4|A)\s*(?:TH|IH|H)\b/i, /(?:^|\n)\s*FOURTH\b/i];
+  const fifthPrizeStartPatterns = [/(?:^|\n)\s*5\s*(?:TH|IH|H)\b/i, /(?:^|\n)\s*FIFTH\b/i];
+  const secondSection = getOcrSection(normalizedText, secondPrizeStartPatterns, thirdPrizeStartPatterns);
   const thirdSection = getOcrSection(normalizedText, thirdPrizeStartPatterns, fourthPrizeStartPatterns);
   const fourthSection = getOcrSection(normalizedText, fourthPrizeStartPatterns, fifthPrizeStartPatterns);
   const fifthSection = getOcrSection(normalizedText, fifthPrizeStartPatterns, []);
@@ -1200,7 +1289,8 @@ const parsePrizeScanText = (ocrText) => {
   const fifthNumbers = extractPrizeNumbersFromSection(fifthSection, 4, {
     numbersPerLine: PRIZE_RESULT_COLUMNS_PER_LINE,
     minimumLineNumbers: 3,
-    maxNumbers: PRIZE_RESULT_MAX_FIFTH_PRIZE_NUMBERS
+    maxNumbers: PRIZE_RESULT_MAX_FIFTH_PRIZE_NUMBERS,
+    useSectionFallbackWhenIncomplete: true
   });
   const secondNumbers = extractPrizeNumbersFromSection(secondSection, 5, {
     numbersPerLine: PRIZE_RESULT_COLUMNS_PER_LINE,
@@ -1310,6 +1400,7 @@ const AdminDashboard = ({
   const [editingPendingPrizeId, setEditingPendingPrizeId] = useState(null);
   const [editingPendingPrizeValue, setEditingPendingPrizeValue] = useState('');
   const [uploadedPrizeResults, setUploadedPrizeResults] = useState([]);
+  const [replaceUploadedPrizeResultsOnNextUpload, setReplaceUploadedPrizeResultsOnNextUpload] = useState(false);
   const [editingUploadedResultId, setEditingUploadedResultId] = useState(null);
   const [editingUploadedValue, setEditingUploadedValue] = useState('');
   const [editingUploadedLoading, setEditingUploadedLoading] = useState(false);
@@ -1322,10 +1413,12 @@ const AdminDashboard = ({
   const [currentIndiaDateTime, setCurrentIndiaDateTime] = useState(() => getIndiaDateTimeParts());
   const [treeData, setTreeData] = useState(null);
   const [acceptEntries, setAcceptEntries] = useState([]);
+  const [acceptEntriesDate, setAcceptEntriesDate] = useState(getTodayDateValue());
   const [entryActionLoadingId, setEntryActionLoadingId] = useState(null);
   const [pieceSummaryOpen, setPieceSummaryOpen] = useState(false);
   const [pieceSummaryDate, setPieceSummaryDate] = useState(getTodayDateValue());
   const [pieceSummaryRows, setPieceSummaryRows] = useState([]);
+  const [pieceSummaryStockNotTransferredPiece, setPieceSummaryStockNotTransferredPiece] = useState(0);
   const [pieceSummaryLoading, setPieceSummaryLoading] = useState(false);
   const [transferHistory, setTransferHistory] = useState([]);
   const [purchaseBillRows, setPurchaseBillRows] = useState([]);
@@ -1338,7 +1431,7 @@ const AdminDashboard = ({
   const [historyFromDate, setHistoryFromDate] = useState(getTodayDateValue());
   const [historyToDate, setHistoryToDate] = useState(getTodayDateValue());
   const [historyShift, setHistoryShift] = useState(getInitialBillShift(initialSessionMode, initialPurchaseCategory));
-  const [historySellerFilter, setHistorySellerFilter] = useState('');
+  const [historySellerFilter, setHistorySellerFilter] = useState([]);
   const [historyAmountFilter, setHistoryAmountFilter] = useState(initialBillAmount || initialAmount || '7');
   const [historyPurchaseCategoryFilter, setHistoryPurchaseCategoryFilter] = useState(
     String(initialPurchaseCategory || '').trim().toUpperCase() || (initialSessionMode === 'NIGHT' ? 'E' : 'M')
@@ -1347,6 +1440,10 @@ const AdminDashboard = ({
   const [blockingWarning, setBlockingWarning] = useState(null);
   const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
+  const [resultUploadPasswordPromptOpen, setResultUploadPasswordPromptOpen] = useState(false);
+  const [resultUploadPasswordInput, setResultUploadPasswordInput] = useState('');
+  const [resultUploadPasswordValue, setResultUploadPasswordValue] = useState('');
+  const [resultUploadPasswordLoading, setResultUploadPasswordLoading] = useState(false);
   const [deletingUserId, setDeletingUserId] = useState(null);
   const [traceNumber, setTraceNumber] = useState('');
   const [traceAmount, setTraceAmount] = useState(initialAmount || '7');
@@ -1408,6 +1505,10 @@ const AdminDashboard = ({
   const [purchaseDraftRows, setPurchaseDraftRows] = useState([]);
   const [purchaseActiveRowIndex, setPurchaseActiveRowIndex] = useState(0);
   const [purchaseEditorVisible, setPurchaseEditorVisible] = useState(true);
+  const [localPurchaseMemoDrafts, setLocalPurchaseMemoDrafts] = useState([]);
+  const [sendPurchaseDrafts, setSendPurchaseDrafts] = useState([]);
+  const [sendPurchaseLoading, setSendPurchaseLoading] = useState(false);
+  const [sendPurchaseSendingKey, setSendPurchaseSendingKey] = useState('');
   const [purchaseMemoNumber, setPurchaseMemoNumber] = useState(null);
   const [purchaseRemoveMemoNumber, setPurchaseRemoveMemoNumber] = useState(null);
   const [purchaseMemoPopupOpen, setPurchaseMemoPopupOpen] = useState(false);
@@ -1427,6 +1528,9 @@ const AdminDashboard = ({
   const adminSendFromInputRef = useRef(null);
   const adminSendToInputRef = useRef(null);
   const adminSendDrawDateInputRef = useRef(null);
+  const pendingAdminUnsoldMemoAppendIndexRef = useRef(null);
+  const adminPurchaseLoadSeqRef = useRef(0);
+  const adminUnsoldRemoveMemoLoadSeqRef = useRef(0);
   const dashboardRef = useRef(null);
   const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [exitConfirmSelected, setExitConfirmSelected] = useState('no');
@@ -1438,6 +1542,31 @@ const AdminDashboard = ({
   const saveConfirmActionRef = useRef(null);
   const saveConfirmFocusRef = useRef(null);
   const blockingWarningActionRef = useRef(null);
+  const buildAdminPurchaseDraftKey = (memoNumber = null) => buildDraftStorageKey([
+    'admin',
+    user?.id,
+    'purchase-send',
+    purchaseSellerId,
+    purchaseBookingDate,
+    purchaseSessionMode,
+    purchaseCategory,
+    purchaseAmount,
+    memoNumber ?? 'working'
+  ]);
+  const adminLocalDraftKey = activeTab === 'purchase-send'
+    ? buildAdminPurchaseDraftKey(purchaseMemoNumber)
+    : buildDraftStorageKey([
+      'admin',
+      user?.id,
+      activeTab,
+      purchaseSellerId,
+      purchaseBookingDate,
+      purchaseSessionMode,
+      purchaseCategory,
+      purchaseAmount
+    ]);
+  const adminPurchaseDraftRestoreKeyRef = useRef('');
+  const adminPurchaseSkipSaveKeyRef = useRef('');
   const clearBlockingWarning = () => {
     const action = blockingWarningActionRef.current;
     blockingWarningActionRef.current = null;
@@ -1536,7 +1665,7 @@ const AdminDashboard = ({
 
   useEffect(() => {
     loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
-  }, [uploadResultDate, uploadSessionMode, uploadPurchaseCategory]);
+  }, [uploadResultDate, uploadSessionMode, uploadPurchaseCategory, user?.id]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1555,7 +1684,7 @@ const AdminDashboard = ({
     setEditingUploadedValue('');
     setError('');
     setSuccess('');
-  }, [uploadResultDate, uploadSessionMode, uploadPurchaseCategory]);
+  }, [uploadResultDate, uploadSessionMode, uploadPurchaseCategory, user?.id]);
 
   useEffect(() => {
     const availableSemOptions = getAvailableSemOptions(adminStockAmount);
@@ -1578,6 +1707,42 @@ const AdminDashboard = ({
   useEffect(() => {
     setPurchaseActiveRowIndex((currentIndex) => Math.min(currentIndex, purchaseDraftRows.length));
   }, [purchaseDraftRows.length]);
+
+  useEffect(() => {
+    const pendingIndex = pendingAdminUnsoldMemoAppendIndexRef.current;
+    if (activeTab !== 'unsold' || pendingIndex === null) {
+      return;
+    }
+
+    if (!purchaseDraftRows.some((row) => row.isExistingUnsoldMemoRow)) {
+      pendingAdminUnsoldMemoAppendIndexRef.current = null;
+      return;
+    }
+
+    if (
+      purchaseActiveRowIndex !== pendingIndex
+      || purchaseCodeInput
+      || purchaseFromInput
+      || purchaseToInput
+    ) {
+      setPurchaseActiveRowIndex(pendingIndex);
+      resetPurchaseSendEntryInputs();
+      return;
+    }
+
+    pendingAdminUnsoldMemoAppendIndexRef.current = null;
+    window.requestAnimationFrame(() => {
+      adminSendCodeInputRef.current?.focus();
+      adminSendCodeInputRef.current?.select?.();
+    });
+  }, [
+    activeTab,
+    purchaseActiveRowIndex,
+    purchaseCodeInput,
+    purchaseDraftRows,
+    purchaseFromInput,
+    purchaseToInput
+  ]);
 
   useEffect(() => {
     if (activeTab !== 'purchase-send') {
@@ -1619,6 +1784,13 @@ const AdminDashboard = ({
   }, [activeTab]);
 
   useEffect(() => {
+    if (initialActiveTab === 'upload-price') {
+      setResultUploadPasswordInput('');
+      setResultUploadPasswordPromptOpen(true);
+      setActiveTab('');
+      return;
+    }
+
     setActiveTab(initialActiveTab);
   }, [initialActiveTab]);
 
@@ -1645,6 +1817,65 @@ const AdminDashboard = ({
       setTraceAmount(initialAmount);
     }
   }, [initialAmount]);
+
+  useEffect(() => {
+    if (!['purchase-send', 'unsold', 'unsold-remove'].includes(activeTab)) {
+      return;
+    }
+
+    if (adminPurchaseDraftRestoreKeyRef.current === adminLocalDraftKey) {
+      return;
+    }
+
+    adminPurchaseDraftRestoreKeyRef.current = adminLocalDraftKey;
+    adminPurchaseSkipSaveKeyRef.current = adminLocalDraftKey;
+    if (activeTab === 'unsold' || activeTab === 'unsold-remove') {
+      clearDraftRows(adminLocalDraftKey);
+      setPurchaseDraftRows([]);
+      setPurchaseMemoNumber(null);
+      setPurchaseActiveRowIndex(0);
+      setPurchaseEditorVisible(true);
+      return;
+    }
+
+    let cancelled = false;
+    loadDraftRows(adminLocalDraftKey).then((savedRows) => {
+      if (cancelled) {
+        return;
+      }
+      setPurchaseDraftRows(savedRows);
+      setPurchaseMemoNumber(savedRows[0]?.memoNumber ? Number(savedRows[0].memoNumber) : null);
+      setPurchaseActiveRowIndex(savedRows.length > 0 ? savedRows.length : 0);
+      setPurchaseEditorVisible(true);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, adminLocalDraftKey]);
+
+  useEffect(() => {
+    if (activeTab === 'purchase-send') {
+      loadLocalPurchaseMemoDrafts();
+    }
+  }, [activeTab, purchaseSellerId, purchaseBookingDate, purchaseSessionMode, purchaseCategory, purchaseAmount, user?.id]);
+
+  useEffect(() => {
+    if (!['purchase-send', 'unsold', 'unsold-remove'].includes(activeTab)) {
+      return;
+    }
+
+    if (blockingWarning) {
+      return;
+    }
+
+    if (adminPurchaseSkipSaveKeyRef.current === adminLocalDraftKey) {
+      adminPurchaseSkipSaveKeyRef.current = '';
+      return;
+    }
+
+    saveDraftRows(adminLocalDraftKey, purchaseDraftRows);
+  }, [activeTab, adminLocalDraftKey, purchaseDraftRows, blockingWarning]);
 
   useEffect(() => {
     setExitReadyFromFirstControl(false);
@@ -1740,6 +1971,12 @@ const AdminDashboard = ({
 
       event.preventDefault();
       event.stopPropagation();
+      if (
+        activeTab === 'booking-book'
+        && dashboardRef.current?.querySelector('.retro-purchase-window.booking-full-page.warning-active')
+      ) {
+        return;
+      }
       if (blockingWarning) {
         clearBlockingWarning();
         return;
@@ -1760,13 +1997,19 @@ const AdminDashboard = ({
     }
   };
 
-  const loadAcceptEntries = async () => {
+  const loadAcceptEntries = async (dateOverride = '') => {
     try {
-      const response = await lotteryService.getReceivedEntries({ amount: initialAmount });
+      const response = await lotteryService.getReceivedEntries({ bookingDate: dateOverride || acceptEntriesDate, amount: initialAmount });
       setAcceptEntries(response.data.map(mapApiEntry));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading accept entries');
     }
+  };
+
+  const handleAcceptEntriesDateChange = (event) => {
+    const nextDate = event.target.value;
+    setAcceptEntriesDate(nextDate);
+    loadAcceptEntries(nextDate);
   };
 
   const handleAcceptEntryAction = async (entry, action) => {
@@ -1777,7 +2020,11 @@ const AdminDashboard = ({
     setError('');
 
     try {
-      await Promise.all(groupedEntries.map((currentEntry) => (
+      const reviewEntries = groupedEntries.some((currentEntry) => String(currentEntry.entrySource || currentEntry.entry_source || '').trim() === 'purchase')
+        ? [groupedEntries.find((currentEntry) => String(currentEntry.status || '').trim().toLowerCase() !== 'accepted') || groupedEntries[0]]
+        : groupedEntries;
+
+      await Promise.all(reviewEntries.map((currentEntry) => (
         lotteryService.updateReceivedEntryStatus(currentEntry.id, action, { amount: initialAmount })
       )));
       setSuccess(`${groupedEntries.length > 1 ? `${groupedEntries.length} entries` : 'Entry'} ${action === 'accept' ? 'accepted' : 'rejected'} successfully`);
@@ -1836,6 +2083,7 @@ const AdminDashboard = ({
         purchaseCategory: selectedPurchaseCategory
       });
       setUploadedPrizeResults(response.data);
+      setReplaceUploadedPrizeResultsOnNextUpload(false);
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading uploaded results');
     }
@@ -1907,12 +2155,14 @@ const AdminDashboard = ({
       return { error: codeCategoryError };
     }
 
+    const previousRow = adminStockDraftRows[Math.min(adminStockActiveRowIndex, adminStockDraftRows.length) - 1] || null;
     const { parsed, fromNumber, toNumber, quantity, error: rangeError } = getRetroRangeMetrics(
       adminStockCodeInput,
       adminStockSessionMode,
       adminStockFromInput,
       adminStockToInput,
-      adminStockPurchaseCategory
+      adminStockPurchaseCategory,
+      previousRow?.from
     );
 
     if (parsed.error) {
@@ -2264,7 +2514,10 @@ const AdminDashboard = ({
 
     return entries.map((entry) => {
       const mappedEntry = mapApiEntry(entry);
-      const resolvedSellerName = selectedSellerName || mappedEntry.displaySeller || mappedEntry.username;
+      const isSelectedSellerEntry = !mappedEntry.userId || String(mappedEntry.userId) === String(selectedSellerId);
+      const resolvedSellerName = isSelectedSellerEntry
+        ? (selectedSellerName || mappedEntry.displaySeller || mappedEntry.username)
+        : (mappedEntry.displaySeller || mappedEntry.username || selectedSellerName);
 
       return {
         ...mappedEntry,
@@ -2287,7 +2540,8 @@ const AdminDashboard = ({
       status: 'unsold',
       purchaseCategory: filter.purchaseCategory || purchaseCategory,
       amount: filter.amount || purchaseAmount,
-      boxValue: filter.boxValue || undefined
+      boxValue: filter.boxValue || undefined,
+      latestSentOnly: true
     });
 
     return normalizeAdminSelectedSellerEntries(response.data || [], selectedSellerId)
@@ -2299,6 +2553,8 @@ const AdminDashboard = ({
     selectedSessionMode = purchaseSessionMode,
     selectedSellerId = purchaseSellerId
   ) => {
+    const requestSeq = adminPurchaseLoadSeqRef.current + 1;
+    adminPurchaseLoadSeqRef.current = requestSeq;
     try {
       if (!selectedSellerId) {
         setPurchaseEntries([]);
@@ -2325,11 +2581,15 @@ const AdminDashboard = ({
         })
       ]);
 
-      setPurchaseEntries(normalizeAdminSelectedSellerEntries(assignedResponse.data || [], selectedSellerId));
-      setUnsoldPurchaseEntries(normalizeAdminSelectedSellerEntries(unsoldResponse.data || [], selectedSellerId)
-        .filter((entry) => activeTab === 'unsold-remove' ? isRemovableUnsoldEntry(entry) : true));
+      if (requestSeq === adminPurchaseLoadSeqRef.current) {
+        setPurchaseEntries(normalizeAdminSelectedSellerEntries(assignedResponse.data || [], selectedSellerId));
+        setUnsoldPurchaseEntries(normalizeAdminSelectedSellerEntries(unsoldResponse.data || [], selectedSellerId)
+          .filter((entry) => activeTab === 'unsold-remove' ? isRemovableUnsoldEntry(entry) : true));
+      }
     } catch (err) {
-      setError(err.response?.data?.message || 'Error loading purchase record');
+      if (requestSeq === adminPurchaseLoadSeqRef.current) {
+        setError(err.response?.data?.message || 'Error loading purchase record');
+      }
     }
   };
 
@@ -2338,6 +2598,8 @@ const AdminDashboard = ({
     selectedSessionMode = purchaseSessionMode,
     selectedSellerId = purchaseSellerId
   ) => {
+    const requestSeq = adminUnsoldRemoveMemoLoadSeqRef.current + 1;
+    adminUnsoldRemoveMemoLoadSeqRef.current = requestSeq;
     if (!selectedSellerId) {
       setAdminUnsoldRemoveMemoEntries([]);
       return [];
@@ -2352,11 +2614,15 @@ const AdminDashboard = ({
         amount: purchaseAmount
       });
       const mappedEntries = (response.data || []).map(mapHistoryRecord);
-      setAdminUnsoldRemoveMemoEntries(mappedEntries);
+      if (requestSeq === adminUnsoldRemoveMemoLoadSeqRef.current) {
+        setAdminUnsoldRemoveMemoEntries(mappedEntries);
+      }
       return mappedEntries;
     } catch (err) {
-      setError(err.response?.data?.message || 'Error loading unsold remove memo entries');
-      setAdminUnsoldRemoveMemoEntries([]);
+      if (requestSeq === adminUnsoldRemoveMemoLoadSeqRef.current) {
+        setError(err.response?.data?.message || 'Error loading unsold remove memo entries');
+        setAdminUnsoldRemoveMemoEntries([]);
+      }
       return [];
     }
   };
@@ -2439,19 +2705,14 @@ const AdminDashboard = ({
     try {
       const lookupEntries = isUnsoldRemoveLookup
         ? await getAdminUnsoldRemoveStockEntries(filter)
-        : ((await lotteryService.getPurchases({
+        : ((await lotteryService.getAdminPurchaseSentHistory({
           bookingDate: purchaseBookingDate,
           sessionMode: filter.sessionMode,
           sellerId: purchaseSellerId,
-          status: 'accepted',
           purchaseCategory: filter.purchaseCategory,
           amount: purchaseAmount,
           boxValue: filter.boxValue || undefined
-        })).data || []).filter((entry) => (
-          entry.memoNumber !== null
-          && entry.memoNumber !== undefined
-          && String(entry.memoNumber).trim() !== ''
-        ));
+        })).data || []).map(mapHistoryRecord);
       const details = buildAdminStockLookupDetails(lookupEntries, filter.label);
       const sellerLabel = getSelectedAdminUnsoldSellerName();
 
@@ -2482,30 +2743,87 @@ const AdminDashboard = ({
     setError('');
 
     try {
+      const selectedSessionMode = getBillApiShift(seePurchaseShift);
+      const selectedPurchaseCategory = getBillPurchaseCategory(seePurchaseShift);
+      const selectedAmount = initialAmount || adminStockAmount;
+      const loadAdminSentHistory = async () => {
+        try {
+          return await lotteryService.getAdminPurchaseSentHistory({
+            bookingDate: seePurchaseDate,
+            sessionMode: selectedSessionMode,
+            purchaseCategory: selectedPurchaseCategory,
+            amount: initialAmount || purchaseAmount
+          }, { withSessionMode: false });
+        } catch (sentHistoryError) {
+          const [fallbackResponse, currentPurchaseResponse] = await Promise.all([
+            lotteryService.getTransferHistory({
+              date: seePurchaseDate,
+              shift: selectedSessionMode,
+              purchaseCategory: selectedPurchaseCategory,
+              amount: initialAmount || purchaseAmount
+            }, { withSessionMode: false }),
+            lotteryService.getPurchases({
+              bookingDate: seePurchaseDate,
+              sessionMode: selectedSessionMode,
+              purchaseCategory: selectedPurchaseCategory,
+              amount: initialAmount || purchaseAmount
+            }, { withSessionMode: false })
+          ]);
+          const currentPurchaseById = new Map((currentPurchaseResponse.data || []).map((entry) => [
+            String(entry.id || entry.entryId || entry.entry_id || ''),
+            entry
+          ]));
+
+          return {
+            data: (fallbackResponse.data || [])
+              .filter((entry) => (
+                String(entry.actionType || entry.action_type || '') === 'purchase_sent'
+                && String(entry.actorUserId || entry.actor_user_id || '') === String(user?.id || '')
+                && currentPurchaseById.has(String(entry.entryId || entry.entry_id || ''))
+              ))
+              .map((entry) => {
+                const currentEntry = currentPurchaseById.get(String(entry.entryId || entry.entry_id || '')) || {};
+                return {
+                  ...entry,
+                  memoNumber: entry.memoNumber ?? entry.memo_number ?? currentEntry.purchaseMemoNumber ?? currentEntry.purchase_memo_number ?? currentEntry.memoNumber ?? currentEntry.memo_number,
+                  memo_number: entry.memo_number ?? entry.memoNumber ?? currentEntry.purchase_memo_number ?? currentEntry.purchaseMemoNumber ?? currentEntry.memo_number ?? currentEntry.memoNumber
+                };
+              })
+          };
+        }
+      };
+
       const [stockResponse, sentResponse] = await Promise.all([
         lotteryService.getAdminPurchases({
           bookingDate: seePurchaseDate,
-          sessionMode: getBillApiShift(seePurchaseShift),
-          purchaseCategory: getBillPurchaseCategory(seePurchaseShift),
-          amount: initialAmount || adminStockAmount
+          sessionMode: selectedSessionMode,
+          purchaseCategory: selectedPurchaseCategory,
+          amount: selectedAmount
         }, { withSessionMode: false }),
-        lotteryService.getPurchases({
-          bookingDate: seePurchaseDate,
-          sessionMode: getBillApiShift(seePurchaseShift),
-          purchaseCategory: getBillPurchaseCategory(seePurchaseShift),
-          amount: initialAmount || purchaseAmount
-        }, { withSessionMode: false })
+        loadAdminSentHistory()
       ]);
       const normalizeAdminSeePurchaseEntry = (entry, sourceType) => {
+        const entryUserId = entry.userId || entry.user_id;
+        const sellerFromTree = flattenSellerNodes(treeData)
+          .find((seller) => String(seller.id) === String(entryUserId || ''))?.username || '';
+        const entrySellerName = sellerFromTree
+          || entry.displaySeller
+          || entry.username
+          || entry.sellerUsername
+          || entry.seller_username
+          || entry.toUsername
+          || entry.to_username
+          || entry.forwardedByUsername
+          || '';
         const resolvedSellerName = getAdminRootSellerName(
           treeData,
-          entry.displaySeller || entry.username || entry.forwardedByUsername || ''
+          entrySellerName
         );
 
         return normalizeSeePurchaseEntry({
           ...entry,
-          username: resolvedSellerName || entry.username,
-          displaySeller: resolvedSellerName || entry.displaySeller || entry.username
+          username: resolvedSellerName || entrySellerName || entry.username,
+          displaySeller: resolvedSellerName || entrySellerName || entry.displaySeller || entry.username
         }, sourceType);
       };
 
@@ -2602,15 +2920,18 @@ const AdminDashboard = ({
     ));
     setPurchaseMemoPopupOpen(false);
     if (option.isNew) {
+      setPurchaseMemoNumber(null);
       setPurchaseDraftRows([]);
       setPurchaseActiveRowIndex(0);
       setPurchaseEditorVisible(true);
       resetPurchaseSendEntryInputs();
     } else {
-      const selectedEntries = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
-        Number(entry.memoNumber) === Number(option.memoNumber)
-      ));
-      const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, purchaseAmount);
+      const draftRows = option.draftRows || buildPurchaseSendDraftRowsFromEntries(
+        [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
+          getPurchaseEntryMemoNumber(entry) === Number(option.memoNumber)
+        )),
+        purchaseAmount
+      );
       setPurchaseDraftRows(draftRows);
       resetPurchaseSendEntryInputs();
       setPurchaseEditorVisible(true);
@@ -2683,22 +3004,28 @@ const AdminDashboard = ({
       if (activeTab === 'unsold-remove') {
         hydrateAdminUnsoldRemoveDraftRowsForMemo(option.memoNumber, adminUnsoldRemoveMemoEntries);
       } else {
-        const selectedEntries = unsoldPurchaseEntries.filter((entry) => (
-          Number(entry.memoNumber) === Number(option.memoNumber)
+        const selectedEntries = adminOwnedUnsoldPurchaseEntries.filter((entry) => (
+          getAdminUnsoldEntryMemoNumber(entry) === Number(option.memoNumber)
         ));
-        const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, purchaseAmount, { existingUnsoldMemo: true });
+        const draftRows = buildPurchaseSendDraftRowsFromEntries(selectedEntries, purchaseAmount, {
+          existingUnsoldMemo: true,
+          ignoreMemoRowOrder: true
+        });
+        const nextRowIndex = draftRows.length;
+        pendingAdminUnsoldMemoAppendIndexRef.current = nextRowIndex;
         setPurchaseDraftRows(draftRows);
+        resetPurchaseSendEntryInputs();
+        setPurchaseEditorVisible(true);
+        setPurchaseActiveRowIndex(nextRowIndex);
 
-        if (draftRows.length > 0) {
-          const firstRow = draftRows[0];
-          setPurchaseCodeInput(firstRow.code || '');
-          setPurchaseFromInput(firstRow.from || '');
-          setPurchaseToInput(firstRow.to || '');
-          setPurchaseActiveRowIndex(0);
-        } else {
-          setPurchaseActiveRowIndex(0);
+        window.setTimeout(() => {
+          setPurchaseActiveRowIndex(nextRowIndex);
           resetPurchaseSendEntryInputs();
-        }
+          window.requestAnimationFrame(() => {
+            adminSendCodeInputRef.current?.focus();
+            adminSendCodeInputRef.current?.select?.();
+          });
+        }, 0);
       }
     }
     window.requestAnimationFrame(() => adminSendCodeInputRef.current?.focus());
@@ -2725,7 +3052,8 @@ const AdminDashboard = ({
         boxValue: purchaseSem,
         amount: purchaseAmount,
         bookingDate: purchaseBookingDate,
-        sessionMode: purchaseSessionMode
+        sessionMode: purchaseSessionMode,
+        purchaseCategory
       });
 
       setSuccess(response.data.message || 'Purchase sent successfully');
@@ -2745,12 +3073,14 @@ const AdminDashboard = ({
   };
 
   const buildPurchaseSendDraftRow = () => {
+    const previousRow = purchaseDraftRows[Math.min(purchaseActiveRowIndex, purchaseDraftRows.length) - 1] || null;
     const { parsed, fromNumber, toNumber, quantity, error: rangeError } = getRetroRangeMetrics(
       purchaseCodeInput,
       purchaseSessionMode,
       purchaseFromInput,
       purchaseToInput,
-      purchaseCategory
+      purchaseCategory,
+      previousRow?.from
     );
     const selectedSeller = directAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId));
 
@@ -2837,6 +3167,10 @@ const AdminDashboard = ({
   const getPurchaseSendRowsForSave = async () => {
     const currentRows = [...purchaseDraftRows];
 
+    if (isEditingExistingPurchaseMemo && currentRows.length === 0) {
+      return { rows: currentRows };
+    }
+
     if (!hasPendingPurchaseSendEditorValues()) {
       return { rows: currentRows };
     }
@@ -2860,29 +3194,6 @@ const AdminDashboard = ({
       return { error: `Already added in draft: ${conflictingPurchaseDraft.from} to ${conflictingPurchaseDraft.to}` };
     }
 
-    const conflictingPurchaseEntries = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
-      !(
-        isEditingExistingPurchaseMemo
-        && Number(entry.memoNumber || 0) === Number(purchaseMemoNumber || 0)
-        && String(entry.userId || '') === String(purchaseSellerId || '')
-      )
-      && String(entry.sem || '') === String(result.row.semValue || '')
-      && String(entry.sessionMode || '') === String(result.row.resolvedSessionMode || '')
-      && String(entry.purchaseCategory || '') === String(result.row.resolvedPurchaseCategory || '')
-      && String(formatDateOnly(entry.bookingDate || '')) === String(result.row.drawDate || '')
-      && numberFallsWithinRange(entry.number, result.row.from, result.row.to)
-    ));
-
-    if (conflictingPurchaseEntries.length > 0) {
-      return {
-        error: 'Number already added.',
-        details: conflictingPurchaseEntries.slice(0, 5).map((entry) => (
-          `Seller ${entry.displaySeller || entry.username || 'Unknown'} | Memo No. ${entry.memoNumber || 'N/A'}`
-        )),
-        title: 'Duplicate Number'
-      };
-    }
-
     if (activeTab !== 'purchase-send') {
       const stockValidation = await validateAdminDraftRowAgainstActiveTab(result.row);
       if (stockValidation.error) {
@@ -2903,6 +3214,95 @@ const AdminDashboard = ({
     }
 
     return { rows: [...currentRows, result.row], consumedEditor: true };
+  };
+
+  const getActivePurchaseSendMemoNumber = () => Number(
+    purchaseMemoNumber
+    || purchaseDraftRows[0]?.memoNumber
+    || (!selectedPurchaseMemoOption?.isNew ? selectedPurchaseMemoOption?.memoNumber : 0)
+    || nextPurchaseMemoNumber
+    || 0
+  );
+
+  const currentPurchaseMemoEntryMatches = (entry = {}) => {
+    const activeMemoNumber = getActivePurchaseSendMemoNumber();
+
+    if (!activeMemoNumber) {
+      return false;
+    }
+
+    const selectedSellerName = String(selectedPurchaseSeller?.username || '').trim().toLowerCase();
+    const entrySellerName = String(entry.displaySeller || entry.username || '').trim().toLowerCase();
+    const sellerMatches = String(entry.userId || entry.user_id || '') === String(purchaseSellerId || '')
+      || (selectedSellerName && entrySellerName === selectedSellerName);
+
+    return getPurchaseEntryMemoNumber(entry) === activeMemoNumber && sellerMatches;
+  };
+
+  const findLocalPurchaseDraftConflicts = async (row = {}) => {
+    const drafts = await listDraftRows({
+      role: 'admin',
+      userId: user?.id,
+      tab: 'purchase-send'
+    });
+    const activeMemoNumber = getActivePurchaseSendMemoNumber();
+
+    return drafts.flatMap((draft) => {
+      const draftRows = Array.isArray(draft.rows) ? draft.rows : [];
+      const draftMemoNumber = Number(draft.memoNumber || draftRows[0]?.memoNumber || 0);
+      const sameSeller = Number(draft.targetSellerId || 0) === Number(purchaseSellerId || 0);
+
+      if (
+        (
+          sameSeller
+          && (
+            draftMemoNumber === activeMemoNumber
+            || draftMemoNumber === 0
+          )
+        )
+        || String(draft.bookingDate || '') !== String(row.drawDate || purchaseBookingDate || '')
+        || String(draft.sessionMode || '') !== String(row.resolvedSessionMode || purchaseSessionMode || '')
+        || String(draft.purchaseCategory || '') !== String(row.resolvedPurchaseCategory || purchaseCategory || '')
+        || String(draft.amount || '') !== String(row.bookingAmount || purchaseAmount || '')
+      ) {
+        return [];
+      }
+
+      const seller = directAdminSellers.find((entry) => String(entry.id) === String(draft.targetSellerId));
+
+      return draftRows
+        .filter((draftRow) => (
+          String(draftRow.semValue || '') === String(row.semValue || '')
+          && rangesOverlap(
+            draftRow.numberStart || draftRow.from,
+            draftRow.numberEnd || draftRow.to,
+            row.from,
+            row.to
+          )
+        ))
+        .map((draftRow) => ({
+          displaySeller: seller?.username || draftRow.partyName || `Seller ${draft.targetSellerId}`,
+          memoNumber: draft.memoNumber || draftRow.memoNumber,
+          from: draftRow.numberStart || draftRow.from,
+          to: draftRow.numberEnd || draftRow.to
+        }));
+    });
+  };
+
+  const validatePurchaseSendRowAgainstSavedDrafts = async (row = {}) => {
+    const draftConflicts = await findLocalPurchaseDraftConflicts(row);
+
+    if (draftConflicts.length > 0) {
+      return {
+        error: formatDuplicateSellerWarning(draftConflicts),
+        details: draftConflicts.slice(0, 5).map((entry) => (
+          `Seller ${entry.displaySeller || 'Unknown'} | Memo No. ${entry.memoNumber || 'N/A'} | ${entry.from || ''}-${entry.to || ''}`
+        )),
+        title: 'Duplicate Number'
+      };
+    }
+
+    return { ok: true };
   };
 
   const commitPurchaseSendDraftRow = async () => {
@@ -2936,13 +3336,22 @@ const AdminDashboard = ({
       return;
     }
 
+    const localDraftValidation = await validatePurchaseSendRowAgainstSavedDrafts(result.row);
+    if (localDraftValidation.error) {
+      openBlockingWarning(
+        localDraftValidation.error,
+        localDraftValidation.details || [],
+        localDraftValidation.title || 'Duplicate Number'
+      );
+      return;
+    }
+
     const conflictingPurchaseEntries = [...purchaseEntries, ...unsoldPurchaseEntries].filter((entry) => (
       !(
-        isEditingExistingPurchaseMemo
-        && Number(entry.memoNumber || 0) === Number(purchaseMemoNumber || 0)
-        && String(entry.userId || '') === String(purchaseSellerId || '')
+        currentPurchaseMemoEntryMatches(entry)
       )
       && String(entry.sem || '') === String(result.row.semValue || '')
+      && String(entry.amount || '') === String(result.row.bookingAmount || purchaseAmount || '')
       && String(entry.sessionMode || '') === String(result.row.resolvedSessionMode || '')
       && String(entry.purchaseCategory || '') === String(result.row.resolvedPurchaseCategory || '')
       && String(formatDateOnly(entry.bookingDate || '')) === String(result.row.drawDate || '')
@@ -2968,9 +3377,7 @@ const AdminDashboard = ({
       });
       const serverConflicts = (serverEntriesResponse.data || []).filter((entry) => (
         !(
-          isEditingExistingPurchaseMemo
-          && Number(entry.memoNumber || entry.memo_number || 0) === Number(purchaseMemoNumber || 0)
-          && String(entry.userId || entry.user_id || '') === String(purchaseSellerId || '')
+          currentPurchaseMemoEntryMatches(mapApiEntry(entry))
         )
         && numberFallsWithinRange(entry.number, result.row.from, result.row.to)
       ));
@@ -3066,6 +3473,19 @@ const AdminDashboard = ({
       return;
     }
 
+    if (purchaseActiveRowIndex >= purchaseDraftRows.length && hasPendingPurchaseSendEditorValues()) {
+      resetPurchaseSendEntryInputs();
+      setPurchaseEditorVisible(true);
+      setPurchaseActiveRowIndex(purchaseDraftRows.length);
+      setError('');
+      setSuccess('');
+      window.requestAnimationFrame(() => {
+        adminSendCodeInputRef.current?.focus();
+        adminSendCodeInputRef.current?.select?.();
+      });
+      return;
+    }
+
     if (purchaseDraftRows.length === 0) {
       resetPurchaseSendEntryInputs();
       setPurchaseEditorVisible(false);
@@ -3135,81 +3555,29 @@ const AdminDashboard = ({
       }
 
       const effectiveMemoNumber = Number(purchaseMemoNumber || nextPurchaseMemoNumber);
-      const refreshBookingDate = rowsToSave[0]?.drawDate || purchaseBookingDate;
-      const currentMemoEntryIds = isEditingExistingPurchaseMemo
-        ? [...purchaseEntries, ...unsoldPurchaseEntries]
-          .filter((entry) => (
-            Number(entry.memoNumber || 0) === effectiveMemoNumber
-            && String(entry.userId || '') === String(purchaseSellerId || '')
-          ))
-          .map((entry) => entry.id)
-          .filter(Boolean)
-        : [];
+      const rowsWithMemo = rowsToSave.map((row, index) => ({
+        ...row,
+        memoNumber: effectiveMemoNumber,
+        bookingAmount: row.bookingAmount || purchaseAmount,
+        resolvedSessionMode: row.resolvedSessionMode || purchaseSessionMode,
+        resolvedPurchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
+        memoRowOrder: row.memoRowOrder ?? index
+      }));
 
-      if (isEditingExistingPurchaseMemo) {
-        const response = await lotteryService.replacePurchaseSendMemo({
-          sellerId: purchaseSellerId,
-          memoNumber: effectiveMemoNumber,
-          entryIds: currentMemoEntryIds,
-          bookingDate: refreshBookingDate,
-          sessionMode: purchaseSessionMode,
-          amount: purchaseAmount,
-          purchaseCategory,
-          rows: rowsToSave.map((row) => ({
-            rangeStart: row.from,
-            rangeEnd: row.to,
-            boxValue: row.semValue,
-            amount: purchaseAmount,
-            bookingDate: row.drawDate || purchaseBookingDate,
-            sessionMode: row.resolvedSessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
-            entryIds: row.entryIds || []
-          }))
-        });
-        setSuccess(response.data.message || `Memo ${effectiveMemoNumber} updated successfully`);
-      } else {
-        for (const row of rowsToSave) {
-          await lotteryService.sendAdminPurchase({
-            sellerId: purchaseSellerId,
-            series: '',
-            rangeStart: row.from,
-            rangeEnd: row.to,
-            boxValue: row.semValue,
-            amount: purchaseAmount,
-            memoNumber: effectiveMemoNumber,
-            bookingDate: row.drawDate || purchaseBookingDate,
-            sessionMode: row.resolvedSessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory
-          });
-        }
-        setSuccess('Purchase saved successfully');
+      const savedMemoDraftKey = buildAdminPurchaseDraftKey(effectiveMemoNumber);
+      await saveDraftRows(savedMemoDraftKey, rowsWithMemo);
+      if (adminLocalDraftKey !== savedMemoDraftKey) {
+        await clearDraftRows(adminLocalDraftKey);
       }
-
-      if (!isEditingExistingPurchaseMemo) {
-        setPurchaseMemoNumber(null);
-        setPurchaseMemoSelectionIndex(0);
-        setPurchaseDraftRows([]);
-        setPurchaseActiveRowIndex(0);
-        setPurchaseEditorVisible(true);
-        resetPurchaseSendEntryInputs();
-      } else if (rowsToSave.length > 0) {
-        setPurchaseMemoNumber(null);
-        setPurchaseMemoSelectionIndex(0);
-        setPurchaseDraftRows([]);
-        setPurchaseActiveRowIndex(0);
-        setPurchaseEditorVisible(true);
-        resetPurchaseSendEntryInputs();
-      } else if (rowsToSave.length === 0) {
-        setPurchaseMemoNumber(null);
-        setPurchaseMemoSelectionIndex(0);
-        setPurchaseDraftRows([]);
-        setPurchaseActiveRowIndex(0);
-        setPurchaseEditorVisible(true);
-        resetPurchaseSendEntryInputs();
-      }
+      setPurchaseDraftRows([]);
+      setPurchaseActiveRowIndex(0);
+      setPurchaseEditorVisible(true);
+      resetPurchaseSendEntryInputs();
+      setPurchaseMemoNumber(null);
+      setPurchaseMemoSelectionIndex(0);
+      setSuccess('Purchase local me save ho gaya. Send Purchase se bhejo.');
       setPurchaseMemoPopupOpen(false);
-      await loadPurchaseEntries(refreshBookingDate, purchaseSessionMode, purchaseSellerId);
-      focusAdminSendSellerSelect();
+      await loadLocalPurchaseMemoDrafts();
     } catch (err) {
       const rawErrorMessage = err.response?.data?.message || err.message || '';
       const normalizedErrorMessage = String(rawErrorMessage).toLowerCase();
@@ -3264,6 +3632,32 @@ const AdminDashboard = ({
       };
     }
 
+    const sentUnsoldResponse = await lotteryService.getPurchases({
+      bookingDate: row.drawDate || purchaseBookingDate,
+      sessionMode: row.resolvedSessionMode || purchaseSessionMode,
+      sellerId: purchaseSellerId,
+      status: 'unsold',
+      purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
+      amount: row.bookingAmount || purchaseAmount,
+      boxValue: row.semValue,
+      latestSentOnly: true
+    });
+    const sentUnsoldEntries = normalizeAdminSelectedSellerEntries(sentUnsoldResponse.data || [], purchaseSellerId);
+    const duplicateSentEntries = sentUnsoldEntries.filter((entry) => (
+      String(entry.sem || '') === String(row.semValue || '')
+      && String(entry.amount || '') === String(row.bookingAmount || purchaseAmount || '')
+      && String(entry.sessionMode || '') === String(row.resolvedSessionMode || purchaseSessionMode || '')
+      && String(entry.purchaseCategory || '') === String(row.resolvedPurchaseCategory || purchaseCategory || '')
+      && getDateOnlyValue(entry.bookingDate) === getDateOnlyValue(row.drawDate || purchaseBookingDate)
+      && requestedNumbers.numbers.includes(String(entry.number || '').padStart(5, '0'))
+    ));
+
+    if (duplicateSentEntries.length > 0) {
+      return {
+        error: `Seller already send you this unsold number: ${formatMissingNumberLabel(duplicateSentEntries.map((entry) => String(entry.number || '').padStart(5, '0')))}`
+      };
+    }
+
     const currentMemoEntries = currentMemoNumber > 0
       ? matchingUnsoldEntries.filter((entry) => (
         Number(entry.memoNumber || 0) === currentMemoNumber
@@ -3297,17 +3691,13 @@ const AdminDashboard = ({
       status: 'accepted',
       purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
       amount: row.bookingAmount || purchaseAmount,
-      boxValue: row.semValue
+      boxValue: row.semValue,
+      includeLocalUnsoldAsAccepted: true
     });
 
     const availableNumbers = new Set(
       [
-        ...(response.data || [])
-          .filter((entry) => {
-            const hasMemo = entry.memoNumber !== null && entry.memoNumber !== undefined && String(entry.memoNumber).trim() !== '';
-            return hasMemo;
-          })
-          .map((entry) => String(entry.number || '').padStart(5, '0')),
+        ...(response.data || []).map((entry) => String(entry.number || '').padStart(5, '0')),
         ...currentMemoEntries.map((entry) => String(entry.number || '').padStart(5, '0')),
         ...currentMemoDraftNumbers.map((entry) => String(entry || '').padStart(5, '0'))
       ]
@@ -3444,30 +3834,9 @@ const AdminDashboard = ({
       await lotteryService.checkPurchaseUnsoldRemove(payload);
       return { ok: true };
     } catch (err) {
-      const requestedNumbers = buildConsecutiveNumbers(row.from, row.to);
-      if (requestedNumbers.error) {
-        return { error: err.response?.data?.message || requestedNumbers.error };
-      }
-
-      const lookupEntries = await getAdminUnsoldRemoveStockEntries({
-        bookingDate: payload.bookingDate,
-        sessionMode: payload.sessionMode,
-        purchaseCategory: payload.purchaseCategory,
-        sellerId: payload.sellerId,
-        amount: payload.amount,
-        boxValue: payload.boxValue
-      });
-      const removableNumbers = new Set(lookupEntries
-        .map((entry) => String(entry.number || '').padStart(5, '0')));
-      const missingNumbers = requestedNumbers.numbers.filter((currentNumber) => !removableNumbers.has(currentNumber));
-
-      if (missingNumbers.length === 0) {
-        return { ok: true };
-      }
-
       return {
         error: err.response?.data?.message
-          || `${formatAdminUnsoldErrorDate(payload.bookingDate)} date me ${getSelectedAdminUnsoldSellerName()} ke unsold remove stock me ye number nahi hai: ${formatMissingNumberLabel(missingNumbers)}`
+          || `${formatAdminUnsoldErrorDate(payload.bookingDate)} date me ${getSelectedAdminUnsoldSellerName()} ke unsold remove stock me ye number nahi hai`
       };
     }
   };
@@ -3610,18 +3979,19 @@ const AdminDashboard = ({
           sessionMode: purchaseSessionMode,
           amount: purchaseAmount,
           purchaseCategory,
-          rows: rowsToSave.map((row) => ({
+          rows: rowsToSave.map((row, index) => ({
             rangeStart: row.from,
             rangeEnd: row.to,
             boxValue: row.semValue,
             amount: row.bookingAmount || purchaseAmount,
             bookingDate: row.drawDate || purchaseBookingDate,
             sessionMode: row.resolvedSessionMode || purchaseSessionMode,
-            purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory
+            purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
+            memoRowOrder: row.memoRowOrder ?? index
           }))
         });
       } else {
-        for (const row of rowsToSave) {
+        for (const [index, row] of rowsToSave.entries()) {
           const payload = {
             sellerId: purchaseSellerId,
             bookingDate: row.drawDate || purchaseBookingDate,
@@ -3631,7 +4001,8 @@ const AdminDashboard = ({
             amount: row.bookingAmount || purchaseAmount,
             boxValue: row.semValue,
             rangeStart: row.from,
-            rangeEnd: row.to
+            rangeEnd: row.to,
+            memoRowOrder: row.memoRowOrder ?? index
           };
 
           if (mode === 'remove') {
@@ -3655,6 +4026,7 @@ const AdminDashboard = ({
       }
       setPurchaseMemoSelectionIndex(0);
       setPurchaseMemoPopupOpen(false);
+      clearDraftRows(adminLocalDraftKey);
       setPurchaseDraftRows([]);
       setPurchaseActiveRowIndex(0);
       setPurchaseEditorVisible(true);
@@ -3787,16 +4159,18 @@ const AdminDashboard = ({
   const mergeScannedPrizeEntries = (scannedPrizes) => {
     let addedCount = 0;
     const skippedNumbers = [];
+    const scannedNumberCount = Object.values(scannedPrizes || {}).reduce(
+      (count, numbers) => count + (Array.isArray(numbers) ? numbers.length : 0),
+      0
+    );
+    const shouldReplaceUploadedResults = scannedNumberCount > 0 && uploadedPrizeResults.length > 0;
 
     setPendingPrizeEntries((current) => {
       const nextEntries = PRIZE_OPTIONS.reduce((accumulator, prize) => {
-        accumulator[prize.key] = [...(current[prize.key] || [])];
+        accumulator[prize.key] = [];
         return accumulator;
       }, {});
-      const usedNumbers = new Set([
-        ...Object.values(nextEntries).flat().map((entry) => entry.winningNumber),
-        ...uploadedPrizeResults.map((entry) => entry.winningNumber)
-      ]);
+      const usedNumbers = new Set();
 
       PRIZE_OPTIONS.forEach((prize) => {
         sortPrizeNumbersAscending(scannedPrizes[prize.key] || []).forEach((number) => {
@@ -3817,12 +4191,19 @@ const AdminDashboard = ({
       return nextEntries;
     });
 
+    if (shouldReplaceUploadedResults) {
+      setReplaceUploadedPrizeResultsOnNextUpload(true);
+      setUploadedPrizeResults([]);
+      setEditingUploadedResultId(null);
+      setEditingUploadedValue('');
+    }
+
     setEditingPendingPrizeId(null);
     setEditingPendingPrizeValue('');
     setError('');
     setSuccess(
       addedCount > 0
-        ? `Scan se ${addedCount} prize numbers add ho gaye${skippedNumbers.length ? `, ${skippedNumbers.length} duplicate/invalid skip hua` : ''}`
+        ? `Scan se ${addedCount} prize numbers set ho gaye${shouldReplaceUploadedResults ? '. Upload karne par purane uploaded results replace ho jayenge' : ''}${skippedNumbers.length ? `, ${skippedNumbers.length} duplicate/invalid skip hua` : ''}`
         : 'Scan me koi naya prize number nahi mila'
     );
   };
@@ -4042,11 +4423,15 @@ const AdminDashboard = ({
     setSuccess('');
 
     try {
-      await priceService.updatePrizeResult(entry.id, sanitizedValue);
+      await priceService.updatePrizeResult(entry.id, sanitizedValue, resultUploadPasswordValue);
       setSuccess(`${sanitizedValue} updated in ${prizeConfig.title}`);
       setEditingUploadedResultId(null);
       setEditingUploadedValue('');
-      await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
+      setUploadedPrizeResults((current) => current.map((uploadedEntry) => (
+        uploadedEntry.id === entry.id
+          ? { ...uploadedEntry, winningNumber: sanitizedValue }
+          : uploadedEntry
+      )));
     } catch (err) {
       setError(err.response?.data?.message || 'Error updating uploaded result');
     } finally {
@@ -4065,13 +4450,13 @@ const AdminDashboard = ({
     setSuccess('');
 
     try {
-      await priceService.deletePrizeResult(entry.id);
+      await priceService.deletePrizeResult(entry.id, resultUploadPasswordValue);
       setSuccess(`${entry.winningNumber} deleted from uploaded result`);
+      setUploadedPrizeResults((current) => current.filter((uploadedEntry) => uploadedEntry.id !== entry.id));
       if (editingUploadedResultId === entry.id) {
         setEditingUploadedResultId(null);
         setEditingUploadedValue('');
       }
-      await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
     } catch (err) {
       setError(err.response?.data?.message || 'Error deleting uploaded result');
     } finally {
@@ -4099,12 +4484,17 @@ const AdminDashboard = ({
       const response = await priceService.deletePrizeResults({
         resultForDate: uploadResultDate,
         sessionMode: uploadSessionMode,
-        purchaseCategory: uploadPurchaseCategory
+        purchaseCategory: uploadPurchaseCategory,
+        resultUploadPassword: resultUploadPasswordValue
       });
       setSuccess(response.data?.message || 'All uploaded results deleted successfully');
+      setUploadedPrizeResults([]);
+      setPendingPrizeEntries(createPendingPrizeEntries());
+      setManualPrizeInputs(createManualPrizeInputs());
+      setEditingPendingPrizeId(null);
+      setEditingPendingPrizeValue('');
       setEditingUploadedResultId(null);
       setEditingUploadedValue('');
-      await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
     } catch (err) {
       setError(err.response?.data?.message || 'Error deleting uploaded results');
     } finally {
@@ -4116,6 +4506,12 @@ const AdminDashboard = ({
     e.preventDefault();
     setError('');
     setSuccess('');
+
+    if (!resultUploadPasswordValue) {
+      setResultUploadPasswordPromptOpen(true);
+      setError('Result upload password required');
+      return;
+    }
 
     if (!isSelectedUploadSessionAllowed) {
       setError(uploadTimingMessage || 'Selected session upload is locked right now');
@@ -4137,18 +4533,29 @@ const AdminDashboard = ({
     setLoading(true);
 
     try {
+      if (replaceUploadedPrizeResultsOnNextUpload) {
+        await priceService.deletePrizeResults({
+          resultForDate: uploadResultDate,
+          sessionMode: uploadSessionMode,
+          purchaseCategory: uploadPurchaseCategory,
+          resultUploadPassword: resultUploadPasswordValue
+        });
+      }
+
       await priceService.uploadPrice({
         entries: entriesToUpload,
         sessionMode: uploadSessionMode,
         purchaseCategory: uploadPurchaseCategory,
-        resultForDate: uploadResultDate
+        resultForDate: uploadResultDate,
+        resultUploadPassword: resultUploadPasswordValue
       });
       setSuccess('Prize results uploaded successfully');
+      await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
       setPendingPrizeEntries(createPendingPrizeEntries());
+      setReplaceUploadedPrizeResultsOnNextUpload(false);
       setManualPrizeInputs(createManualPrizeInputs());
       setEditingPendingPrizeId(null);
       setEditingPendingPrizeValue('');
-      await loadPrizeResults(uploadResultDate, uploadSessionMode, uploadPurchaseCategory);
     } catch (err) {
       const apiMessage = err.response?.data?.message || '';
       setError(
@@ -4235,6 +4642,11 @@ const AdminDashboard = ({
     if (activeTab === tabName) {
       resetAdminMemoOptionState(tabName);
       resetDateFieldsToToday();
+      if (tabName === 'upload-price') {
+        setResultUploadPasswordValue('');
+        setResultUploadPasswordInput('');
+        setResultUploadPasswordPromptOpen(false);
+      }
       setActiveTab('');
       window.history.back();
       return;
@@ -4242,6 +4654,12 @@ const AdminDashboard = ({
 
     if (activeTab && activeTab !== tabName) {
       resetAdminMemoOptionState(activeTab);
+    }
+
+    if (tabName === 'upload-price') {
+      setResultUploadPasswordInput('');
+      setResultUploadPasswordPromptOpen(true);
+      return;
     }
 
     window.history.pushState({ adminTab: tabName }, '');
@@ -4284,12 +4702,47 @@ const AdminDashboard = ({
     setActiveTab(tabName);
   };
 
+  const unlockResultUpload = async (event) => {
+    event.preventDefault();
+    setError('');
+    setSuccess('');
+
+    if (!resultUploadPasswordInput) {
+      setError('Result upload password required');
+      return;
+    }
+
+    setResultUploadPasswordLoading(true);
+    try {
+      await userService.verifyResultUploadPassword(resultUploadPasswordInput);
+      setResultUploadPasswordValue(resultUploadPasswordInput);
+      setResultUploadPasswordInput('');
+      setResultUploadPasswordPromptOpen(false);
+      window.history.pushState({ adminTab: 'upload-price' }, '');
+      setActiveTab('upload-price');
+    } catch (err) {
+      setError(err.response?.data?.message || 'Result upload password galat hai');
+    } finally {
+      setResultUploadPasswordLoading(false);
+    }
+  };
+
+  const closeResultUploadPasswordPrompt = () => {
+    setResultUploadPasswordPromptOpen(false);
+    setResultUploadPasswordInput('');
+  };
+
   const handleTabBack = () => {
     setError('');
     setSuccess('');
     if (activeTab) {
       resetAdminMemoOptionState(activeTab);
       resetDateFieldsToToday();
+      if (activeTab === 'upload-price') {
+        setResultUploadPasswordValue('');
+        setResultUploadPasswordInput('');
+        setResultUploadPasswordPromptOpen(false);
+      }
       setActiveTab('');
       window.history.back();
       return;
@@ -4312,6 +4765,12 @@ const AdminDashboard = ({
 
     if (activeTab === 'unsold' || activeTab === 'unsold-remove') {
       return adminSendSellerSelectRef.current || adminUnsoldDateInputRef.current || adminSendCodeInputRef.current;
+    }
+
+    if (activeTab === 'booking-book') {
+      return dashboardRef.current?.querySelector(
+        '.retro-purchase-window.booking-full-page input:not([type="hidden"]):not(:disabled), .retro-purchase-window.booking-full-page select:not(:disabled), .retro-purchase-window.booking-full-page [tabindex]:not([tabindex="-1"])'
+      );
     }
 
     const activeContent = dashboardRef.current?.querySelector('.accordion-content');
@@ -4515,6 +4974,13 @@ const AdminDashboard = ({
 
   const directAdminSellers = (treeData?.children || []).filter((node) => node.role === 'seller');
   const activeAmountAdminSellers = directAdminSellers.filter((seller) => sellerSupportsAmount(seller, purchaseAmount || initialAmount));
+  const selectedAdminSendSeller = activeAmountAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId));
+  const selectedAdminSellerBranchIdSet = new Set(
+    flattenSellerNodes(selectedAdminSendSeller)
+      .map((seller) => String(seller.id || ''))
+      .filter(Boolean)
+  );
+  const shouldShowAmountTreeNode = (node) => node?.role !== 'seller' || sellerSupportsAmount(node, initialAmount || purchaseAmount);
   const adminPrizeTrackerSellerOptions = [
     { id: '', username: 'All Sellers', keyword: 'ALL' },
     ...activeAmountAdminSellers
@@ -4542,18 +5008,21 @@ const AdminDashboard = ({
         sessionMode: summarySessionValue,
         purchaseCategory: summaryCategoryValue,
         amount: summaryAmountValue
-      });
+      }, { skipLocalRead: true });
 
-      setPieceSummaryRows((response.data || []).map((row) => ({
+      const summaryRows = (response.data || []).map((row) => ({
         id: row.sellerId || row.seller_id,
         sellerName: row.sellerName || row.seller_name || '',
         totalPiece: Number(row.totalPiece || row.total_piece || 0),
         unsoldPiece: Number(row.unsoldPiece || row.unsold_piece || 0),
         stockNotTransferredPiece: Number(row.stockNotTransferredPiece || row.stock_not_transferred_piece || 0)
-      })));
+      }));
+      setPieceSummaryStockNotTransferredPiece(Number(summaryRows[0]?.stockNotTransferredPiece || 0));
+      setPieceSummaryRows(summaryRows.filter((row) => Number(row.totalPiece || 0) > 0));
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading piece summary');
       setPieceSummaryRows([]);
+      setPieceSummaryStockNotTransferredPiece(0);
     } finally {
       setPieceSummaryLoading(false);
     }
@@ -4583,6 +5052,265 @@ const AdminDashboard = ({
 
   const stockTransferTargetOptions = activeAmountAdminSellers.filter((option) => option.id);
   const selectedPurchaseSeller = activeAmountAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId)) || null;
+  const loadLocalPurchaseMemoDrafts = async () => {
+    try {
+      const drafts = await listDraftRows({
+        role: 'admin',
+        userId: user?.id,
+        tab: 'purchase-send'
+      });
+      setLocalPurchaseMemoDrafts(drafts.filter((draft) => (
+        Number(draft.targetSellerId || 0) === Number(purchaseSellerId || 0)
+        && String(draft.bookingDate || '') === String(purchaseBookingDate || '')
+        && String(draft.sessionMode || '') === String(purchaseSessionMode || '')
+        && String(draft.purchaseCategory || '') === String(purchaseCategory || '')
+        && String(draft.amount || '') === String(purchaseAmount || '')
+        && Number.isInteger(Number(draft.memoNumber || 0))
+        && Number(draft.memoNumber || 0) > 0
+      )));
+    } catch (error) {
+      setError(error.message || 'Local purchase memo draft load nahi hua');
+    }
+  };
+  const getPurchaseDraftQuantity = (row = {}) => {
+    const fromNumber = normalizeNumericInput(row.numberStart || row.from);
+    const toNumber = resolveRangeEndValue(fromNumber, row.numberEnd || row.to || row.numberStart || row.from);
+    const semValue = Number(row.semValue || String(row.code || '').match(/\d+/)?.[0] || 0);
+    const start = Number(fromNumber);
+    const end = Number(toNumber);
+
+    if (fromNumber && toNumber && !Number.isNaN(start) && !Number.isNaN(end) && end >= start && semValue > 0) {
+      return ((end - start) + 1) * semValue;
+    }
+
+    return Number(row.quantity || 0);
+  };
+  const getPurchaseDraftAmount = (row = {}) => {
+    const quantity = getPurchaseDraftQuantity(row);
+    const rate = Number(row.bookingAmount || row.rate || row.amountRate || 0);
+    if (quantity > 0 && rate > 0) {
+      return quantity * rate;
+    }
+    return Number(row.amount || 0);
+  };
+  const enrichSendPurchaseDraft = (draft) => {
+    const seller = directAdminSellers.find((entry) => String(entry.id) === String(draft.targetSellerId));
+    const rows = Array.isArray(draft.rows) ? draft.rows : [];
+    return {
+      ...draft,
+      sellerName: seller?.username || rows[0]?.partyName || `Seller ${draft.targetSellerId}`,
+      keyword: seller?.keyword || '',
+      memoNumber: Number(rows[0]?.memoNumber || draft.memoNumber || 1),
+      pieceCount: rows.reduce((sum, row) => sum + getPurchaseDraftQuantity(row), 0),
+      amountTotal: rows.reduce((sum, row) => sum + getPurchaseDraftAmount(row), 0)
+    };
+  };
+  const loadSendPurchaseDrafts = async () => {
+    setSendPurchaseLoading(true);
+    try {
+      const drafts = await listDraftRows({
+        role: 'admin',
+        userId: user?.id,
+        tab: 'purchase-send'
+      });
+      setSendPurchaseDrafts(drafts
+        .filter((draft) => (
+          Number(draft.memoNumber || 0) > 0
+          && String(draft.bookingDate || '') === String(purchaseBookingDate || '')
+          && String(draft.sessionMode || '') === String(purchaseSessionMode || '')
+          && String(draft.purchaseCategory || '') === String(purchaseCategory || '')
+          && String(draft.amount || '') === String(purchaseAmount || '')
+        ))
+        .map(enrichSendPurchaseDraft));
+    } catch (error) {
+      setError(error.message || 'Send Purchase draft load nahi hua');
+    } finally {
+      setSendPurchaseLoading(false);
+    }
+  };
+  const sendPurchaseDraft = async (draft) => {
+    const rows = Array.isArray(draft?.rows) ? draft.rows : [];
+    if (!draft?.targetSellerId || rows.length === 0) {
+      setError('Send karne ke liye purchase draft nahi mila');
+      return;
+    }
+
+    setSendPurchaseSendingKey(draft.draftKey);
+    setError('');
+    setSuccess('');
+
+    try {
+      const memoNumber = Number(rows[0]?.memoNumber || draft.memoNumber || 1);
+      const entryIds = rows.flatMap((row) => Array.isArray(row.entryIds) ? row.entryIds : []).filter(Boolean);
+      const firstRowDate = rows[0]?.drawDate || draft.bookingDate || purchaseBookingDate;
+      const sessionValue = rows[0]?.resolvedSessionMode || draft.sessionMode || purchaseSessionMode;
+      const amountValue = rows[0]?.bookingAmount || draft.amount || purchaseAmount;
+      const categoryValue = rows[0]?.resolvedPurchaseCategory || draft.purchaseCategory || purchaseCategory;
+
+      if (entryIds.length > 0) {
+        await lotteryService.replacePurchaseSendMemo({
+          sellerId: draft.targetSellerId,
+          memoNumber,
+          entryIds,
+          bookingDate: firstRowDate,
+          sessionMode: sessionValue,
+          amount: amountValue,
+          purchaseCategory: categoryValue,
+          rows: rows.map((row, index) => ({
+            rangeStart: row.numberStart || row.from,
+            rangeEnd: row.numberEnd || row.to,
+            boxValue: row.semValue,
+            amount: row.bookingAmount || amountValue,
+            bookingDate: row.drawDate || firstRowDate,
+            sessionMode: row.resolvedSessionMode || sessionValue,
+            purchaseCategory: row.resolvedPurchaseCategory || categoryValue,
+            entryIds: row.entryIds || [],
+            memoRowOrder: row.memoRowOrder ?? index
+          }))
+        });
+      } else {
+        for (const [index, row] of rows.entries()) {
+          await lotteryService.sendAdminPurchase({
+            sellerId: draft.targetSellerId,
+            series: '',
+            rangeStart: row.numberStart || row.from,
+            rangeEnd: row.numberEnd || row.to,
+            boxValue: row.semValue,
+            amount: row.bookingAmount || amountValue,
+            memoNumber,
+            bookingDate: row.drawDate || firstRowDate,
+            sessionMode: row.resolvedSessionMode || sessionValue,
+            purchaseCategory: row.resolvedPurchaseCategory || categoryValue,
+            memoRowOrder: row.memoRowOrder ?? index
+          });
+        }
+      }
+
+      await clearDraftRows(draft.draftKey);
+      setSuccess(`${draft.sellerName || 'Seller'} ko purchase send ho gaya`);
+      await Promise.all([
+        loadLocalPurchaseMemoDrafts(),
+        loadSendPurchaseDrafts(),
+        loadPurchaseEntries(firstRowDate, sessionValue, draft.targetSellerId)
+      ]);
+    } catch (error) {
+      setError(error.response?.data?.message || error.message || 'Purchase send nahi hua');
+    } finally {
+      setSendPurchaseSendingKey('');
+    }
+  };
+  const sendAllPurchaseDrafts = async () => {
+    for (const draft of sendPurchaseDrafts) {
+      await sendPurchaseDraft(draft);
+    }
+  };
+  const deletePurchaseDraft = async (draft, options = {}) => {
+    const shouldRefresh = options.refresh !== false;
+    const rows = Array.isArray(draft?.rows) ? draft.rows : [];
+    if (!draft?.targetSellerId || rows.length === 0) {
+      setError('Delete karne ke liye purchase draft nahi mila');
+      return;
+    }
+
+    setSendPurchaseSendingKey(`delete:${draft.draftKey}`);
+    setError('');
+    setSuccess('');
+
+    try {
+      const memoNumber = Number(rows[0]?.memoNumber || draft.memoNumber || 1);
+      const entryIds = rows.flatMap((row) => Array.isArray(row.entryIds) ? row.entryIds : []).filter(Boolean);
+      const firstRowDate = rows[0]?.drawDate || draft.bookingDate || purchaseBookingDate;
+      const sessionValue = rows[0]?.resolvedSessionMode || draft.sessionMode || purchaseSessionMode;
+      const amountValue = rows[0]?.bookingAmount || draft.amount || purchaseAmount;
+      const categoryValue = rows[0]?.resolvedPurchaseCategory || draft.purchaseCategory || purchaseCategory;
+
+      await lotteryService.replacePurchaseSendMemo({
+        sellerId: draft.targetSellerId,
+        memoNumber,
+        entryIds,
+        bookingDate: firstRowDate,
+        sessionMode: sessionValue,
+        amount: amountValue,
+        purchaseCategory: categoryValue,
+        rows: []
+      });
+
+      await clearDraftRows(draft.draftKey);
+      setSuccess(`Memo ${memoNumber} delete ho gaya`);
+      if (shouldRefresh) {
+        await Promise.all([
+          loadLocalPurchaseMemoDrafts(),
+          loadSendPurchaseDrafts(),
+          loadPurchaseEntries(firstRowDate, sessionValue, draft.targetSellerId)
+        ]);
+      }
+    } catch (error) {
+      setError(error.response?.data?.message || error.message || 'Purchase delete nahi hua');
+    } finally {
+      if (shouldRefresh) {
+        setSendPurchaseSendingKey('');
+      }
+    }
+  };
+  const deleteAllPurchaseDrafts = async () => {
+    if (sendPurchaseDrafts.length === 0) {
+      return;
+    }
+
+    setSendPurchaseSendingKey('delete-all');
+    setError('');
+    setSuccess('');
+
+    try {
+      const draftsToDelete = [...sendPurchaseDrafts].sort((left, right) => Number(right.memoNumber || 0) - Number(left.memoNumber || 0));
+      for (const draft of draftsToDelete) {
+        await deletePurchaseDraft(draft, { refresh: false });
+      }
+      setSuccess(`${draftsToDelete.length} purchase memo delete ho gaye`);
+      await Promise.all([
+        loadLocalPurchaseMemoDrafts(),
+        loadSendPurchaseDrafts()
+      ]);
+    } catch (error) {
+      setError(error.response?.data?.message || error.message || 'All purchase delete nahi hua');
+    } finally {
+      setSendPurchaseSendingKey('');
+    }
+  };
+  const deleteSellerPurchaseDrafts = async (sellerDraft) => {
+    const sellerDrafts = sendPurchaseDrafts.filter((draft) => (
+      String(draft.targetSellerId || '') === String(sellerDraft?.targetSellerId || '')
+    ));
+
+    if (sellerDrafts.length === 0) {
+      return;
+    }
+
+    setSendPurchaseSendingKey(`delete-seller:${sellerDraft.targetSellerId}`);
+    setError('');
+    setSuccess('');
+
+    try {
+      const draftsToDelete = [...sellerDrafts].sort((left, right) => Number(right.memoNumber || 0) - Number(left.memoNumber || 0));
+      for (const draft of draftsToDelete) {
+        await deletePurchaseDraft(draft, { refresh: false });
+      }
+      setSuccess(`${sellerDraft.sellerName || 'Seller'} ke ${draftsToDelete.length} purchase memo delete ho gaye`);
+      await Promise.all([
+        loadLocalPurchaseMemoDrafts(),
+        loadSendPurchaseDrafts()
+      ]);
+    } catch (error) {
+      setError(error.response?.data?.message || error.message || 'Seller purchase delete nahi hua');
+    } finally {
+      setSendPurchaseSendingKey('');
+    }
+  };
+  useEffect(() => {
+    if (activeTab === 'send-purchase') {
+      loadSendPurchaseDrafts();
+    }
+  }, [activeTab, user?.id, treeData, purchaseBookingDate, purchaseSessionMode, purchaseCategory, purchaseAmount]);
   const adminStockMemoSummaries = buildPurchaseMemoSummaries(adminStockEntries);
   const nextAdminStockMemoNumber = adminStockMemoSummaries.length > 0
     ? Math.max(...adminStockMemoSummaries.map((memo) => memo.memoNumber)) + 1
@@ -4612,28 +5340,58 @@ const AdminDashboard = ({
   )) || adminStockMemoOptions[0] || null;
   const isEditingExistingAdminStockMemo = adminStockMemoSummaries.some((memo) => Number(memo.memoNumber) === Number(adminStockMemoNumber));
   const highlightedAdminStockMemoOption = adminStockMemoOptions[adminStockMemoSelectionIndex] || selectedAdminStockMemoOption || null;
-  const purchaseMemoSummaries = buildPurchaseMemoSummaries([...purchaseEntries, ...unsoldPurchaseEntries]);
+  const purchaseServerMemoSummaries = buildPurchaseMemoSummaries([...purchaseEntries, ...unsoldPurchaseEntries]);
+  const purchaseLocalMemoSummaries = localPurchaseMemoDrafts.map((draft) => ({
+    key: `admin-local-memo-${draft.memoNumber}`,
+    memoNumber: Number(draft.memoNumber || 0),
+    drawDate: draft.rows[0]?.drawDate || draft.bookingDate || purchaseBookingDate,
+    totalPieceCount: draft.rows.reduce((sum, row) => sum + getPurchaseDraftQuantity(row), 0),
+    draftRows: draft.rows,
+    draftKey: draft.draftKey,
+    isLocalDraft: true
+  }));
+  const purchaseMemoSummaries = [
+    ...purchaseLocalMemoSummaries,
+    ...purchaseServerMemoSummaries.filter((memo) => (
+      !purchaseLocalMemoSummaries.some((localMemo) => Number(localMemo.memoNumber) === Number(memo.memoNumber))
+    ))
+  ];
   const nextPurchaseMemoNumber = purchaseMemoSummaries.length > 0
-    ? Math.max(...purchaseMemoSummaries.map((memo) => memo.memoNumber)) + 1
+    ? Math.max(...purchaseMemoSummaries.map((memo) => Number(memo.memoNumber || 0))) + 1
     : 1;
+  const activePurchaseDraftMemoNumber = Number(purchaseMemoNumber || purchaseDraftRows[0]?.memoNumber || nextPurchaseMemoNumber);
+  const purchaseDraftQuantity = purchaseDraftRows.reduce((sum, row) => sum + getPurchaseDraftQuantity(row), 0);
+  const draftMatchesExistingPurchaseMemo = purchaseMemoSummaries.some((memo) => (
+    Number(memo.memoNumber) === activePurchaseDraftMemoNumber
+  ));
+  const newPurchaseMemoNumber = draftMatchesExistingPurchaseMemo && purchaseDraftRows.length > 0
+    ? nextPurchaseMemoNumber
+    : activePurchaseDraftMemoNumber;
   const purchaseMemoOptions = [
     {
-      key: `new-${nextPurchaseMemoNumber}`,
-      memoNumber: nextPurchaseMemoNumber,
+      key: `new-${newPurchaseMemoNumber}`,
+      memoNumber: newPurchaseMemoNumber,
       isNew: true,
-      label: String(nextPurchaseMemoNumber),
+      label: String(newPurchaseMemoNumber),
       drawDate: purchaseBookingDate,
-      quantity: ''
+      quantity: !draftMatchesExistingPurchaseMemo && purchaseDraftRows.length > 0 ? purchaseDraftQuantity : ''
     },
     ...purchaseMemoSummaries.map((memo) => ({
-      key: `memo-${memo.memoNumber}`,
+      key: memo.key || `memo-${memo.memoNumber}`,
       memoNumber: memo.memoNumber,
       isNew: false,
       label: String(memo.memoNumber),
       drawDate: memo.drawDate,
-      quantity: memo.totalPieceCount,
-      totalPieceCount: memo.totalPieceCount,
-      batches: memo.batches
+      quantity: Number(memo.memoNumber) === activePurchaseDraftMemoNumber && purchaseDraftRows.length > 0
+        ? purchaseDraftQuantity
+        : memo.totalPieceCount,
+      totalPieceCount: Number(memo.memoNumber) === activePurchaseDraftMemoNumber && purchaseDraftRows.length > 0
+        ? purchaseDraftQuantity
+        : memo.totalPieceCount,
+      batches: memo.batches,
+      draftRows: memo.draftRows,
+      draftKey: memo.draftKey,
+      isLocalDraft: Boolean(memo.isLocalDraft)
     }))
   ];
   const selectedPurchaseMemoOption = purchaseMemoOptions.find((option) => (
@@ -4641,7 +5399,23 @@ const AdminDashboard = ({
   )) || purchaseMemoOptions[0] || null;
   const isEditingExistingPurchaseMemo = purchaseMemoSummaries.some((memo) => Number(memo.memoNumber) === Number(purchaseMemoNumber));
   const highlightedPurchaseMemoOption = purchaseMemoOptions[purchaseMemoSelectionIndex] || selectedPurchaseMemoOption || null;
-  const adminUnsoldMemoSummaries = buildCurrentMemoSummaries(unsoldPurchaseEntries);
+  const adminOwnedUnsoldPurchaseEntries = unsoldPurchaseEntries.filter((entry) => (
+    (
+      selectedAdminSellerBranchIdSet.size > 0
+        ? selectedAdminSellerBranchIdSet.has(String(entry.userId || ''))
+        : String(entry.userId || '') === String(purchaseSellerId || '')
+    )
+    && getDateOnlyValue(entry.bookingDate) === purchaseBookingDate
+    && String(entry.sessionMode || '') === String(purchaseSessionMode || '')
+    && String(entry.purchaseCategory || '') === String(purchaseCategory || '')
+    && String(entry.amount || '') === String(purchaseAmount || '')
+    && (
+    String(entry.forwardedBy || '') === String(user?.id || '')
+    || String(entry.sentToParent || '') === String(user?.id || '')
+    || String(entry.id || '').startsWith('manual-unsold-')
+    )
+  ));
+  const adminUnsoldMemoSummaries = buildAdminUnsoldMemoSummaries(adminOwnedUnsoldPurchaseEntries);
   const nextAdminUnsoldMemoNumber = adminUnsoldMemoSummaries.length > 0
     ? Math.max(...adminUnsoldMemoSummaries.map((memo) => memo.memoNumber)) + 1
     : 1;
@@ -4710,6 +5484,34 @@ const AdminDashboard = ({
     || (activeTab === 'unsold-remove' ? selectedAdminUnsoldRemoveMemoOption : selectedAdminUnsoldMemoOption)
     || null;
   const allSellerNodes = flattenSellerNodes(treeData);
+  const eligibleBillSellerNameSet = new Set(
+    directAdminSellers
+      .filter((seller) => sellerSupportsAmount(seller, historyAmountFilter || initialAmount))
+      .map((seller) => seller.username)
+  );
+  const selectedBillSellerNamesRaw = Array.isArray(historySellerFilter)
+    ? historySellerFilter
+    : (historySellerFilter ? [historySellerFilter] : []);
+  const selectedBillSellerNames = selectedBillSellerNamesRaw.filter((sellerName) => (
+    eligibleBillSellerNameSet.size === 0 || eligibleBillSellerNameSet.has(sellerName)
+  ));
+  const selectedBillSellerLabel = selectedBillSellerNames.join(', ');
+  const toggleBillSellerFilter = (sellerName) => {
+    if (!sellerName) {
+      setHistorySellerFilter([]);
+      return;
+    }
+
+    setHistorySellerFilter((currentNames) => {
+      const currentSet = new Set(Array.isArray(currentNames) ? currentNames : []);
+      if (currentSet.has(sellerName)) {
+        currentSet.delete(sellerName);
+      } else {
+        currentSet.add(sellerName);
+      }
+      return Array.from(currentSet);
+    });
+  };
   const filteredBillPrizeResults = billPrizeResults.filter((record) => {
     const amountMatches = historyAmountFilter
       ? String(record.amount || '') === String(historyAmountFilter)
@@ -4721,16 +5523,19 @@ const AdminDashboard = ({
     return amountMatches && categoryMatches;
   });
   const adminCurrentBillRows = purchaseBillRows.filter((record) => (
-    !historySellerFilter || record.billRootUsername === historySellerFilter || record.sellerName === historySellerFilter
+    selectedBillSellerNames.length === 0
+    || selectedBillSellerNames.includes(record.billRootUsername)
+    || selectedBillSellerNames.includes(record.sellerName)
   ));
   const billData = buildBillData({
     records: [],
     prizeRecords: filteredBillPrizeResults,
     treeData,
-    selectedSellerUsername: historySellerFilter
+    selectedSellerUsernames: selectedBillSellerNames
   });
   const billTransferHistory = adminCurrentBillRows;
   const transferHistoryByActor = groupTransferHistoryByActor(transferHistory);
+  const latestAcceptEntries = getLatestEntryBatch(acceptEntries);
   const adminBillVisibleGroups = adminCurrentBillRows.reduce((groups, record) => {
     const groupName = record.billRootUsername || record.sellerName || 'Unknown Seller';
     if (!groups[groupName]) {
@@ -4914,12 +5719,14 @@ const AdminDashboard = ({
   const adminStockVisibleQuantity = adminStockDraftRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
   const adminStockVisibleAmount = adminStockDraftRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
   const adminStockGridRows = createRetroGridRows(adminStockDraftRows);
+  const adminStockPreviousRow = adminStockDraftRows[Math.min(adminStockActiveRowIndex, adminStockDraftRows.length) - 1] || null;
   const adminStockMetrics = getRetroRangeMetrics(
     adminStockCodeInput,
     adminStockSessionMode,
     adminStockFromInput,
     adminStockToInput,
-    adminStockPurchaseCategory
+    adminStockPurchaseCategory,
+    adminStockPreviousRow?.from
   );
   const adminStockEditableRow = (
     <tr key="admin-stock-entry">
@@ -5177,13 +5984,14 @@ const AdminDashboard = ({
   const adminSendVisibleQuantity = activePurchaseSendRows.reduce((sum, row) => sum + Number(row.quantity || 0), 0);
   const adminSendVisibleAmount = activePurchaseSendRows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
   const adminPurchaseGridRows = createRetroGridRows(activePurchaseSendRows, { drawDate: purchaseBookingDate });
-  const selectedAdminSendSeller = activeAmountAdminSellers.find((seller) => String(seller.id) === String(purchaseSellerId));
+  const purchasePreviousRow = purchaseDraftRows[Math.min(purchaseActiveRowIndex, purchaseDraftRows.length) - 1] || null;
   const purchaseMetrics = getRetroRangeMetrics(
     purchaseCodeInput,
     purchaseSessionMode,
     purchaseFromInput,
     purchaseToInput,
-    purchaseCategory
+    purchaseCategory,
+    purchasePreviousRow?.from
   );
   const adminPurchaseSendDateEditable = activeTab === 'purchase-send';
   const adminPurchaseEditableRow = (
@@ -5234,6 +6042,16 @@ const AdminDashboard = ({
                 });
                 return;
               }
+              const allowedSemOptions = getAvailableSemOptions(purchaseAmount);
+              if (allowedSemOptions.length > 0 && !allowedSemOptions.includes(String(parsed.semValue || ''))) {
+                openBlockingWarning(`Amount ${purchaseAmount} me SEM ${allowedSemOptions.join(', ')} hi allowed hai`, [], 'Warning', () => {
+                  window.requestAnimationFrame(() => {
+                    adminSendCodeInputRef.current?.focus();
+                    adminSendCodeInputRef.current?.select?.();
+                  });
+                });
+                return;
+              }
               if (activeTab === 'purchase-send') {
                 setPurchaseCategory(parsed.resolvedPurchaseCategory || purchaseCategory);
               }
@@ -5262,6 +6080,16 @@ const AdminDashboard = ({
                 openBlockingWarning(parsed.error, [], 'Warning', () => {
                   setPurchaseCodeInput('');
                   window.requestAnimationFrame(() => adminSendCodeInputRef.current?.focus());
+                });
+                return;
+              }
+              const allowedSemOptions = getAvailableSemOptions(purchaseAmount);
+              if (allowedSemOptions.length > 0 && !allowedSemOptions.includes(String(parsed.semValue || ''))) {
+                openBlockingWarning(`Amount ${purchaseAmount} me SEM ${allowedSemOptions.join(', ')} hi allowed hai`, [], 'Warning', () => {
+                  window.requestAnimationFrame(() => {
+                    adminSendCodeInputRef.current?.focus();
+                    adminSendCodeInputRef.current?.select?.();
+                  });
                 });
                 return;
               }
@@ -5382,9 +6210,7 @@ const AdminDashboard = ({
                 return;
               }
               const previousRow = purchaseDraftRows[Math.min(purchaseActiveRowIndex, purchaseDraftRows.length) - 1] || null;
-              const normalized = activeTab === 'unsold' || activeTab === 'unsold-remove'
-                ? normalizeRangeStartInput(purchaseFromInput, previousRow?.from)
-                : normalizeNumericInput(purchaseFromInput);
+              const normalized = normalizeRangeStartInput(purchaseFromInput, previousRow?.from);
               if (!normalized || normalized.length < 5) {
                 openBlockingWarning('From is empty ya 5 digit nahi hai', [], 'Warning', () => {
                   window.requestAnimationFrame(() => adminSendFromInputRef.current?.focus());
@@ -5602,9 +6428,7 @@ const AdminDashboard = ({
       label: 'Add (A)',
       shortcut: 'A',
       disabled: Boolean(blockingWarning),
-      onClick: () => {
-        void handleAdminPurchaseSendAddAction();
-      }
+      onClick: startNewPurchaseSendRow
     },
     {
       label: purchaseLoading ? 'Saving...' : 'Save (F2)',
@@ -5910,7 +6734,26 @@ const AdminDashboard = ({
     );
   };
 
-  const generateBill = () => {
+  const openCachedGeneratedBill = async () => {
+    const cachedBill = await billCacheService.loadGeneratedBill({
+      filters: {
+        ...getBillFilters(),
+        seller: selectedBillSellerNames.join('|')
+      }
+    });
+    const bill = cachedBill?.bill;
+
+    if (!bill) {
+      return false;
+    }
+
+    return openTransferBill({
+      ...bill,
+      title: bill.title || 'Generate Bill'
+    });
+  };
+
+  const generateBill = async () => {
     setError('');
 
     if (historyFromDate > historyToDate) {
@@ -5919,16 +6762,22 @@ const AdminDashboard = ({
     }
 
     if (purchaseBillRows.length === 0) {
+      if (await openCachedGeneratedBill()) {
+        return;
+      }
       setError('No bill data found');
       return;
     }
 
     if (billTransferHistory.length === 0) {
+      if (await openCachedGeneratedBill()) {
+        return;
+      }
       setError('No bill data found for selected seller');
       return;
     }
 
-    const didOpen = openTransferBill({
+    const generatedBill = {
       groupedRecords: adminBillVisibleGroups,
       groupedSummaries: adminVisibleGroupedSummaries,
       groupedAmountSummaries: adminVisibleGroupedAmountSummaries,
@@ -5936,13 +6785,25 @@ const AdminDashboard = ({
       totals: adminVisibleBillTotals,
       username: user.username,
       periodLabel: historyPeriodLabel,
-      shiftLabel: `${historyShift === 'ALL' ? 'ALL' : (historyShift || 'All')} | Amount ${historyAmountFilter || '7'}${historySellerFilter ? ` | Seller: ${historySellerFilter}` : ''}`,
+      shiftLabel: `${historyShift === 'ALL' ? 'ALL' : (historyShift || 'All')} | Amount ${historyAmountFilter || '7'}${selectedBillSellerLabel ? ` | Seller: ${selectedBillSellerLabel}` : ''}`,
       title: 'Generate Bill'
-    });
+    };
+    const didOpen = openTransferBill(generatedBill);
 
     if (!didOpen) {
       setError('Allow pop-up to generate bill');
+      return;
     }
+
+    await billCacheService.saveGeneratedBill({
+      filters: {
+        ...getBillFilters(),
+        seller: selectedBillSellerNames.join('|')
+      },
+      bill: generatedBill
+    }).catch((error) => {
+      console.warn('Generated bill local save failed:', error.message);
+    });
   };
 
   const handleTraceSearch = async () => {
@@ -5973,7 +6834,8 @@ const AdminDashboard = ({
           }
         }
       );
-      setTraceResults(response.data.map(mapTraceRecord));
+      const mappedResults = response.data.map(mapTraceRecord);
+      setTraceResults(mappedResults);
     } catch (err) {
       setError(err.response?.data?.message || 'Error tracing number');
       setTraceResults([]);
@@ -5993,8 +6855,10 @@ const AdminDashboard = ({
         sellerId: prizeTrackerSellerId,
         soldStatus: prizeTrackerSoldStatus || 'ALL'
       });
-      setPrizeTrackerResults(response.data?.rows || []);
-      setPrizeTrackerTotalPrize(Number(response.data?.totalPrize || 0));
+      const rows = response.data?.rows || [];
+      const totalPrize = Number(response.data?.totalPrize || 0);
+      setPrizeTrackerResults(rows);
+      setPrizeTrackerTotalPrize(totalPrize);
       setPrizeTrackerSearchPerformed(true);
     } catch (err) {
       setError(err.response?.data?.message || 'Error loading prize tracker');
@@ -6061,7 +6925,6 @@ const AdminDashboard = ({
     !seePurchaseSellerFilter || entry.sellerName === seePurchaseSelectedSeller?.username
   ));
   const seePurchaseTotalEntries = [...seePurchaseAvailableEntries, ...seePurchaseAllSentEntries];
-  const seePurchaseTotalGroups = buildSeePurchaseRangeGroups(seePurchaseTotalEntries);
   const seePurchaseAvailableGroups = buildSeePurchaseRangeGroups(seePurchaseAvailableEntries);
   const seePurchaseSentGroups = buildSeePurchaseRangeGroups(seePurchaseSentOnlyEntries, true);
   const seePurchaseSummary = {
@@ -6093,7 +6956,8 @@ const AdminDashboard = ({
     { tab: 'upload-price', label: 'Upload Result' },
     { tab: 'tree', label: 'Tree' },
     { tab: 'add-seller', label: 'Add New Seller' },
-    { tab: 'purchase-send', label: 'Purchase Send' },
+    { tab: 'purchase-send', label: 'Purchase' },
+    { tab: 'send-purchase', label: 'Send Purchase' },
     { tab: 'unsold', label: 'Unsold' },
     { tab: 'unsold-remove', label: 'Unsold Remove' },
     { tab: 'accept-entries', label: 'Accept Entries' },
@@ -6101,7 +6965,11 @@ const AdminDashboard = ({
     { tab: 'generate-bill', label: 'Generate Bill' },
     { tab: 'track-number', label: 'Track Number' },
     { tab: 'prize-tracker', label: 'Prize Tracker' },
-    { tab: 'see-purchase', label: 'See Purchase' }
+    { tab: 'see-purchase', label: 'See Purchase' },
+    { tab: 'booking-book', label: 'Book Numbers', shortcutLetter: 'N' },
+    { tab: 'booking-summary', label: 'Summary Booking', shortcutLetter: 'O' },
+    { tab: 'booking-prize', label: 'Prize Booking', shortcutLetter: 'P' },
+    { tab: 'booking-bill', label: 'Bill Booking', shortcutLetter: 'Q' }
   ];
   const adminLauncherActions = [
     { id: 'piece-summary', label: 'F10 - Unsold Summary' }
@@ -6130,9 +6998,43 @@ const AdminDashboard = ({
         onConfirm={confirmSaveRequest}
         onCancel={cancelSaveConfirmation}
       />
+      {resultUploadPasswordPromptOpen && (
+        <div className="settings-modal-overlay" onClick={closeResultUploadPasswordPrompt}>
+          <div className="settings-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="settings-modal-header">
+              <div>
+                <h3>Result Upload Password</h3>
+                <p>Upload Result open karne ke liye password daalo.</p>
+              </div>
+              <button type="button" className="settings-close-btn" onClick={closeResultUploadPasswordPrompt} aria-label="Close result upload password">
+                x
+              </button>
+            </div>
+            <form onSubmit={unlockResultUpload} className="settings-form">
+              <div className="form-group">
+                <label>Password:</label>
+                <input
+                  type="password"
+                  value={resultUploadPasswordInput}
+                  onChange={(event) => setResultUploadPasswordInput(event.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div className="settings-modal-actions">
+                <button type="button" className="settings-cancel-btn" onClick={closeResultUploadPasswordPrompt}>
+                  Cancel
+                </button>
+                <button type="submit" disabled={resultUploadPasswordLoading}>
+                  {resultUploadPasswordLoading ? 'Checking...' : 'Open'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
       {pieceSummaryOpen && (
-        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '24px' }}>
-          <div style={{ background: '#fff', width: 'min(720px, 100%)', borderRadius: '8px', padding: '20px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)' }}>
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)', zIndex: 1000, display: 'flex', padding: 0 }}>
+          <div style={{ background: '#fff', width: '100%', height: '100%', borderRadius: 0, padding: '20px', boxShadow: '0 20px 60px rgba(0,0,0,0.25)', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px' }}>
               <h2 style={{ margin: 0 }}>F10 Unsold Summary</h2>
               <button type="button" onClick={closePieceSummary}>Close</button>
@@ -6157,40 +7059,42 @@ const AdminDashboard = ({
             {pieceSummaryLoading ? (
               <p>Loading...</p>
             ) : (
-              <table className="entries-table" style={{ marginTop: '16px' }}>
-                <thead>
-                  <tr>
-                    <th>Seller Name</th>
-                    <th>Total Piece</th>
-                    <th>Unsold Piece</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pieceSummaryRows.map((row) => (
-                    <tr key={row.id}>
-                      <td>{row.sellerName}</td>
-                      <td>{Number(row.totalPiece || 0).toFixed(2)}</td>
-                      <td>{Number(row.unsoldPiece || 0).toFixed(2)}</td>
+              <div style={{ marginTop: '16px', flex: 1, minHeight: 0, overflowY: 'auto', border: '1px solid #e2e8f0' }}>
+                <table className="entries-table" style={{ marginTop: 0 }}>
+                  <thead>
+                    <tr>
+                      <th>Seller Name</th>
+                      <th>Total Piece</th>
+                      <th>Unsold Piece</th>
                     </tr>
-                  ))}
-                  <tr>
-                    <td><strong>Total</strong></td>
-                    <td><strong>{pieceSummaryRows.reduce((sum, row) => sum + Number(row.totalPiece || 0), 0).toFixed(2)}</strong></td>
-                    <td><strong>{pieceSummaryRows.reduce((sum, row) => sum + Number(row.unsoldPiece || 0), 0).toFixed(2)}</strong></td>
-                  </tr>
-                  <tr style={{ color: '#c53030', background: '#fff5f5' }}>
-                    <td><strong>STOCK NOT TRANSFERED</strong></td>
-                    <td colSpan="2"><strong>{Number(pieceSummaryRows[0]?.stockNotTransferredPiece || 0).toFixed(2)} Piece</strong></td>
-                  </tr>
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {pieceSummaryRows.map((row) => (
+                      <tr key={row.id}>
+                        <td>{row.sellerName}</td>
+                        <td>{Number(row.totalPiece || 0).toFixed(2)}</td>
+                        <td>{Number(row.unsoldPiece || 0).toFixed(2)}</td>
+                      </tr>
+                    ))}
+                    <tr>
+                      <td><strong>Total</strong></td>
+                      <td><strong>{pieceSummaryRows.reduce((sum, row) => sum + Number(row.totalPiece || 0), 0).toFixed(2)}</strong></td>
+                      <td><strong>{pieceSummaryRows.reduce((sum, row) => sum + Number(row.unsoldPiece || 0), 0).toFixed(2)}</strong></td>
+                    </tr>
+                    <tr style={{ color: '#c53030', background: '#fff5f5' }}>
+                      <td><strong>STOCK NOT TRANSFERED</strong></td>
+                      <td colSpan="2"><strong>{Number(pieceSummaryStockNotTransferredPiece || 0).toFixed(2)} Piece</strong></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
         </div>
       )}
       {activeTab ? (
         <div className="active-session-titlebar">
-          <span>RAHUL</span>
+          <span>{user?.username || 'RAHUL'}</span>
           <strong>{launcherTitle}</strong>
           <span>Press A-Z</span>
         </div>
@@ -6198,6 +7102,7 @@ const AdminDashboard = ({
       <div className={`dashboard-accordion ${!activeTab ? 'dashboard-launcher-active' : ''}`.trim()}>
         {!activeTab ? (
           <DashboardLauncher
+            brandName={user?.username || 'RAHUL'}
             title={launcherTitle}
             subtitle="A-Z keyboard shortcuts se admin pages kholo"
             items={adminLauncherItems}
@@ -6220,6 +7125,62 @@ const AdminDashboard = ({
               Upload Price/Result
             </button>
           </div>
+        )}
+
+        {activeTab === 'booking-book' && (
+          <BookingPanel
+            mode="book"
+            currentUser={user}
+            initialSessionMode={initialSessionMode}
+            initialPurchaseCategory={initialPurchaseCategory}
+            initialAmount={initialAmount}
+            entryCompanyLabel={entryCompanyLabel}
+            onExit={requestExitConfirmation}
+            onError={setError}
+            onSuccess={setSuccess}
+          />
+        )}
+
+        {activeTab === 'booking-summary' && (
+          <BookingPanel
+            mode="record"
+            currentUser={user}
+            initialSessionMode={initialSessionMode}
+            initialPurchaseCategory={initialPurchaseCategory}
+            initialAmount={initialAmount}
+            entryCompanyLabel={entryCompanyLabel}
+            onExit={requestExitConfirmation}
+            onError={setError}
+            onSuccess={setSuccess}
+          />
+        )}
+
+        {activeTab === 'booking-prize' && (
+          <BookingPanel
+            mode="price-track"
+            currentUser={user}
+            initialSessionMode={initialSessionMode}
+            initialPurchaseCategory={initialPurchaseCategory}
+            initialAmount={initialAmount}
+            entryCompanyLabel={entryCompanyLabel}
+            onExit={requestExitConfirmation}
+            onError={setError}
+            onSuccess={setSuccess}
+          />
+        )}
+
+        {activeTab === 'booking-bill' && (
+          <BookingPanel
+            mode="bill"
+            currentUser={user}
+            initialSessionMode={initialSessionMode}
+            initialPurchaseCategory={initialPurchaseCategory}
+            initialAmount={initialAmount}
+            entryCompanyLabel={entryCompanyLabel}
+            onExit={requestExitConfirmation}
+            onError={setError}
+            onSuccess={setSuccess}
+          />
         )}
 
         {activeTab === 'upload-price' && (
@@ -6584,6 +7545,7 @@ const AdminDashboard = ({
                 emptyMessage="No tree found"
                 onDelete={handleDeleteUser}
                 deletingUserId={deletingUserId}
+                shouldShowNode={shouldShowAmountTreeNode}
               />
             </div>
           </div>
@@ -6731,7 +7693,7 @@ const AdminDashboard = ({
               className={`accordion-header ${activeTab === 'purchase-send' ? 'active' : ''}`}
               onClick={() => handleTabToggle('purchase-send')}
             >
-              Purchase Send
+              Purchase
             </button>
           </div>
         )}
@@ -6739,12 +7701,12 @@ const AdminDashboard = ({
         {activeTab === 'purchase-send' && (
           <div className="accordion-item">
             <button className="accordion-header active" onClick={requestExitConfirmation}>
-              Purchase Send
+              Purchase
             </button>
             <div className="accordion-content">
               <RetroPurchasePanel
                 screenCode="RAHUL"
-                panelTitle="Purchase Send"
+                panelTitle="Purchase"
                 screenTitle={entryCompanyLabel || 'ADMIN PURCHASE SEND'}
                 headerTimestamp={adminPurchaseTimestamp}
                 memoNumber={selectedPurchaseMemoOption ? String(selectedPurchaseMemoOption.memoNumber) : '1'}
@@ -6829,6 +7791,122 @@ const AdminDashboard = ({
                 blockingWarning={activeTab === 'purchase-send' ? blockingWarning : null}
                 onBlockingWarningClose={clearBlockingWarning}
               />
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'send-purchase' && (
+          <div className="accordion-item">
+            <button className="accordion-header active" onClick={requestExitConfirmation}>
+              Send Purchase
+            </button>
+            <div className="accordion-content">
+              <div className="send-purchase-header">
+                <div>
+                  <h2>Send Purchase</h2>
+                  <p>Purchase me saved local drafts yahan se seller/stockist/sub-stockist ko bhejo.</p>
+                </div>
+                <div className="send-purchase-actions">
+                  <label className="send-purchase-date-filter">
+                    <span>Date</span>
+                    <input
+                      type="date"
+                      value={purchaseBookingDate}
+                      onChange={(event) => setPurchaseBookingDate(event.target.value)}
+                      disabled={sendPurchaseLoading || Boolean(sendPurchaseSendingKey)}
+                    />
+                  </label>
+                  <button type="button" className="btn-secondary" onClick={loadSendPurchaseDrafts} disabled={sendPurchaseLoading || Boolean(sendPurchaseSendingKey)}>
+                    Refresh
+                  </button>
+                  <button type="button" className="btn-primary" onClick={sendAllPurchaseDrafts} disabled={sendPurchaseDrafts.length === 0 || Boolean(sendPurchaseSendingKey)}>
+                    Send All
+                  </button>
+                  <button type="button" className="btn-danger" onClick={deleteAllPurchaseDrafts} disabled={sendPurchaseDrafts.length === 0 || Boolean(sendPurchaseSendingKey)}>
+                    {sendPurchaseSendingKey === 'delete-all' ? 'Deleting All...' : 'Delete All'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="send-purchase-table-wrap">
+                <table className="send-purchase-table">
+                  <thead>
+                    <tr>
+                      <th>Seller</th>
+                      <th>Memo</th>
+                      <th>Date</th>
+                      <th>Shift</th>
+                      <th>Amount</th>
+                      <th>Rows</th>
+                      <th>Piece</th>
+                      <th>Total</th>
+                      <th>Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {sendPurchaseLoading && (
+                      <tr>
+                        <td colSpan="9">Loading...</td>
+                      </tr>
+                    )}
+                    {!sendPurchaseLoading && sendPurchaseDrafts.length === 0 && (
+                      <tr>
+                        <td colSpan="9">Send karne ke liye koi local purchase draft nahi hai</td>
+                      </tr>
+                    )}
+                    {!sendPurchaseLoading && sendPurchaseDrafts.map((draft, draftIndex) => {
+                      const showSellerDeleteAll = sendPurchaseDrafts.findIndex((entry) => (
+                        String(entry.targetSellerId || '') === String(draft.targetSellerId || '')
+                      )) === draftIndex;
+
+                      return (
+                      <tr key={draft.draftKey}>
+                        <td>
+                          <strong>{draft.keyword ? `${draft.keyword} ` : ''}{draft.sellerName}</strong>
+                        </td>
+                        <td>{draft.memoNumber}</td>
+                        <td>{formatRetroDisplayDate(draft.bookingDate)}</td>
+                        <td>{draft.sessionMode}</td>
+                        <td>{draft.amount}</td>
+                        <td>{draft.rows.length}</td>
+                        <td>{draft.pieceCount}</td>
+                        <td>{draft.amountTotal.toFixed(2)}</td>
+                        <td>
+                          <div className="send-purchase-row-actions">
+                            <button
+                              type="button"
+                              className="btn-primary compact"
+                              onClick={() => sendPurchaseDraft(draft)}
+                              disabled={Boolean(sendPurchaseSendingKey)}
+                            >
+                              {sendPurchaseSendingKey === draft.draftKey ? 'Sending...' : 'Send'}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn-danger compact"
+                              onClick={() => deletePurchaseDraft(draft)}
+                              disabled={Boolean(sendPurchaseSendingKey)}
+                            >
+                              {sendPurchaseSendingKey === `delete:${draft.draftKey}` ? 'Deleting...' : 'Delete'}
+                            </button>
+                            {showSellerDeleteAll && (
+                              <button
+                                type="button"
+                                className="btn-danger compact"
+                                onClick={() => deleteSellerPurchaseDrafts(draft)}
+                                disabled={Boolean(sendPurchaseSendingKey)}
+                              >
+                                {sendPurchaseSendingKey === `delete-seller:${draft.targetSellerId}` ? 'Deleting...' : 'Delete Seller All'}
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}
@@ -7112,42 +8190,6 @@ const AdminDashboard = ({
                   <strong>Balance Stock:</strong> {seePurchaseSummary.availableCount} numbers | Pieces {seePurchaseSummary.availablePieces} | Rs. {seePurchaseSummary.availableValue.toFixed(2)}
                 </div>
 
-                {seePurchaseTotalGroups.length > 0 ? (
-                  <>
-                    <h4 style={{ marginBottom: '8px' }}>Total Purchase Added</h4>
-                    <table className="entries-table">
-                      <thead>
-                        <tr>
-                          <th>Date</th>
-                          <th>SEM</th>
-                          <th>From</th>
-                          <th>To</th>
-                          <th>Total Numbers</th>
-                          <th>Total Pieces</th>
-                          <th>Total Rs.</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {seePurchaseTotalGroups.map((group) => (
-                          <tr key={`see-total-${group.label}-${group.firstRow?.bookingDate}`}>
-                            <td>{formatDisplayDate(group.firstRow?.bookingDate)}</td>
-                            <td>{group.firstRow?.boxValue || '-'}</td>
-                            <td>{group.firstRow?.number || '-'}</td>
-                            <td>{group.lastRow?.number || '-'}</td>
-                            <td>{group.rows.length}</td>
-                            <td>{group.rows.reduce((sum, row) => sum + Number(row.boxValue || 0), 0)}</td>
-                            <td>Rs. {group.rows.reduce((sum, row) => (
-                              sum + (Number(row.amount || 0) * Number(row.boxValue || 0))
-                            ), 0).toFixed(2)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </>
-                ) : (
-                  <p>No purchase found for {seePurchaseTitle}.</p>
-                )}
-
                 {seePurchaseSentGroups.length > 0 ? (
                   <>
                     <h4 style={{ margin: '14px 0 8px' }}>Sent To Seller</h4>
@@ -7328,13 +8370,26 @@ const AdminDashboard = ({
               Accept Entries
             </button>
             <div className="accordion-content">
-              <h2>Accept Entries</h2>
+              <div className="accept-seller-lot-header">
+                <h2>Accept Entries</h2>
+                <label className="send-purchase-date-filter">
+                  <span>Date</span>
+                  <input
+                    type="date"
+                    value={acceptEntriesDate}
+                    onChange={handleAcceptEntriesDateChange}
+                    disabled={Boolean(entryActionLoadingId)}
+                  />
+                </label>
+              </div>
               <EntriesTableView
-                entries={acceptEntries}
+                entries={latestAcceptEntries}
                 showSeller
                 showStatus
                 splitByAmount
                 groupConsecutiveRows
+                summaryReviewMode
+                currentUsername={user?.username || 'admin'}
                 actionMode="seller-review"
                 actionLoadingId={entryActionLoadingId}
                 onAccept={(entry) => handleAcceptEntryAction(entry, 'accept')}
@@ -7496,17 +8551,29 @@ const AdminDashboard = ({
 
                 <label style={{ marginTop: '12px', display: 'block' }}>Select Seller:</label>
                 <div style={{ marginTop: '8px' }}>
-                  <select
-                    value={historySellerFilter}
-                    onChange={(event) => setHistorySellerFilter(event.target.value)}
-                  >
-                    <option value="">ALL All Direct Sellers</option>
-                    {directAdminSellers.filter((seller) => sellerSupportsAmount(seller, historyAmountFilter || initialAmount)).map((seller) => (
-                      <option key={seller.id || seller.username} value={seller.username}>
-                        {`${getSellerKeyword(seller)} ${seller.username} [${getSellerKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="bill-seller-picker">
+                    <label className={`bill-seller-option all ${selectedBillSellerNames.length === 0 ? 'selected' : ''}`.trim()}>
+                      <input
+                        type="checkbox"
+                        checked={selectedBillSellerNames.length === 0}
+                        onChange={() => setHistorySellerFilter([])}
+                      />
+                      <span>ALL All Direct Sellers</span>
+                    </label>
+                    {directAdminSellers.filter((seller) => sellerSupportsAmount(seller, historyAmountFilter || initialAmount)).map((seller) => {
+                      const isSelected = selectedBillSellerNames.includes(seller.username);
+                      return (
+                        <label key={seller.id || seller.username} className={`bill-seller-option ${isSelected ? 'selected' : ''}`.trim()}>
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleBillSellerFilter(seller.username)}
+                          />
+                          <span>{`${getSellerKeyword(seller)} ${seller.username} [${getSellerKeyword(seller)}] (${getAllowedAmountsLabel(seller)})`}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', marginTop: '12px' }}>
@@ -7520,21 +8587,20 @@ const AdminDashboard = ({
               </div>
 
               {Object.keys(adminBillVisibleGroups).length > 0 ? (
-                <div className="entries-list-block" style={{ marginTop: '20px' }}>
+                <div className="entries-list-block bill-preview-block bill-totals-block" style={{ marginTop: '20px' }}>
                   <h3>Seller Totals</h3>
-                  <table className="entries-table">
+                  <table className="entries-table bill-preview-table bill-totals-table">
                     <thead>
                       <tr>
                         <th>Seller</th>
                         <th>Purchase</th>
                         <th>Unsold</th>
-                        <th>Unsold %</th>
                         <th>Sold</th>
-                        <th>Sold %</th>
                         <th>Net Value</th>
                         <th>Prize</th>
                         <th>VC</th>
                         <th>SVC</th>
+                        <th>Total VC</th>
                         <th>Net Bill</th>
                       </tr>
                     </thead>
@@ -7547,13 +8613,12 @@ const AdminDashboard = ({
                             <td>{sellerLabel}</td>
                             <td>{Number(summary.totalSentPiece || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalUnsoldPiece || 0).toFixed(2)}</td>
-                            <td>{`${(Number(summary.totalSentPiece || 0) > 0 ? ((Number(summary.totalUnsoldPiece || 0) / Number(summary.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%`}</td>
                             <td>{Number(summary.totalSoldPiece || 0).toFixed(2)}</td>
-                            <td>{`${(Number(summary.totalSentPiece || 0) > 0 ? ((Number(summary.totalSoldPiece || 0) / Number(summary.totalSentPiece || 0)) * 100) : 0).toFixed(2)}%`}</td>
                             <td>{Number(summary.totalSales || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalPrize || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalVc || 0).toFixed(2)}</td>
                             <td>{Number(summary.totalSvc || 0).toFixed(2)}</td>
+                            <td>{(Number(summary.totalVc || 0) + Number(summary.totalSvc || 0)).toFixed(2)}</td>
                             <td>{`${Number(summary.netBill || 0) < 0 ? '-' : '+'}${Math.abs(Number(summary.netBill || 0)).toFixed(2)}`}</td>
                           </tr>
                         );
@@ -7567,10 +8632,8 @@ const AdminDashboard = ({
               )}
 
               {Object.keys(adminBillVisibleGroups).length > 0 && (
-                <div style={{ marginTop: '20px', padding: '18px 22px', borderRadius: '16px', background: '#eef2ff', fontSize: '28px', lineHeight: 1.45 }}>
-                  <strong>Grand Total:</strong> Unsold %{' '}
-                  {(Number(adminVisibleBillTotals.totalSentPiece || 0) > 0 ? ((Number(adminVisibleBillTotals.totalUnsoldPiece || 0) / Number(adminVisibleBillTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% | Sold %{' '}
-                  {(Number(adminVisibleBillTotals.totalSentPiece || 0) > 0 ? ((Number(adminVisibleBillTotals.totalSoldPiece || 0) / Number(adminVisibleBillTotals.totalSentPiece || 0)) * 100) : 0).toFixed(2)}% | Net {formatSignedRupees(adminVisibleBillTotals.netBill)}
+                <div className="bill-grand-total" style={{ marginTop: '20px', padding: '18px 22px', borderRadius: '16px', background: '#eef2ff', fontSize: '28px', lineHeight: 1.45 }}>
+                  <strong>Grand Total:</strong> Net {formatSignedRupees(adminVisibleBillTotals.netBill)}
                 </div>
               )}
             </div>
@@ -7723,9 +8786,9 @@ const AdminDashboard = ({
 
 
               {prizeTrackerSearchPerformed && (
-                <div className="entries-list-block" style={{ marginTop: '20px' }}>
+                <div className="entries-list-block bill-preview-block" style={{ marginTop: '20px' }}>
                   <h3>Daily Prize Summary</h3>
-                  <table className="entries-table">
+                  <table className="entries-table bill-preview-table">
                     <thead>
                       <tr>
                         <th>Date</th>
@@ -7736,7 +8799,7 @@ const AdminDashboard = ({
                         <th>SEM</th>
                         <th>Number</th>
                         <th>Prize</th>
-                        <th>Winning Number</th>
+                        <th>Winning<br />Number</th>
                         <th>Price</th>
                       </tr>
                     </thead>
@@ -7751,7 +8814,7 @@ const AdminDashboard = ({
                             <td>{entry.amount ?? '-'}</td>
                             <td>{entry.sem ?? '-'}</td>
                             <td>{entry.number || '-'}</td>
-                            <td>{entry.prizeLabel}</td>
+                            <td className={isTopPrizeLabel(entry.prizeLabel) ? 'top-prize-label' : undefined}>{entry.prizeLabel}</td>
                             <td>{entry.winningNumber}</td>
                             <td>{entry.calculatedPrize !== null && entry.calculatedPrize !== undefined ? `Rs. ${Number(entry.calculatedPrize).toFixed(2)}` : '-'}</td>
                           </tr>
@@ -7764,7 +8827,7 @@ const AdminDashboard = ({
                     </tbody>
                   </table>
                   {prizeTrackerResults.length > 0 && (
-                    <div style={{ marginTop: '14px', padding: '14px 16px', borderRadius: '14px', background: '#eef2ff' }}>
+                    <div className="bill-grand-total" style={{ marginTop: '14px', padding: '14px 16px', borderRadius: '14px', background: '#eef2ff' }}>
                       <strong>Total Prize Payout:</strong> Rs. {Number(prizeTrackerTotalPrize || 0).toFixed(2)}
                     </div>
                   )}
@@ -7905,7 +8968,7 @@ const AddSellerForm = ({ currentUser, selectedAmount = '', onSuccess, onError })
           </div>
         ) : (
           <p style={{ marginTop: '0', color: '#666', fontSize: '14px' }}>
-            Seller ka koi login ID nahi banega. Yeh naam Purchase Send, Unsold aur F10 summary me direct use hoga.
+            Seller ka koi login ID nahi banega. Yeh naam Purchase, Unsold aur F10 summary me direct use hoga.
           </p>
         )}
         {showRateAmount6 && (

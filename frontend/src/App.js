@@ -2,11 +2,21 @@ import React, { useState, useEffect } from 'react';
 import Login from './components/Login';
 import Home from './components/Home';
 import SellerDashboard from './components/SellerDashboard';
+import StokistDashboard from './components/StokistDashboard';
+import SubStokistDashboard from './components/SubStokistDashboard';
 import AdminDashboard from './components/AdminDashboard';
 import SuperAdminDashboard from './components/SuperAdminDashboard';
 import EntrySelectionScreen from './components/EntrySelectionScreen';
 import { authService } from './services/api';
+import { bootstrapLocalData, flushSyncQueue } from './services/localSync';
 import './styles/index.css';
+
+const isNetworkError = (error) => !error?.response;
+
+const normalizeSellerType = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  return ['seller', 'sub_seller', 'normal_seller'].includes(normalized) ? normalized : 'seller';
+};
 
 const canUseEntryAmount = (user, amount) => {
   if (!user || user.role === 'admin') {
@@ -32,6 +42,7 @@ function App() {
   useEffect(() => {
     const restoreSession = async () => {
       const savedToken = localStorage.getItem('token');
+      const savedUser = localStorage.getItem('user');
       const savedEntryConfig = localStorage.getItem('entryConfig');
 
       if (!savedToken) {
@@ -39,27 +50,47 @@ function App() {
         return;
       }
 
+      const restoreEntryConfig = (currentUser) => {
+        if (!savedEntryConfig) {
+          return;
+        }
+
+        try {
+          const parsedEntryConfig = JSON.parse(savedEntryConfig);
+          if (canUseEntryAmount(currentUser, parsedEntryConfig.amount)) {
+            setEntryConfig(parsedEntryConfig);
+          } else {
+            localStorage.removeItem('entryConfig');
+            setEntryConfig(null);
+          }
+        } catch (error) {
+          localStorage.removeItem('entryConfig');
+          setEntryConfig(null);
+        }
+      };
+
       try {
         const response = await authService.getCurrentUser();
         const currentUser = response.data;
         setUser(currentUser);
         localStorage.setItem('user', JSON.stringify(currentUser));
+        await bootstrapLocalData().catch((syncError) => {
+          console.warn('Local bootstrap failed:', syncError.message);
+        });
 
-        if (savedEntryConfig) {
+        restoreEntryConfig(currentUser);
+      } catch (error) {
+        if (isNetworkError(error) && savedUser) {
           try {
-            const parsedEntryConfig = JSON.parse(savedEntryConfig);
-            if (canUseEntryAmount(currentUser, parsedEntryConfig.amount)) {
-              setEntryConfig(parsedEntryConfig);
-            } else {
-              localStorage.removeItem('entryConfig');
-              setEntryConfig(null);
-            }
-          } catch (error) {
-            localStorage.removeItem('entryConfig');
-            setEntryConfig(null);
+            const cachedUser = JSON.parse(savedUser);
+            setUser(cachedUser);
+            restoreEntryConfig(cachedUser);
+            return;
+          } catch (parseError) {
+            localStorage.removeItem('user');
           }
         }
-      } catch (error) {
+
         localStorage.removeItem('token');
         localStorage.removeItem('user');
         localStorage.removeItem('entryConfig');
@@ -72,6 +103,37 @@ function App() {
 
     restoreSession();
   }, []);
+
+  useEffect(() => {
+    if (!user) {
+      return undefined;
+    }
+
+    flushSyncQueue().catch((syncError) => {
+      console.warn('Offline queue sync failed:', syncError.message);
+    });
+
+    const intervalId = window.setInterval(() => {
+      flushSyncQueue().catch((syncError) => {
+        console.warn('Offline queue sync failed:', syncError.message);
+      });
+    }, 30000);
+
+    const handleOnline = () => {
+      bootstrapLocalData()
+        .then(() => flushSyncQueue())
+        .catch((syncError) => {
+          console.warn('Automatic sync failed:', syncError.message);
+        });
+    };
+
+    window.addEventListener('online', handleOnline);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, [user]);
 
   const handleLoginSuccess = (userData) => {
     setUser(userData);
@@ -138,8 +200,15 @@ function App() {
     );
   }
 
+  const sellerType = normalizeSellerType(user.sellerType || user.seller_type);
+  const SellerDashboardComponent = sellerType === 'seller'
+    ? StokistDashboard
+    : sellerType === 'sub_seller'
+      ? SubStokistDashboard
+      : SellerDashboard;
+
   return (
-    <SellerDashboard
+    <SellerDashboardComponent
       user={user}
       onLogout={handleLogout}
       sessionMode={entryConfig.sessionMode}
