@@ -1,3 +1,5 @@
+import { keepLocalRow, writeLocalValue, localEntryStorage } from './dateStorage';
+
 const DRAFT_PREFIX = 'lottery.localDraft';
 
 const getStorage = () => {
@@ -5,7 +7,7 @@ const getStorage = () => {
     return null;
   }
 
-  return window.localStorage;
+  return localEntryStorage();
 };
 
 const getLocalDb = () => {
@@ -123,11 +125,11 @@ const saveDraftRowsToLocalStorage = (key, rows = []) => {
   }
 
   if (!Array.isArray(rows) || rows.length === 0) {
-    storage.removeItem(key);
+    writeLocalValue(key, null);
     return;
   }
 
-  storage.setItem(key, JSON.stringify({
+  writeLocalValue(key, JSON.stringify({
     savedAt: new Date().toISOString(),
     rows
   }));
@@ -139,7 +141,7 @@ const clearDraftRowsFromLocalStorage = (key) => {
     return;
   }
 
-  storage.removeItem(key);
+  writeLocalValue(key, null);
 };
 
 export const loadDraftRows = async (key) => {
@@ -167,6 +169,7 @@ export const loadDraftRows = async (key) => {
 export const saveDraftRows = async (key, rows = []) => {
   const localDb = getLocalDb();
   const draftInfo = parseDraftKey(key);
+  rows = rows.filter((row) => keepLocalRow(row, draftInfo.bookingDate));
 
   if (localDb && draftInfo.type) {
     try {

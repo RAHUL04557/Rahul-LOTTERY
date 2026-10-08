@@ -11,11 +11,13 @@ const userRoutes = require('./routes/userRoutes');
 const lotteryRoutes = require('./routes/lotteryRoutes');
 const priceRoutes = require('./routes/priceRoutes');
 const syncRoutes = require('./routes/syncRoutes');
+const bookingRoutes = require('./routes/bookingRoutes');
 
 const app = express();
 const DEFAULT_RESULT_UPLOAD_PASSWORD = 'rahul@9749';
 
 app.use(cors());
+app.use('/api/booking', express.json({ limit: '10mb' }), bookingRoutes);
 app.use(express.json());
 
 const initializeAdmin = async () => {

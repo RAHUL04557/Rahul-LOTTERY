@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { appConfig } from '../config/appConfig';
+import { assertLocalDateAllowed, filterLocalData, writeLocalValue, localEntryStorage } from '../utils/dateStorage';
 
 const API_BASE_URL = appConfig.apiBaseUrl;
 
@@ -346,7 +347,8 @@ const purgeDeletedUsersFromLocalStorage = (userIds = []) => {
     // Ignore malformed legacy visible-user cache.
   }
 
-  Object.keys(localStorage).forEach((key) => {
+  const entryStorage = localEntryStorage();
+  Array.from({ length: entryStorage.length }, (_, index) => entryStorage.key(index)).filter(Boolean).forEach((key) => {
     if (!key.startsWith('lottery.localDraft:')) {
       return;
     }
@@ -355,7 +357,7 @@ const purgeDeletedUsersFromLocalStorage = (userIds = []) => {
     const draftUserId = parts[2];
     const targetSellerId = parts[4];
     if (deletedIdSet.has(String(draftUserId)) || deletedIdSet.has(String(targetSellerId))) {
-      localStorage.removeItem(key);
+      writeLocalValue(key, null);
     }
   });
 };
@@ -518,6 +520,9 @@ const getFilteredPrizeResultsFromLocalDb = async (params = {}) => {
 
 // Add token to all requests
 api.interceptors.request.use((config) => {
+  if (/^\/(lottery|booking|prices)(\/|$)/.test(config.url || '') && !['get', 'head'].includes(String(config.method || 'get').toLowerCase())) {
+    assertLocalDateAllowed({ body: config.data, params: config.params });
+  }
   const token = localStorage.getItem('token');
   const savedEntryConfig = localStorage.getItem('entryConfig');
   let activeSessionMode = '';
@@ -541,7 +546,12 @@ api.interceptors.request.use((config) => {
 });
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    if (/^\/(lottery|booking|prices|sync)(\/|$)/.test(response.config?.url || '')) {
+      response.data = filterLocalData(response.data);
+    }
+    return response;
+  },
   async (error) => {
     if (!isNetworkError(error) || !error.config || error.config.__apiFallbackTried) {
       throw error;

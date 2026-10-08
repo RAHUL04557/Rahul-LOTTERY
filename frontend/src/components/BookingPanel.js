@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { keepLocalRow, writeLocalValue, readLocalValue } from '../utils/dateStorage';
 import { bookingService, priceService, userService } from '../services/api';
 import SearchableSellerSelect from './SearchableSellerSelect';
 import RetroPurchasePanel from './RetroPurchasePanel';
@@ -15,8 +16,6 @@ const BOOKING_STORAGE_MODE_KEYS = {
   'price-track': 'prize-booking',
   bill: 'bill-booking'
 };
-
-const BOOKING_STORAGE_PURGE_VERSION = '2026-05-10-booking-entries-reset-v2';
 
 const getTodayDateValue = () => new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Kolkata',
@@ -181,7 +180,12 @@ const getRangeNumbers = (fromValue, toValue) => {
   return Array.from({ length: (to - from) + 1 }, (_, index) => String(from + index).padStart(5, '0'));
 };
 
-const getRangeCount = (fromValue, toValue) => getRangeNumbers(fromValue, toValue).length;
+const getRangeCount = (fromValue, toValue) => {
+  if (!numberInput(fromValue)) return 0;
+  const from = Number(numberInput(fromValue));
+  const to = Number(numberInput(toValue || fromValue));
+  return Number.isInteger(from) && Number.isInteger(to) && to >= from ? to - from + 1 : 0;
+};
 
 const getEntryNumbers = (entry) => {
   if (entry?.rangeStart) {
@@ -292,6 +296,7 @@ const normalizeServerBookingEntries = (entries = []) => normalizeStoredBookingEn
 );
 
 const normalizeStoredBookingEntries = (entries = []) => {
+  entries = (Array.isArray(entries) ? entries : []).filter((entry) => keepLocalRow(entry));
   const normalizedEntries = [];
   const singlesBySignature = new Map();
 
@@ -400,7 +405,7 @@ const buildEntriesKey = (currentUser) => [
 const readJson = (key, fallbackValue) => {
   if (typeof window === 'undefined' || !window.localStorage || !key) return fallbackValue;
   try {
-    const savedValue = window.localStorage.getItem(key);
+    const savedValue = readLocalValue(key);
     return savedValue ? JSON.parse(savedValue) : fallbackValue;
   } catch (error) {
     return fallbackValue;
@@ -409,25 +414,7 @@ const readJson = (key, fallbackValue) => {
 
 const writeJson = (key, value) => {
   if (typeof window === 'undefined' || !window.localStorage || !key) return;
-  window.localStorage.setItem(key, JSON.stringify(value));
-};
-
-const removeJson = (key) => {
-  if (typeof window === 'undefined' || !window.localStorage || !key) return;
-  window.localStorage.removeItem(key);
-};
-
-const purgeStoredBookingEntries = (entriesKey, stateKey) => {
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  const bookingEntriesPattern = /^lottery\.adminBooking\.[^.]+\.book-numbers\.entries$/;
-  const storageKeys = Array.from({ length: window.localStorage.length }, (_, index) => window.localStorage.key(index)).filter(Boolean);
-  storageKeys.forEach((key) => {
-    if (bookingEntriesPattern.test(key)) {
-      writeJson(key, []);
-    }
-  });
-  writeJson(entriesKey, []);
-  removeJson(stateKey);
+  writeLocalValue(key, JSON.stringify(value));
 };
 
 const getSellerRate = (seller, amount) => {
@@ -819,18 +806,9 @@ const BookingPanel = ({
 
   useEffect(() => {
     const currentDate = getTodayDateValue();
-    const purgeKey = `lottery.adminBooking.${BOOKING_STORAGE_PURGE_VERSION}`;
-    const shouldPurgeBookingEntries = !readJson(purgeKey, false);
-    const normalizedEntries = shouldPurgeBookingEntries
-      ? []
-      : normalizeStoredBookingEntries(readJson(entriesKey, []));
+    const normalizedEntries = normalizeStoredBookingEntries(readJson(entriesKey, []));
 
     setAllEntries(normalizedEntries);
-    writeJson(entriesKey, normalizedEntries);
-    if (shouldPurgeBookingEntries) {
-      purgeStoredBookingEntries(entriesKey, stateKey);
-      writeJson(purgeKey, true);
-    }
 
     const savedState = readJson(stateKey, null);
     setBookingDate(currentDate);
@@ -921,7 +899,7 @@ const BookingPanel = ({
 
   useEffect(() => {
     if (!hydrated) return;
-    writeJson(stateKey, {
+    try { writeJson(stateKey, {
       sellerId,
       bookingDate,
       shift,
@@ -936,14 +914,16 @@ const BookingPanel = ({
       filterSellerIds,
       fromDate,
       toDate,
-      resultRows
-    });
-  }, [activeRowIndex, amount, bookingDate, codeInput, filterSellerId, filterSellerIds, fromDate, hydrated, memoNumber, rangeEnd, rangeStart, resultRows, sellerId, sem, shift, stateKey, toDate]);
+      resultRows: [] // Preview is derived data; do not persist potentially large result sets.
+    }); } catch (error) {
+      onError?.(`Booking settings save nahi hui: ${error.message}`);
+    }
+  }, [activeRowIndex, amount, bookingDate, codeInput, filterSellerId, filterSellerIds, fromDate, hydrated, memoNumber, onError, rangeEnd, rangeStart, sellerId, sem, shift, stateKey, toDate]);
 
   const persistEntries = (nextEntries) => {
     const normalizedEntries = normalizeStoredBookingEntries(nextEntries);
-    setAllEntries(normalizedEntries);
     writeJson(entriesKey, normalizedEntries);
+    setAllEntries(normalizedEntries);
   };
 
   const uploadMemoRowsToServer = useCallback(({
@@ -983,12 +963,15 @@ const BookingPanel = ({
             ...currentEntries.filter((entry) => !serverScopeKeys.has(getBookingEntryScopeKey(entry))),
             ...serverEntries
           ]);
-          writeJson(entriesKey, mergedEntries);
+          try { writeJson(entriesKey, mergedEntries); } catch (error) {
+            window.setTimeout(() => onError?.(`Booking cache save nahi hui: ${error.message}`), 0);
+            return currentEntries;
+          }
           return mergedEntries;
         });
         return response;
       });
-  }, [currentPurchaseCategory, currentSessionMode, entriesKey]);
+  }, [currentPurchaseCategory, currentSessionMode, entriesKey, onError]);
 
   useEffect(() => {
     if (mode !== 'book' || !hydrated || serverSyncKeyRef.current === entriesKey) return;
@@ -1004,7 +987,10 @@ const BookingPanel = ({
               ...currentEntries.filter((entry) => !serverScopeKeys.has(getBookingEntryScopeKey(entry))),
               ...serverEntries
             ]);
-            writeJson(entriesKey, mergedEntries);
+            try { writeJson(entriesKey, mergedEntries); } catch (error) {
+              window.setTimeout(() => onError?.(`Booking cache save nahi hui: ${error.message}`), 0);
+              return currentEntries;
+            }
             return mergedEntries;
           });
         }
@@ -1047,7 +1033,7 @@ const BookingPanel = ({
       .catch((error) => {
         console.warn('Booking server sync failed:', error.response?.data?.message || error.message);
       });
-  }, [allEntries, entriesKey, hydrated, mode, uploadMemoRowsToServer]);
+  }, [allEntries, entriesKey, hydrated, mode, onError, uploadMemoRowsToServer]);
 
   const backupMemoToServer = ({ memoNumber: targetMemoNumber, sellerId: targetSellerId, bookingDate: targetDate, rows }) => {
     return uploadMemoRowsToServer({
@@ -1372,7 +1358,9 @@ const BookingPanel = ({
     setSaveConfirmOpen(false);
     setSaveConfirmSelected('no');
     refocusAfterSaveConfirmation();
-    performSaveBookNumbers();
+    performSaveBookNumbers().catch((error) => {
+      onError?.(`Booking save nahi hui: ${error.response?.data?.message || error.message}`);
+    });
   };
 
   const hydrateMemo = (selectedMemo) => {
@@ -1569,7 +1557,7 @@ const BookingPanel = ({
       }),
       (summary, entry) => {
         const seller = sellers.find((item) => String(item.id) === String(entry.sellerId));
-        const piece = getEntryNumbers(entry).length * Number(entry.boxValue || 0);
+        const piece = (entry.rangeStart ? getRangeCount(entry.rangeStart, entry.rangeEnd) : (entry.number ? 1 : 0)) * Number(entry.boxValue || 0);
         const rate = getSellerRate(seller, entry.amount);
         summary.totalSentPiece += piece;
         summary.totalSoldPiece += piece;

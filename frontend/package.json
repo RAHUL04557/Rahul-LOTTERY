@@ -1,6 +1,6 @@
 {
   "name": "lottery-booking-frontend",
-  "version": "2.4.17",
+  "version": "2.5.0",
   "private": true,
   "homepage": ".",
   "main": "electron/main.js",
@@ -38,6 +38,8 @@
     "files": [
       "build/**/*",
       "electron/**/*",
+      "!electron/tests/**/*",
+      "src/utils/localDataPolicy.js",
       "package.json"
     ],
     "directories": {

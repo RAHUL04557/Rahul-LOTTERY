@@ -1,6 +1,8 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('lotteryLocalDb', {
+  initializeDateStorage: (values) => ipcRenderer.invoke('local-data:initialize-browser', values),
+  saveBrowserStorage: (key, value) => ipcRenderer.sendSync('local-data:save-browser', { key, value }),
   getInfo: () => ipcRenderer.invoke('local-db:get-info'),
   getMetadata: (key) => ipcRenderer.invoke('local-db:get-metadata', key),
   setMetadata: (key, value) => ipcRenderer.invoke('local-db:set-metadata', { key, value }),

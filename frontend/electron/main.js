@@ -1,6 +1,12 @@
 const { app, BrowserWindow, Menu, dialog, shell, ipcMain } = require('electron');
 const path = require('path');
 const { initLocalDb, setupLocalDbIpc } = require('./localDb');
+const { createDateStorage } = require('./dateStorage');
+
+// A second process must not migrate or write the same database/date folders.
+const hasInstanceLock = app.requestSingleInstanceLock();
+if (!hasInstanceLock) app.quit();
+let storageReady = false;
 
 const DEV_SERVER_URL = process.env.ELECTRON_START_URL || 'http://localhost:3000';
 
@@ -86,15 +92,25 @@ function setupAutoUpdates(mainWindow) {
   });
 }
 
-app.whenReady().then(() => {
-  initLocalDb();
-  setupLocalDbIpc(ipcMain);
+app.whenReady().then(async () => {
+  if (!hasInstanceLock) return;
+  const storage = createDateStorage(initLocalDb(), {
+    desktop: app.getPath('desktop'),
+    userData: app.getPath('userData')
+  });
+  await storage.initialize();
+  storage.register(ipcMain);
+  setupLocalDbIpc(storage.wrap(ipcMain));
+  storageReady = true;
   const mainWindow = createWindow();
   setupAutoUpdates(mainWindow);
+}).catch((error) => {
+  dialog.showErrorBox('Local data could not be prepared', `${error.message}\nNo sync has been started. Restore the data folder or check disk permissions and restart.`);
+  app.quit();
 });
 
 app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
+  if (storageReady && BrowserWindow.getAllWindows().length === 0) {
     createWindow();
   }
 });
