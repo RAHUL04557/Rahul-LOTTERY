@@ -1,6 +1,6 @@
 {
   "name": "lottery-booking-frontend",
-  "version": "2.8.0",
+  "version": "2.8.1",
   "private": true,
   "homepage": ".",
   "main": "electron/main.js",
@@ -62,7 +62,7 @@
     },
     "nsis": {
       "oneClick": false,
-      "perMachine": false,
+      "perMachine": true,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
