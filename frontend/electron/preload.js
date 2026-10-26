@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('lotteryLocalDb', {
   clearDraft: (payload) => ipcRenderer.invoke('local-db:clear-draft', payload),
   upsertPurchases: (entries) => ipcRenderer.invoke('local-db:upsert-purchases', entries),
   listPurchases: (payload) => ipcRenderer.invoke('local-db:list-purchases', payload),
+  listUnsoldRemoveMemoEntries: (payload) => ipcRenderer.invoke('local-db:list-unsold-remove-memo-entries', payload),
   upsertPrizeResults: (results) => ipcRenderer.invoke('local-db:upsert-prize-results', results),
   removePrizeResults: (payload) => ipcRenderer.invoke('local-db:remove-prize-results', payload),
   listPrizeResults: (payload) => ipcRenderer.invoke('local-db:list-prize-results', payload),

@@ -3580,6 +3580,17 @@ const AdminDashboard = ({
       await saveDraftRows(savedMemoDraftKey, rowsWithMemo);
       // Admin -> Seller is delivered immediately.  The same local memo draft
       // remains available in Purchase, so editing it simply updates this memo.
+      if (isEditingExistingPurchaseMemo) {
+        await lotteryService.replacePurchaseSendMemo({
+          sellerId: purchaseSellerId,
+          bookingDate: purchaseBookingDate,
+          memoNumber: effectiveMemoNumber,
+          sessionMode: purchaseSessionMode,
+          amount: purchaseAmount,
+          purchaseCategory,
+          rows: []
+        });
+      }
       for (const row of rowsWithMemo) {
         await lotteryService.sendAdminPurchase({
           sellerId: purchaseSellerId,
@@ -3594,9 +3605,6 @@ const AdminDashboard = ({
           memoRowOrder: row.memoRowOrder
         });
       }
-      // Admin -> normal seller is final immediately, so it must never remain
-      // in the Send Purchase draft queue.
-      await clearDraftRows(savedMemoDraftKey);
       if (adminLocalDraftKey !== savedMemoDraftKey) {
         await clearDraftRows(adminLocalDraftKey);
       }
@@ -5155,6 +5163,9 @@ const AdminDashboard = ({
           && String(draft.purchaseCategory || '') === String(purchaseCategory || '')
           && String(draft.amount || '') === String(purchaseAmount || '')
         ))
+        .filter((draft) => String(
+          directAdminSellers.find((seller) => String(seller.id) === String(draft.targetSellerId))?.sellerType || ''
+        ).trim().toLowerCase() !== 'normal_seller')
         .map(enrichSendPurchaseDraft));
     } catch (error) {
       setError(error.message || 'Send Purchase draft load nahi hua');

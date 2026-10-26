@@ -980,17 +980,26 @@ export const lotteryService = {
         ...(amount && { amount })
       }
     }),
-  getPurchaseUnsoldRemoveMemo: ({ bookingDate, sessionMode, sellerId, purchaseCategory, amount } = {}, requestOptions = {}) =>
-    api.get('/lottery/purchases/unsold-remove-memo', {
-      ...requestOptions,
-      params: {
-        ...(bookingDate && { bookingDate }),
-        ...(sessionMode && { sessionMode }),
-        ...(sellerId && { sellerId }),
-        ...(purchaseCategory && { purchaseCategory }),
-        ...(amount && { amount })
-      }
-    }),
+  getPurchaseUnsoldRemoveMemo: async ({ bookingDate, sessionMode, sellerId, purchaseCategory, amount } = {}, requestOptions = {}) => {
+    const params = {
+      ...(bookingDate && { bookingDate }),
+      ...(sessionMode && { sessionMode }),
+      ...(sellerId && { sellerId }),
+      ...(purchaseCategory && { purchaseCategory }),
+      ...(amount && { amount })
+    };
+    const localDb = getLocalDb();
+
+    if (!requestOptions.skipLocalRead && localDb?.listUnsoldRemoveMemoEntries) {
+      return { data: await localDb.listUnsoldRemoveMemoEntries(params) };
+    }
+
+    const { skipLocalRead, ...apiRequestOptions } = requestOptions;
+    return api.get('/lottery/purchases/unsold-remove-memo', {
+      ...apiRequestOptions,
+      params
+    });
+  },
   markPurchaseUnsold: (payload) => postWithOfflineQueue('/lottery/purchases/mark-unsold', payload, 'unsold_save'),
   removePurchaseUnsold: (payload) => postWithOfflineQueue('/lottery/purchases/remove-unsold', payload, 'unsold_remove'),
   checkPurchaseUnsoldRemove: (payload) => api.post('/lottery/purchases/remove-unsold/check', payload),

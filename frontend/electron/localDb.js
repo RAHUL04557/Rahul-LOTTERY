@@ -2936,6 +2936,65 @@ const setupLocalDbIpc = (ipcMain) => {
     });
   });
 
+  ipcMain.handle('local-db:list-unsold-remove-memo-entries', (_event, filters = {}) => {
+    const params = ['unsold_removed'];
+    const conditions = ['action_type = ?'];
+
+    if (filters.sellerId) {
+      params.push(Number(filters.sellerId));
+      conditions.push('user_id = ?');
+    }
+    if (filters.bookingDate) {
+      params.push(toLocalDate(filters.bookingDate));
+      conditions.push('booking_date = ?');
+    }
+    if (filters.sessionMode) {
+      params.push(String(filters.sessionMode));
+      conditions.push('session_mode = ?');
+    }
+    if (filters.purchaseCategory) {
+      params.push(String(filters.purchaseCategory));
+      conditions.push('purchase_category = ?');
+    }
+    if (filters.amount !== undefined && filters.amount !== null && String(filters.amount) !== '') {
+      params.push(String(filters.amount));
+      conditions.push('amount = ?');
+    }
+
+    return initLocalDb()
+      .prepare(`
+        SELECT *
+        FROM local_number_history
+        WHERE ${conditions.join(' AND ')}
+        ORDER BY occurred_at ASC, number ASC
+      `)
+      .all(...params)
+      .map((row) => {
+        let details = {};
+        try {
+          details = JSON.parse(row.details_json || '{}');
+        } catch (error) {
+          details = {};
+        }
+
+        return {
+          id: row.local_id,
+          entryId: row.local_id,
+          sellerId: row.user_id,
+          number: row.number,
+          boxValue: row.box_value,
+          amount: Number(row.amount),
+          bookingDate: row.booking_date,
+          sessionMode: row.session_mode,
+          purchaseCategory: row.purchase_category,
+          memoNumber: details.memoNumber || null,
+          status: 'unsold_removed',
+          createdAt: row.occurred_at
+        };
+      })
+      .filter((row) => Number(row.memoNumber) > 0);
+  });
+
   ipcMain.handle('local-db:enqueue-sync', (_event, payload) => {
     const now = new Date().toISOString();
     const localId = payload?.localId || createLocalId('sync');

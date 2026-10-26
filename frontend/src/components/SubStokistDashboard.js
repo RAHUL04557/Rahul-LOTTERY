@@ -1452,6 +1452,9 @@ const SubStokistDashboard = ({
           && String(draft.purchaseCategory || '') === String(activePurchaseCategory || '')
           && String(draft.amount || '') === String(amount || '')
         ))
+        .filter((draft) => normalizeSellerType(
+          activeAmountChildSellers.find((seller) => String(seller.id) === String(draft.targetSellerId))?.sellerType
+        ) !== 'normal_seller')
         .map(enrichSendPurchaseDraft));
     } catch (error) {
       setBookingError(error.message || 'Send Purchase draft load nahi hua');
@@ -3947,8 +3950,9 @@ const SubStokistDashboard = ({
       const selectedTarget = activeAmountChildSellers.find((seller) => String(seller.id) === String(purchaseSendSellerId));
       const isDirectSellerPurchase = normalizeSellerType(selectedTarget?.sellerType) === 'normal_seller';
       const shouldCommitPurchaseLocally = isLocalOnlySession();
-      const isEditingLocalMemo = shouldCommitPurchaseLocally && Boolean(purchaseSendMemoNumber);
-      if (isEditingLocalMemo) {
+      const isEditingPurchaseMemo = Boolean(purchaseSendMemoNumber)
+        && (isDirectSellerPurchase || shouldCommitPurchaseLocally);
+      if (isEditingPurchaseMemo) {
         await lotteryService.replacePurchaseSendMemo({
           sellerId: purchaseSendSellerId,
           bookingDate,
@@ -3974,9 +3978,6 @@ const SubStokistDashboard = ({
             memoRowOrder: row.memoRowOrder
           });
         }
-      }
-      if (isDirectSellerPurchase) {
-        await clearDraftRows(savedMemoDraftKey);
       }
       if (sellerLocalDraftKey !== savedMemoDraftKey) {
         await clearDraftRows(sellerLocalDraftKey);

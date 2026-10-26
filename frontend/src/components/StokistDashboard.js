@@ -1452,6 +1452,9 @@ const StokistDashboard = ({
           && String(draft.purchaseCategory || '') === String(activePurchaseCategory || '')
           && String(draft.amount || '') === String(amount || '')
         ))
+        .filter((draft) => normalizeSellerType(
+          activeAmountChildSellers.find((seller) => String(seller.id) === String(draft.targetSellerId))?.sellerType
+        ) !== 'normal_seller')
         .map(enrichSendPurchaseDraft));
     } catch (error) {
       setBookingError(error.message || 'Send Purchase draft load nahi hua');
@@ -4003,8 +4006,9 @@ const StokistDashboard = ({
       // local purchase records that Send Purchase would create so every screen
       // immediately sees this memo, even without an internet connection.
       const shouldCommitPurchaseLocally = isLocalOnlySession();
-      const isEditingLocalMemo = shouldCommitPurchaseLocally && Boolean(purchaseSendMemoNumber);
-      if (isEditingLocalMemo) {
+      const isEditingPurchaseMemo = Boolean(purchaseSendMemoNumber)
+        && (isDirectSellerPurchase || shouldCommitPurchaseLocally);
+      if (isEditingPurchaseMemo) {
         // Return the previously assigned rows first. This prevents numbers that
         // were removed from an edited memo from remaining in Unsold/F10.
         await lotteryService.replacePurchaseSendMemo({
@@ -4032,9 +4036,6 @@ const StokistDashboard = ({
             memoRowOrder: row.memoRowOrder
           });
         }
-      }
-      if (isDirectSellerPurchase) {
-        await clearDraftRows(savedMemoDraftKey);
       }
       if (sellerLocalDraftKey !== savedMemoDraftKey) {
         await clearDraftRows(sellerLocalDraftKey);
