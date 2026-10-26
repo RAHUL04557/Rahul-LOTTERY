@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { billCacheService, lotteryService, priceService, userService } from '../services/api';
+import { billCacheService, isLocalOnlySession, lotteryService, priceService, userService } from '../services/api';
 import UserTreeView from './UserTreeView';
 import EntriesTableView from './EntriesTableView';
 import PasswordSettingsMenu from './PasswordSettingsMenu';
@@ -3946,7 +3946,20 @@ const SubStokistDashboard = ({
       await saveDraftRows(savedMemoDraftKey, rowsWithMemo);
       const selectedTarget = activeAmountChildSellers.find((seller) => String(seller.id) === String(purchaseSendSellerId));
       const isDirectSellerPurchase = normalizeSellerType(selectedTarget?.sellerType) === 'normal_seller';
-      if (isDirectSellerPurchase) {
+      const shouldCommitPurchaseLocally = isLocalOnlySession();
+      const isEditingLocalMemo = shouldCommitPurchaseLocally && Boolean(purchaseSendMemoNumber);
+      if (isEditingLocalMemo) {
+        await lotteryService.replacePurchaseSendMemo({
+          sellerId: purchaseSendSellerId,
+          bookingDate,
+          memoNumber: effectiveMemoNumber,
+          sessionMode,
+          amount,
+          purchaseCategory: activePurchaseCategory,
+          rows: []
+        });
+      }
+      if (isDirectSellerPurchase || shouldCommitPurchaseLocally) {
         for (const row of rowsWithMemo) {
           await lotteryService.sendPurchase({
             sellerId: purchaseSendSellerId,
@@ -3974,9 +3987,16 @@ const SubStokistDashboard = ({
       setPurchaseSendMemoSelectionIndex(0);
       setSuccess(isDirectSellerPurchase
         ? 'Seller ko purchase direct send ho gaya. Purchase memo se ise kabhi bhi edit kar sakte hain.'
-        : 'Purchase local me save ho gaya. Send Purchase se bhejo.');
+        : shouldCommitPurchaseLocally
+          ? 'Purchase local database me save ho gaya. Unsold F4 aur F10 me ab turant dikhega.'
+          : 'Purchase local me save ho gaya. Send Purchase se bhejo.');
       setPurchaseSendMemoPopupOpen(false);
-      await loadLocalPurchaseMemoDrafts();
+      await Promise.all([
+        loadLocalPurchaseMemoDrafts(),
+        loadPurchaseEntries(),
+        loadPurchaseSendMemoEntries(purchaseSendSellerId, bookingDate),
+        refreshUnsoldDerivedViews()
+      ]);
       focusPurchaseSellerSelectAfterSave();
     } catch (err) {
       const errorMessage = err.response?.data?.message || 'Error saving purchase';

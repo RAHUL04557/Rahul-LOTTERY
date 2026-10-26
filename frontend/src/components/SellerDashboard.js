@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { billCacheService, lotteryService, priceService, userService } from '../services/api';
+import { billCacheService, isLocalOnlySession, lotteryService, priceService, userService } from '../services/api';
 import UserTreeView from './UserTreeView';
 import EntriesTableView from './EntriesTableView';
 import PasswordSettingsMenu from './PasswordSettingsMenu';
@@ -3942,6 +3942,35 @@ const SellerDashboard = ({
 
       const savedMemoDraftKey = buildSellerPurchaseDraftKey(effectiveMemoNumber);
       await saveDraftRows(savedMemoDraftKey, rowsWithMemo);
+      const shouldCommitPurchaseLocally = isLocalOnlySession();
+      const isEditingLocalMemo = shouldCommitPurchaseLocally && Boolean(purchaseSendMemoNumber);
+      if (isEditingLocalMemo) {
+        await lotteryService.replacePurchaseSendMemo({
+          sellerId: purchaseSendSellerId,
+          bookingDate,
+          memoNumber: effectiveMemoNumber,
+          sessionMode,
+          amount,
+          purchaseCategory: activePurchaseCategory,
+          rows: []
+        });
+      }
+      if (shouldCommitPurchaseLocally) {
+        for (const row of rowsWithMemo) {
+          await lotteryService.sendPurchase({
+            sellerId: purchaseSendSellerId,
+            rangeStart: row.numberStart || row.from,
+            rangeEnd: row.numberEnd || row.to,
+            boxValue: row.semValue,
+            amount: row.bookingAmount || amount,
+            memoNumber: effectiveMemoNumber,
+            bookingDate: row.drawDate || bookingDate,
+            sessionMode: row.resolvedSessionMode || sessionMode,
+            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+            memoRowOrder: row.memoRowOrder
+          });
+        }
+      }
       if (sellerLocalDraftKey !== savedMemoDraftKey) {
         await clearDraftRows(sellerLocalDraftKey);
       }
@@ -3952,9 +3981,16 @@ const SellerDashboard = ({
       setRetroToInput('');
       setPurchaseSendMemoNumber(null);
       setPurchaseSendMemoSelectionIndex(0);
-      setSuccess('Purchase local me save ho gaya. Send Purchase se bhejo.');
+      setSuccess(shouldCommitPurchaseLocally
+        ? 'Purchase local database me save ho gaya. Unsold F4 aur F10 me ab turant dikhega.'
+        : 'Purchase local me save ho gaya. Send Purchase se bhejo.');
       setPurchaseSendMemoPopupOpen(false);
-      await loadLocalPurchaseMemoDrafts();
+      await Promise.all([
+        loadLocalPurchaseMemoDrafts(),
+        loadPurchaseEntries(),
+        loadPurchaseSendMemoEntries(purchaseSendSellerId, bookingDate),
+        refreshUnsoldDerivedViews()
+      ]);
       focusPurchaseSellerSelectAfterSave();
     } catch (err) {
       const errorMessage = err.response?.data?.message || 'Error saving purchase';
