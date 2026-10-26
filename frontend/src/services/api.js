@@ -8,12 +8,26 @@ const api = axios.create({
   baseURL: API_BASE_URL
 });
 
-// In local-only builds axios must never open a network connection.  Write
-// operations are handled below by SQLite; reads use their existing local
-// fallbacks.  This adapter is deliberately installed at creation time so an
-// accidental new api.get/post cannot leak application data to the server.
+export const isLocalOnlySession = () => {
+  if (!appConfig.localOnlyEnabled) {
+    return false;
+  }
+
+  try {
+    const user = JSON.parse(localStorage.getItem('user') || 'null');
+    return String(user?.role || '').toLowerCase() !== 'superadmin';
+  } catch (error) {
+    return true;
+  }
+};
+
+// Superadmin uses the server; every other role is restricted to local data.
 if (appConfig.localOnlyEnabled) {
   api.defaults.adapter = async (config) => {
+    if (!isLocalOnlySession()) {
+      const { adapter, ...networkConfig } = config;
+      return axios.request(networkConfig);
+    }
     const error = new Error('This installation is local-only');
     error.config = config;
     error.isLocalOnly = true;
@@ -64,7 +78,7 @@ const queueOfflineOperation = async (operationType, payload) => {
     });
   }
 
-  if (appConfig.localOnlyEnabled) {
+  if (isLocalOnlySession()) {
     return {
       data: {
         message: 'Entry sirf local database mein save ho gayi.',
@@ -102,7 +116,7 @@ const postWithOfflineQueue = async (url, payload, operationType) => {
 };
 
 const requestWithOfflineQueue = async ({ method = 'POST', url, data, config = {} }, operationType) => {
-  if (appConfig.localOnlyEnabled) {
+  if (isLocalOnlySession()) {
     return queueOfflineOperation(operationType, { url, method, body: data, params: config.params });
   }
   try {
@@ -606,7 +620,8 @@ api.interceptors.response.use(
 );
 
 export const authService = {
-  login: (username, password) => api.post('/auth/login', { username, password }),
+  // Login is the only request permitted to reach the server in local-only mode.
+  login: (username, password) => axios.post(`${API_BASE_URL}/auth/login`, { username, password }),
   getCurrentUser: () => api.get('/auth/me')
 };
 

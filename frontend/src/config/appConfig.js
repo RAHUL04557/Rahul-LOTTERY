@@ -31,8 +31,6 @@ export const appConfig = {
   apiBaseUrl: window.APP_CONFIG?.API_BASE_URL || process.env.REACT_APP_API_URL || 'https://drawtheprice.in/api',
   apiFallbackUrls: getArrayConfig('API_FALLBACK_URLS', []),
   offlineFirstEnabled: getBooleanConfig('OFFLINE_FIRST_ENABLED', true),
-  // Intentionally not environment-configurable: this build must never send
-  // operational data to a server.
   localOnlyEnabled: true,
   localRetentionDays: getNumberConfig('LOCAL_RETENTION_DAYS', 365),
   syncBootstrapDays: getNumberConfig('SYNC_BOOTSTRAP_DAYS', 365),

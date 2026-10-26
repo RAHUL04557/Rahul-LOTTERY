@@ -1,5 +1,5 @@
 import { appConfig } from '../config/appConfig';
-import api, { syncService } from './api';
+import api, { isLocalOnlySession, syncService } from './api';
 
 const LOCAL_MIGRATION_START_DATE = '2026-10-20';
 const LOCAL_MIGRATION_KEY = `serverImportCompleted:${LOCAL_MIGRATION_START_DATE}`;
@@ -30,12 +30,12 @@ export const bootstrapLocalData = async () => {
   await pruneLocalRetention();
 
   const migrationDone = localDb.getMetadata ? await localDb.getMetadata(LOCAL_MIGRATION_KEY) : null;
-  if (appConfig.localOnlyEnabled && migrationDone) {
+  if (isLocalOnlySession() && migrationDone) {
     return { skipped: true, migrated: true, saved: 0 };
   }
 
   const lastBootstrapAt = localDb.getMetadata ? await localDb.getMetadata('lastBootstrapAt') : null;
-  const response = appConfig.localOnlyEnabled
+  const response = isLocalOnlySession()
     ? await syncService.bootstrapInitialMigration({ fromDate: LOCAL_MIGRATION_START_DATE })
     : await syncService.bootstrap({
       days: appConfig.syncBootstrapDays,
@@ -56,7 +56,7 @@ export const bootstrapLocalData = async () => {
     await localDb.setMetadata('lastBootstrapAt', response.data?.serverTime || new Date().toISOString());
     await localDb.setMetadata('bootstrapDays', response.data?.days || appConfig.syncBootstrapDays);
     await localDb.setMetadata('visibleUsers', users);
-    if (appConfig.localOnlyEnabled) {
+    if (isLocalOnlySession()) {
       await localDb.setMetadata(LOCAL_MIGRATION_KEY, {
         importedAt: new Date().toISOString(),
         fromDate: LOCAL_MIGRATION_START_DATE,
