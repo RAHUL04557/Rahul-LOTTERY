@@ -20,6 +20,41 @@ const PRIZE_CONFIG = {
 
 const getLocalDbPath = () => path.join(app.getPath('userData'), 'lottery-local.db');
 
+const getRetentionCutoff = () => {
+  const cutoff = new Date();
+  cutoff.setHours(0, 0, 0, 0);
+  cutoff.setMonth(cutoff.getMonth() - 3);
+  return [cutoff.getFullYear(), String(cutoff.getMonth() + 1).padStart(2, '0'), String(cutoff.getDate()).padStart(2, '0')].join('-');
+};
+
+const pruneExpiredLocalData = (database = initLocalDb()) => {
+  const cutoff = getRetentionCutoff();
+  const cutoffTimestamp = `${cutoff}T00:00:00.000Z`;
+  const tables = [
+    ['local_purchase_entries', 'booking_date'],
+    ['local_manual_unsold_entries', 'booking_date'],
+    ['local_prize_results', 'result_for_date'],
+    ['local_purchase_send_drafts', 'booking_date'],
+    ['local_unsold_drafts', 'booking_date'],
+    ['local_unsold_remove_drafts', 'booking_date']
+  ];
+  const removed = {};
+
+  const prune = database.transaction(() => {
+    tables.forEach(([tableName, dateColumn]) => {
+      removed[tableName] = database
+        .prepare(`DELETE FROM ${tableName} WHERE ${dateColumn} IS NOT NULL AND ${dateColumn} <> '' AND ${dateColumn} < ?`)
+        .run(cutoff).changes || 0;
+    });
+    removed.local_generated_bills = database
+      .prepare('DELETE FROM local_generated_bills WHERE generated_at < ?')
+      .run(cutoffTimestamp).changes || 0;
+  });
+  prune();
+
+  return { cutoff, removed, removedCount: Object.values(removed).reduce((total, count) => total + count, 0) };
+};
+
 const ensureColumn = (database, tableName, columnName, definition) => {
   const columns = database.prepare(`PRAGMA table_info(${tableName})`).all();
   if (!columns.some((column) => column.name === columnName)) {
@@ -166,6 +201,20 @@ const initLocalDb = () => {
       sync_status TEXT NOT NULL DEFAULT 'synced'
     );
 
+    CREATE TABLE IF NOT EXISTS local_number_history (
+      local_id TEXT PRIMARY KEY,
+      user_id INTEGER,
+      number TEXT NOT NULL,
+      box_value TEXT,
+      amount TEXT,
+      booking_date TEXT,
+      session_mode TEXT,
+      purchase_category TEXT,
+      action_type TEXT NOT NULL,
+      occurred_at TEXT NOT NULL,
+      details_json TEXT NOT NULL DEFAULT '{}'
+    );
+
     CREATE TABLE IF NOT EXISTS sync_queue (
       local_id TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL,
@@ -198,6 +247,9 @@ const initLocalDb = () => {
 
     CREATE INDEX IF NOT EXISTS idx_local_generated_bills_user
     ON local_generated_bills (user_id, updated_at);
+
+    CREATE INDEX IF NOT EXISTS idx_local_number_history_lookup
+    ON local_number_history (number, session_mode, box_value, occurred_at);
   `);
 
   ensureColumn(db, 'local_purchase_entries', 'series', 'TEXT');
@@ -223,6 +275,10 @@ const initLocalDb = () => {
     CREATE INDEX IF NOT EXISTS idx_local_prize_lookup
     ON local_prize_results (result_for_date, session_mode, purchase_category, digit_length, winning_number);
   `);
+
+  // Retention is enforced every time the application opens its local DB.
+  // This keeps a rolling calendar three months without any manual cleanup.
+  pruneExpiredLocalData(db);
 
   return db;
 };
@@ -295,7 +351,7 @@ const normalizePurchaseEntry = (entry) => {
     memoRowOrder: entry?.memoRowOrder ?? entry?.memo_row_order ?? null,
     entrySource: String(entry?.entrySource || entry?.entry_source || 'purchase'),
     createdAt: entry?.createdAt || entry?.created_at || now,
-    updatedAt: entry?.updatedAt || entry?.updated_at || now
+    updatedAt: entry?.updatedAt || entry?.updated_at || entry?.sentAt || entry?.sent_at || now
   };
 };
 
@@ -1330,6 +1386,8 @@ const setupLocalDbIpc = (ipcMain) => {
     };
   });
 
+  ipcMain.handle('local-db:prune-retention', () => pruneExpiredLocalData());
+
   ipcMain.handle('local-db:get-metadata', (_event, key) => {
     const row = initLocalDb()
       .prepare('SELECT value FROM local_metadata WHERE key = ?')
@@ -1827,6 +1885,136 @@ const setupLocalDbIpc = (ipcMain) => {
 
   ipcMain.handle('local-db:apply-offline-purchase-mutation', (_event, { operationType, payload = {}, userId } = {}) => {
     const now = new Date().toISOString();
+    // Local-only write path used by the renderer for every purchase-style
+    // operation.  These rows intentionally have no server_id: this database
+    // is the source of truth for a local-only installation.
+    const insertLocalRows = (rows = []) => {
+      const statement = initLocalDb().prepare(`
+        INSERT INTO local_purchase_entries (
+          local_id, server_id, user_id, owner_user_id, forwarded_by, sent_to_parent,
+          series, number, box_value, unique_code, amount, booking_date, session_mode,
+          purchase_category, status, memo_number, purchase_memo_number, memo_row_order,
+          entry_source, created_at, updated_at, sync_status
+        ) VALUES (
+          @localId, NULL, @userId, @ownerUserId, @forwardedBy, @sentToParent,
+          @series, @number, @boxValue, NULL, @amount, @bookingDate, @sessionMode,
+          @purchaseCategory, @status, @memoNumber, @purchaseMemoNumber, @memoRowOrder,
+          @entrySource, @createdAt, @updatedAt, 'local'
+        ) ON CONFLICT(local_id) DO UPDATE SET
+          user_id = excluded.user_id, owner_user_id = excluded.owner_user_id,
+          forwarded_by = excluded.forwarded_by, sent_to_parent = excluded.sent_to_parent,
+          series = excluded.series, box_value = excluded.box_value, amount = excluded.amount,
+          booking_date = excluded.booking_date, session_mode = excluded.session_mode,
+          purchase_category = excluded.purchase_category, status = excluded.status,
+          memo_number = excluded.memo_number, purchase_memo_number = excluded.purchase_memo_number,
+          memo_row_order = excluded.memo_row_order, entry_source = excluded.entry_source,
+          updated_at = excluded.updated_at, sync_status = excluded.sync_status
+      `);
+      const validRows = rows.filter((row) => row.userId && row.number && row.boxValue && row.amount && row.bookingDate && row.sessionMode);
+      initLocalDb().transaction((items) => items.forEach((row) => statement.run(row)))(validRows);
+      return validRows.map((row) => ({
+        id: null, localId: row.localId, userId: row.userId, series: row.series,
+        number: row.number, boxValue: Number(row.boxValue), amount: Number(row.amount),
+        bookingDate: row.bookingDate, sessionMode: row.sessionMode,
+        purchaseCategory: row.purchaseCategory, status: row.status,
+        memoNumber: row.memoNumber, purchaseMemoNumber: row.purchaseMemoNumber,
+        memoRowOrder: row.memoRowOrder, entrySource: row.entrySource,
+        createdAt: row.createdAt
+      }));
+    };
+
+    const rowsFromRanges = (ranges = [], defaults = {}) => ranges.flatMap((row, index) => {
+      const values = getPayloadNumbers({ rangeStart: row.rangeStart, rangeEnd: row.rangeEnd, number: row.number });
+      return values.map((number) => ({
+        localId: `local-${defaults.entrySource || 'purchase'}-${defaults.userId}-${defaults.bookingDate}-${defaults.sessionMode}-${defaults.purchaseCategory}-${defaults.amount}-${row.boxValue || defaults.boxValue}-${number}-${defaults.memoNumber || 'none'}`,
+        userId: defaults.userId,
+        ownerUserId: defaults.ownerUserId || null,
+        forwardedBy: defaults.forwardedBy || null,
+        sentToParent: defaults.sentToParent || null,
+        series: row.series || defaults.series || null,
+        number,
+        boxValue: String(row.boxValue || defaults.boxValue || ''),
+        amount: String(row.amount || defaults.amount || ''),
+        bookingDate: toLocalDate(row.bookingDate || defaults.bookingDate),
+        sessionMode: String(row.sessionMode || defaults.sessionMode || ''),
+        purchaseCategory: String(row.purchaseCategory || defaults.purchaseCategory || ''),
+        status: defaults.status || 'accepted',
+        memoNumber: defaults.memoNumber || null,
+        purchaseMemoNumber: defaults.purchaseMemoNumber || defaults.memoNumber || null,
+        memoRowOrder: row.memoRowOrder ?? index,
+        entrySource: defaults.entrySource || 'purchase',
+        createdAt: now,
+        updatedAt: now
+      }));
+    });
+
+    const saveNumberHistory = (actionType, sourcePayload = payload) => {
+      const historyRows = getPayloadNumbers(sourcePayload);
+      if (historyRows.length === 0) return;
+      const statement = initLocalDb().prepare(`
+        INSERT INTO local_number_history (
+          local_id, user_id, number, box_value, amount, booking_date,
+          session_mode, purchase_category, action_type, occurred_at, details_json
+        ) VALUES (
+          @localId, @userId, @number, @boxValue, @amount, @bookingDate,
+          @sessionMode, @purchaseCategory, @actionType, @occurredAt, @detailsJson
+        )
+      `);
+      initLocalDb().transaction((numbers) => numbers.forEach((number) => statement.run({
+        localId: createLocalId('history'),
+        userId: Number(sourcePayload.sellerId || sourcePayload.sellerUserId || userId || 0) || null,
+        number,
+        boxValue: String(sourcePayload.boxValue || ''),
+        amount: String(sourcePayload.amount || ''),
+        bookingDate: toLocalDate(sourcePayload.bookingDate),
+        sessionMode: String(sourcePayload.sessionMode || ''),
+        purchaseCategory: String(sourcePayload.purchaseCategory || ''),
+        actionType,
+        occurredAt: now,
+        detailsJson: JSON.stringify({ memoNumber: sourcePayload.memoNumber || null, actorUserId: Number(userId || 0) || null })
+      })))(historyRows);
+    };
+
+    if (operationType === 'add_admin_purchase' || operationType === 'replace_admin_purchase_memo') {
+      const bookingDate = toLocalDate(payload.bookingDate);
+      const sessionMode = String(payload.sessionMode || '');
+      const memoNumber = Number(payload.memoNumber || 0) || null;
+      const ranges = operationType === 'replace_admin_purchase_memo'
+        ? (Array.isArray(payload.rows) ? payload.rows : [])
+        : [payload];
+
+      if (operationType === 'replace_admin_purchase_memo' && memoNumber) {
+        initLocalDb().prepare(`
+          DELETE FROM local_purchase_entries
+          WHERE user_id = ? AND entry_source = 'admin_purchase' AND memo_number = ?
+            AND booking_date = ? AND session_mode = ?
+        `).run(Number(userId || 0), memoNumber, bookingDate, sessionMode);
+      }
+
+      const entries = insertLocalRows(rowsFromRanges(ranges, {
+        userId: Number(userId || 0), ownerUserId: Number(userId || 0),
+        bookingDate, sessionMode, purchaseCategory: String(payload.purchaseCategory || ''),
+        amount: String(payload.amount || ''), boxValue: String(payload.boxValue || ''),
+        memoNumber, status: 'available', entrySource: 'admin_purchase'
+      }));
+      ranges.forEach((row) => saveNumberHistory(operationType === 'add_admin_purchase' ? 'purchase_saved' : 'purchase_memo_saved', {
+        ...payload, ...row, bookingDate: row.bookingDate || bookingDate, sessionMode: row.sessionMode || sessionMode
+      }));
+      return { ok: true, entries };
+    }
+
+    if (operationType === 'add_entry' || operationType === 'replace_booking_memo') {
+      const memoNumber = Number(payload.memoNumber || 0) || null;
+      const ranges = Array.isArray(payload.rows) ? payload.rows : [payload];
+      const entries = insertLocalRows(rowsFromRanges(ranges, {
+        userId: Number(payload.sellerId || userId || 0), ownerUserId: Number(userId || 0),
+        bookingDate: toLocalDate(payload.bookingDate), sessionMode: String(payload.sessionMode || ''),
+        purchaseCategory: String(payload.purchaseCategory || ''), amount: String(payload.amount || ''),
+        boxValue: String(payload.boxValue || ''), memoNumber, status: 'accepted', entrySource: 'purchase'
+      }));
+      ranges.forEach((row) => saveNumberHistory('booking_saved', { ...payload, ...row }));
+      return { ok: true, entries };
+    }
     if (operationType === 'create_seller') {
       const currentUser = getLocalUsers().find((user) => Number(user.id) === Number(userId)) || {};
       const sellerType = String(payload.sellerType || payload.seller_type || 'seller');
@@ -1902,6 +2090,7 @@ const setupLocalDbIpc = (ipcMain) => {
     }
 
     if (operationType === 'unsold_save') {
+      saveNumberHistory('unsold_saved');
       if (Number(targetSellerId) === Number(userId)) {
         initLocalDb()
           .prepare(`
@@ -1932,6 +2121,7 @@ const setupLocalDbIpc = (ipcMain) => {
     }
 
     if (operationType === 'unsold_remove') {
+      saveNumberHistory('unsold_removed');
       if (Number(targetSellerId) !== Number(userId)) {
         removeManualUnsoldLocal({ payload, userId });
         return { ok: true };
@@ -2047,6 +2237,7 @@ const setupLocalDbIpc = (ipcMain) => {
     }
 
     if (operationType === 'purchase_send') {
+      saveNumberHistory('purchase_sent');
       const targetUserId = Number(payload.sellerId || payload.sellerUserId || 0);
       const purchaseNumbers = getPayloadNumbers(payload);
       const bookingDate = toLocalDate(payload.bookingDate);
@@ -2114,6 +2305,9 @@ const setupLocalDbIpc = (ipcMain) => {
     }
 
     if (operationType === 'replace_purchase_send_memo') {
+      (Array.isArray(payload.rows) ? payload.rows : []).forEach((row) => {
+        saveNumberHistory('purchase_memo_updated', { ...payload, ...row });
+      });
       const currentUser = getLocalUsers().find((user) => Number(user.id) === Number(userId)) || {};
       const targetUserId = Number(payload.sellerId || payload.sellerUserId || 0);
       const memoNumber = Number(payload.deletedMemoNumber || payload.memoNumber || 0);
@@ -2175,6 +2369,9 @@ const setupLocalDbIpc = (ipcMain) => {
     }
 
     if (operationType === 'replace_unsold_memo') {
+      (Array.isArray(payload.rows) ? payload.rows : []).forEach((row) => {
+        saveNumberHistory('unsold_memo_updated', { ...payload, ...row });
+      });
       const targetUserId = Number(payload.sellerId || payload.sellerUserId || userId || 0);
       const memoNumber = Number(payload.deletedMemoNumber || payload.memoNumber || 0);
       const bookingDate = toLocalDate(payload.bookingDate);
@@ -2678,7 +2875,7 @@ const setupLocalDbIpc = (ipcMain) => {
       }
     }
 
-    return initLocalDb()
+    const traceRows = initLocalDb()
       .prepare(`
         SELECT *
         FROM local_purchase_entries
@@ -2686,8 +2883,30 @@ const setupLocalDbIpc = (ipcMain) => {
         ORDER BY booking_date DESC, updated_at DESC
         LIMIT 2000
       `)
-      .all(...params)
-      .map((row) => ({
+      .all(...params);
+    const historyStatement = initLocalDb().prepare(`
+      SELECT action_type, occurred_at, booking_date, session_mode, box_value, amount
+      FROM local_number_history
+      WHERE number = ?
+        AND (? = '' OR session_mode = ?)
+        AND (? = '' OR box_value = ?)
+      ORDER BY occurred_at ASC
+    `);
+
+    return traceRows.map((row) => {
+      const history = historyStatement.all(
+        row.number,
+        String(filters.sessionMode || ''), String(filters.sessionMode || ''),
+        String(filters.sem || ''), String(filters.sem || '')
+      ).map((event) => ({
+        action: event.action_type,
+        at: event.occurred_at,
+        bookingDate: event.booking_date,
+        sessionMode: event.session_mode,
+        sem: event.box_value,
+        amount: event.amount
+      }));
+      return {
         id: row.server_id || row.local_id,
         uniqueCode: row.unique_code,
         number: row.number,
@@ -2702,8 +2921,11 @@ const setupLocalDbIpc = (ipcMain) => {
         forwardedBy: row.forwarded_by,
         sentTo: row.sent_to_parent,
         createdAt: row.created_at,
-        sentAt: row.updated_at
-      }));
+        sentAt: row.updated_at,
+        history,
+        historyText: history.map((event) => `${event.action.replace(/_/g, ' ')}: ${event.at}`).join(' | ')
+      };
+    });
   });
 
   ipcMain.handle('local-db:enqueue-sync', (_event, payload) => {

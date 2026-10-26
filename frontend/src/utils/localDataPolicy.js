@@ -1,5 +1,13 @@
 // Shared by the renderer and Electron. Only selected business dates are used.
-const CUTOFF = '2026-10-01';
+// Keep exactly the rolling three calendar months requested for local storage.
+const retentionStart = new Date();
+retentionStart.setHours(0, 0, 0, 0);
+retentionStart.setMonth(retentionStart.getMonth() - 3);
+const CUTOFF = [
+  retentionStart.getFullYear(),
+  String(retentionStart.getMonth() + 1).padStart(2, '0'),
+  String(retentionStart.getDate()).padStart(2, '0')
+].join('-');
 const DATE_FIELDS = ['bookingDate', 'booking_date', 'drawDate', 'resultForDate', 'result_for_date'];
 
 function dateOnly(value) {

@@ -1,12 +1,23 @@
 import { appConfig } from '../config/appConfig';
 import api, { syncService } from './api';
 
+const LOCAL_MIGRATION_START_DATE = '2026-10-20';
+const LOCAL_MIGRATION_KEY = `serverImportCompleted:${LOCAL_MIGRATION_START_DATE}`;
+
 const getLocalDb = () => {
   if (typeof window === 'undefined') {
     return null;
   }
 
   return window.lotteryLocalDb || null;
+};
+
+export const pruneLocalRetention = async () => {
+  const localDb = getLocalDb();
+  if (!localDb?.pruneRetention) {
+    return { skipped: true, removedCount: 0 };
+  }
+  return localDb.pruneRetention();
 };
 
 export const bootstrapLocalData = async () => {
@@ -16,11 +27,20 @@ export const bootstrapLocalData = async () => {
     return { skipped: true, saved: 0 };
   }
 
+  await pruneLocalRetention();
+
+  const migrationDone = localDb.getMetadata ? await localDb.getMetadata(LOCAL_MIGRATION_KEY) : null;
+  if (appConfig.localOnlyEnabled && migrationDone) {
+    return { skipped: true, migrated: true, saved: 0 };
+  }
+
   const lastBootstrapAt = localDb.getMetadata ? await localDb.getMetadata('lastBootstrapAt') : null;
-  const response = await syncService.bootstrap({
-    days: appConfig.syncBootstrapDays,
-    since: lastBootstrapAt || undefined
-  });
+  const response = appConfig.localOnlyEnabled
+    ? await syncService.bootstrapInitialMigration({ fromDate: LOCAL_MIGRATION_START_DATE })
+    : await syncService.bootstrap({
+      days: appConfig.syncBootstrapDays,
+      since: lastBootstrapAt || undefined
+    });
   const purchases = Array.isArray(response.data?.purchases) ? response.data.purchases : [];
   const prizeResults = Array.isArray(response.data?.prizeResults) ? response.data.prizeResults : [];
   const users = Array.isArray(response.data?.users) ? response.data.users : [];
@@ -36,6 +56,15 @@ export const bootstrapLocalData = async () => {
     await localDb.setMetadata('lastBootstrapAt', response.data?.serverTime || new Date().toISOString());
     await localDb.setMetadata('bootstrapDays', response.data?.days || appConfig.syncBootstrapDays);
     await localDb.setMetadata('visibleUsers', users);
+    if (appConfig.localOnlyEnabled) {
+      await localDb.setMetadata(LOCAL_MIGRATION_KEY, {
+        importedAt: new Date().toISOString(),
+        fromDate: LOCAL_MIGRATION_START_DATE,
+        purchases: savedResult?.saved || purchases.length,
+        prizeResults: savedPrizeResult?.saved || prizeResults.length,
+        users: savedUsersResult?.saved || users.length
+      });
+    }
   }
 
   return {
