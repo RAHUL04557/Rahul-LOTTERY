@@ -2542,8 +2542,7 @@ const AdminDashboard = ({
       status: 'unsold',
       purchaseCategory: filter.purchaseCategory || purchaseCategory,
       amount: filter.amount || purchaseAmount,
-      boxValue: filter.boxValue || undefined,
-      latestSentOnly: true
+      boxValue: filter.boxValue || undefined
     });
 
     return normalizeAdminSelectedSellerEntries(response.data || [], selectedSellerId)

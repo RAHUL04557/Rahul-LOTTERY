@@ -966,8 +966,8 @@ const buildConsecutiveNumbers = (startValue, endValue) => {
     return { error: 'To Number must be greater than or equal to From Number' };
   }
 
-  if ((end - start) + 1 > 500) {
-    return { error: 'Maximum 500 consecutive numbers allowed at once' };
+  if ((end - start) + 1 > 10000) {
+    return { error: 'Maximum 10000 consecutive numbers allowed at once' };
   }
 
   return {

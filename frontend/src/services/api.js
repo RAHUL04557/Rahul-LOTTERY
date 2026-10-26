@@ -220,6 +220,62 @@ const getPurchasesFromLocalDb = async (params = {}) => {
   return { data };
 };
 
+const buildLocalPurchaseRange = (rangeStart, rangeEnd, number) => {
+  const startValue = String(rangeStart ?? number ?? '').trim();
+  const endValue = String(rangeEnd ?? rangeStart ?? number ?? '').trim();
+
+  if (!/^\d{1,5}$/.test(startValue) || !/^\d{1,5}$/.test(endValue)) {
+    return [];
+  }
+
+  const start = Number(startValue);
+  const end = Number(endValue);
+  if (start > end || start < 0 || end > 99999) {
+    return [];
+  }
+
+  return Array.from({ length: end - start + 1 }, (_value, index) => String(start + index).padStart(5, '0'));
+};
+
+const checkLocalPurchaseUnsoldRemove = async (payload = {}) => {
+  const requestedNumbers = buildLocalPurchaseRange(payload.rangeStart, payload.rangeEnd, payload.number);
+  if (requestedNumbers.length === 0) {
+    const error = new Error('Valid unsold number or range is required');
+    error.response = { data: { message: error.message } };
+    throw error;
+  }
+
+  const localResult = await getPurchasesFromLocalDb({
+    bookingDate: payload.bookingDate,
+    sessionMode: payload.sessionMode,
+    sellerId: payload.sellerId || payload.sellerUserId,
+    status: 'unsold',
+    purchaseCategory: payload.purchaseCategory,
+    amount: payload.amount,
+    boxValue: payload.boxValue
+  });
+
+  if (!localResult) {
+    return null;
+  }
+
+  const requestedNumberSet = new Set(requestedNumbers);
+  const availableNumbers = new Set((localResult.data || []).map((entry) => String(entry.number || '').padStart(5, '0')));
+  const missingNumbers = requestedNumbers.filter((numberValue) => !availableNumbers.has(numberValue));
+  if (missingNumbers.length > 0) {
+    const error = new Error(`Unsold remove stock me ye number nahi hai: ${missingNumbers.join(', ')}`);
+    error.response = { data: { message: error.message } };
+    throw error;
+  }
+
+  return {
+    data: {
+      message: 'Local unsold remove stock verified',
+      entries: (localResult.data || []).filter((entry) => requestedNumberSet.has(String(entry.number || '').padStart(5, '0')))
+    }
+  };
+};
+
 const getLocalMySentEntries = async (params = {}) => {
   const localDb = getLocalDb();
   const currentUser = getCurrentUser();
@@ -1002,7 +1058,16 @@ export const lotteryService = {
   },
   markPurchaseUnsold: (payload) => postWithOfflineQueue('/lottery/purchases/mark-unsold', payload, 'unsold_save'),
   removePurchaseUnsold: (payload) => postWithOfflineQueue('/lottery/purchases/remove-unsold', payload, 'unsold_remove'),
-  checkPurchaseUnsoldRemove: (payload) => api.post('/lottery/purchases/remove-unsold/check', payload),
+  checkPurchaseUnsoldRemove: async (payload) => {
+    if (isLocalOnlySession()) {
+      const localResult = await checkLocalPurchaseUnsoldRemove(payload);
+      if (localResult) {
+        return localResult;
+      }
+    }
+
+    return api.post('/lottery/purchases/remove-unsold/check', payload);
+  },
   replacePurchaseUnsoldMemo: (payload) => requestWithOfflineQueue({ method: 'PUT', url: '/lottery/purchases/unsold-memo', data: payload }, 'replace_unsold_memo'),
   sendPurchaseUnsold: async (payload) => {
     const { desiredRows: _ignoredDesiredRows, desiredEntryIds: _ignoredDesiredEntryIds, ...basePayload } = payload || {};
