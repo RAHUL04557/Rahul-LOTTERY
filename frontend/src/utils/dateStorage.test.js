@@ -1,35 +1,49 @@
 describe('desktop selected-date storage', () => {
   let storage;
+  let oldDate;
+  let removedDate;
+  let validDate;
+  const plusDays = (date, days) => {
+    const next = new Date(`${date}T00:00:00Z`);
+    next.setUTCDate(next.getUTCDate() + days);
+    return next.toISOString().slice(0, 10);
+  };
+  const displayDate = (date) => date.split('-').reverse().join('/');
+
   beforeEach(async () => {
     jest.resetModules();
     localStorage.clear();
+    const policy = require('./localDataPolicy');
+    oldDate = plusDays(policy.CUTOFF, -1);
+    removedDate = policy.CUTOFF;
+    validDate = plusDays(policy.CUTOFF, 1);
     window.lotteryLocalDb = {
-      initializeDateStorage: jest.fn().mockResolvedValue({ values: {}, deletedDates: ['2026-10-03'] }),
+      initializeDateStorage: jest.fn().mockResolvedValue({ values: {}, deletedDates: [removedDate] }),
       saveBrowserStorage: jest.fn((key, value) => ({ value }))
     };
     storage = require('./dateStorage');
     await storage.initializeDateStorage();
   });
 
-  test('keeps October selected dates irrespective of creation time', () => {
-    const kept = { bookingDate: '2026-10-01', createdAt: '2020-01-01', rows: [{ number: '12345' }] };
+  test('keeps retained selected dates irrespective of creation time', () => {
+    const kept = { bookingDate: validDate, createdAt: '2020-01-01', rows: [{ number: '12345' }] };
     expect(storage.filterLocalData([
-      { bookingDate: '2026-09-30', createdAt: '2026-10-08' }, kept,
-      { bookingDate: '2026-10-03' }, { bookingDate: 'unknown', createdAt: '2020-01-01' }
+      { bookingDate: oldDate, createdAt: '2026-10-08' }, kept,
+      { bookingDate: removedDate }, { bookingDate: 'unknown', createdAt: '2020-01-01' }
     ])).toEqual([kept, { bookingDate: 'unknown', createdAt: '2020-01-01' }]);
   });
 
   test('rejects old selected date writes without converting them to offline retries', () => {
-    expect(() => storage.assertLocalDateAllowed({ body: { resultForDate: '2026-09-30' } })).toThrow();
-    expect(() => storage.assertLocalDateAllowed({ body: { resultForDate: '2026-10-01', createdAt: '2020-01-01' } })).not.toThrow();
-    try { storage.assertLocalDateAllowed({ bookingDate: '2026-09-30' }); }
+    expect(() => storage.assertLocalDateAllowed({ body: { resultForDate: oldDate } })).toThrow();
+    expect(() => storage.assertLocalDateAllowed({ body: { resultForDate: validDate, createdAt: '2020-01-01' } })).not.toThrow();
+    try { storage.assertLocalDateAllowed({ bookingDate: oldDate }); }
     catch (error) { expect(error.response.status).toBe(409); }
   });
 
-  test('nested October rows and unknown dates survive the filter', () => {
+  test('nested retained rows and unknown dates survive the filter', () => {
     expect(storage.filterLocalData({ rows: [
-      { drawDate: '30/09/2026' }, { drawDate: '01/10/2026' }, { number: '12345' }
-    ] })).toEqual({ rows: [{ drawDate: '01/10/2026' }, { number: '12345' }] });
+      { drawDate: displayDate(oldDate) }, { drawDate: displayDate(validDate) }, { number: '12345' }
+    ] })).toEqual({ rows: [{ drawDate: displayDate(validDate) }, { number: '12345' }] });
   });
 
   test('browser saves reach the desktop bridge and failures are surfaced', () => {
