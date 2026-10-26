@@ -67,7 +67,7 @@ const queueOfflineOperation = async (operationType, payload) => {
   }
 
   let localMutationResult = null;
-  if (localDb.applyOfflinePurchaseMutation) {
+  if (localDb?.applyOfflinePurchaseMutation) {
     localMutationResult = await localDb.applyOfflinePurchaseMutation({
       operationType,
       payload: payload?.body || payload,
@@ -218,6 +218,60 @@ const getPurchasesFromLocalDb = async (params = {}) => {
     user: currentUser
   });
   return { data };
+};
+
+const getLocalMySentEntries = async (params = {}) => {
+  const localDb = getLocalDb();
+  const currentUser = getCurrentUser();
+  if (!localDb?.listPurchases || !currentUser?.id) return null;
+
+  return {
+    data: await localDb.listPurchases({
+      ...params,
+      forwardedBy: currentUser.id,
+      currentUserId: currentUser.id,
+      user: currentUser
+    })
+  };
+};
+
+const getLocalReceivedEntries = async (params = {}) => {
+  const currentUser = getCurrentUser();
+  return getPurchasesFromLocalDb({ ...params, sellerId: currentUser?.id });
+};
+
+const getLocalTransferHistory = async (params = {}) => {
+  const localDb = getLocalDb();
+  const currentUser = getCurrentUser();
+  if (!localDb?.tracePurchases || !currentUser?.id) return null;
+
+  const rows = await localDb.tracePurchases({
+    fromDate: params.fromDate || params.date,
+    toDate: params.toDate || params.date,
+    sessionMode: params.shift,
+    amount: params.amount,
+    user: currentUser
+  });
+
+  return {
+    data: (Array.isArray(rows) ? rows : []).map((row) => ({
+      id: row.id,
+      entryId: row.id,
+      number: row.number,
+      boxValue: row.boxValue,
+      amount: row.amount,
+      bookingDate: row.bookingDate,
+      sessionMode: row.sessionMode,
+      purchaseCategory: row.purchaseCategory,
+      fromUserId: row.forwardedBy || null,
+      fromUsername: row.fromUsername || '',
+      toUserId: row.userId || null,
+      toUsername: row.toUsername || row.currentHolder || '',
+      actionType: row.forwardedBy ? 'purchase_sent' : 'purchase_saved',
+      statusAfter: row.status,
+      createdAt: row.sentAt || row.createdAt
+    }))
+  };
 };
 
 const cachePurchaseResponse = async (response) => {
@@ -701,6 +755,10 @@ export const userService = {
     }
   },
   getUserTree: async () => {
+    const localResult = await getLocalUserTree();
+    if (localResult) {
+      return localResult;
+    }
     try {
       const response = await api.get('/users/tree');
       const flattenTree = (node) => {
@@ -851,6 +909,11 @@ export const lotteryService = {
       ...(includeLocalUnsoldAsAccepted !== undefined && { includeLocalUnsoldAsAccepted })
     };
 
+    const localResult = await getPurchasesFromLocalDb(params);
+    if (localResult) {
+      return localResult;
+    }
+
     try {
       const response = await api.get('/lottery/purchases', {
         ...requestOptions,
@@ -974,20 +1037,21 @@ export const lotteryService = {
       }
     }),
   getMySentEntries: ({ sessionMode, bookingDate, amount } = {}, requestOptions = {}) =>
-    api.get('/lottery/my-sent-entries', {
+    getLocalMySentEntries({ sessionMode, bookingDate, amount }).then((localResult) => localResult || api.get('/lottery/my-sent-entries', {
       ...requestOptions,
       params: {
         ...(sessionMode && { sessionMode }),
         ...(bookingDate && { bookingDate }),
         ...(amount && { amount })
       }
-    }),
-  getReceivedEntries: ({ bookingDate, amount } = {}) => api.get('/lottery/received-entries', {
-    params: {
-      ...(bookingDate && { bookingDate }),
-      ...(amount && { amount })
-    }
-  }),
+    })),
+  getReceivedEntries: ({ bookingDate, amount } = {}) =>
+    getLocalReceivedEntries({ bookingDate, amount }).then((localResult) => localResult || api.get('/lottery/received-entries', {
+      params: {
+        ...(bookingDate && { bookingDate }),
+        ...(amount && { amount })
+      }
+    })),
   updateReceivedEntryStatus: (entryId, action, { amount } = {}) => requestWithOfflineQueue({
     method: 'PATCH',
     url: `/lottery/received-entries/${entryId}`,
@@ -1003,8 +1067,9 @@ export const lotteryService = {
         ...(amount && { amount })
       }
     }),
-  getTransferHistory: ({ date, fromDate, toDate, shift, amount, purchaseCategory, includeBookings } = {}, requestOptions = {}) =>
-    api.get('/lottery/transfer-history', {
+  getTransferHistory: ({ date, fromDate, toDate, shift, amount, purchaseCategory, includeBookings } = {}, requestOptions = {}) => {
+    const params = { date, fromDate, toDate, shift, amount, purchaseCategory, includeBookings };
+    return getLocalTransferHistory(params).then((localResult) => localResult || api.get('/lottery/transfer-history', {
       ...requestOptions,
       params: {
         ...(date && { date }),
@@ -1015,7 +1080,8 @@ export const lotteryService = {
         ...(purchaseCategory && { purchaseCategory }),
         ...(includeBookings && { includeBookings })
       }
-    }),
+    }));
+  },
   getPurchaseBillSummary: async ({ date, fromDate, toDate, shift, amount, purchaseCategory } = {}, requestOptions = {}) => {
     const params = {
       ...(date && { date }),
@@ -1025,6 +1091,11 @@ export const lotteryService = {
       ...(amount && { amount }),
       ...(purchaseCategory && { purchaseCategory })
     };
+
+    const localResult = await getLocalPurchaseBillSummary(params);
+    if (localResult) {
+      return localResult;
+    }
 
     try {
       return await api.get('/lottery/purchases/bill-summary', {
@@ -1104,6 +1175,11 @@ export const priceService = {
       sem: sem || 'ALL'
     };
 
+    const localResult = await checkPrizeFromLocalDb(params);
+    if (localResult) {
+      return localResult;
+    }
+
     try {
       return await api.get('/prices/check', {
         params: {
@@ -1179,6 +1255,11 @@ export const priceService = {
       ...(amount && { amount }),
       ...(purchaseCategory && { purchaseCategory })
     };
+
+    const localResult = await getLocalBillPrizes(params);
+    if (localResult) {
+      return localResult;
+    }
 
     try {
       return await api.get('/prices/bill-prizes', { params });

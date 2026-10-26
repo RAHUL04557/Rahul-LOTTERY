@@ -4033,6 +4033,9 @@ const StokistDashboard = ({
           });
         }
       }
+      if (isDirectSellerPurchase) {
+        await clearDraftRows(savedMemoDraftKey);
+      }
       if (sellerLocalDraftKey !== savedMemoDraftKey) {
         await clearDraftRows(sellerLocalDraftKey);
       }

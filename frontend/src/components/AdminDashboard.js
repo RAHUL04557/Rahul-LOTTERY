@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { createWorker } from 'tesseract.js';
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist/build/pdf';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.entry';
-import { billCacheService, lotteryService, priceService, userService } from '../services/api';
+import { billCacheService, isLocalOnlySession, lotteryService, priceService, userService } from '../services/api';
 import UserTreeView from './UserTreeView';
 import EntriesTableView from './EntriesTableView';
 import PasswordSettingsMenu from './PasswordSettingsMenu';
@@ -2707,7 +2707,17 @@ const AdminDashboard = ({
     try {
       const lookupEntries = isUnsoldRemoveLookup
         ? await getAdminUnsoldRemoveStockEntries(filter)
-        : ((await lotteryService.getAdminPurchaseSentHistory({
+        : isLocalOnlySession()
+          ? ((await lotteryService.getPurchases({
+            bookingDate: purchaseBookingDate,
+            sessionMode: filter.sessionMode,
+            sellerId: purchaseSellerId,
+            status: 'accepted',
+            purchaseCategory: filter.purchaseCategory,
+            amount: purchaseAmount,
+            boxValue: filter.boxValue || undefined
+          })).data || [])
+          : ((await lotteryService.getAdminPurchaseSentHistory({
           bookingDate: purchaseBookingDate,
           sessionMode: filter.sessionMode,
           sellerId: purchaseSellerId,
@@ -3584,6 +3594,9 @@ const AdminDashboard = ({
           memoRowOrder: row.memoRowOrder
         });
       }
+      // Admin -> normal seller is final immediately, so it must never remain
+      // in the Send Purchase draft queue.
+      await clearDraftRows(savedMemoDraftKey);
       if (adminLocalDraftKey !== savedMemoDraftKey) {
         await clearDraftRows(adminLocalDraftKey);
       }
@@ -3595,7 +3608,10 @@ const AdminDashboard = ({
       setPurchaseMemoSelectionIndex(0);
       setSuccess('Seller ko purchase direct send ho gaya. Purchase memo se ise kabhi bhi edit kar sakte hain.');
       setPurchaseMemoPopupOpen(false);
-      await loadLocalPurchaseMemoDrafts();
+      await Promise.all([
+        loadLocalPurchaseMemoDrafts(),
+        loadPurchaseEntries(purchaseBookingDate, purchaseSessionMode, purchaseSellerId)
+      ]);
     } catch (err) {
       const rawErrorMessage = err.response?.data?.message || err.message || '';
       const normalizedErrorMessage = String(rawErrorMessage).toLowerCase();
@@ -5026,7 +5042,7 @@ const AdminDashboard = ({
         sessionMode: summarySessionValue,
         purchaseCategory: summaryCategoryValue,
         amount: summaryAmountValue
-      }, { skipLocalRead: true });
+      });
 
       const summaryRows = (response.data || []).map((row) => ({
         id: row.sellerId || row.seller_id,

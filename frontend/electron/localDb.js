@@ -1638,6 +1638,11 @@ const setupLocalDbIpc = (ipcMain) => {
       conditions.push(`user_id IN (${scopedSellerIds.map(() => '?').join(', ')})`);
     }
 
+    if (filters.forwardedBy) {
+      params.push(Number(filters.forwardedBy));
+      conditions.push('forwarded_by = ?');
+    }
+
     if (filters.purchaseCategory) {
       params.push(String(filters.purchaseCategory));
       conditions.push(`purchase_category = ?`);
@@ -2916,10 +2921,13 @@ const setupLocalDbIpc = (ipcMain) => {
         status: row.status,
         entrySource: row.entry_source || 'purchase',
         purchaseCategory: row.purchase_category,
-        bookedBy: null,
-        currentHolder: null,
+      userId: row.user_id,
+      bookedBy: usersById.get(Number(row.owner_user_id))?.username || null,
+      currentHolder: usersById.get(Number(row.user_id))?.username || null,
         forwardedBy: row.forwarded_by,
         sentTo: row.sent_to_parent,
+      fromUsername: usersById.get(Number(row.forwarded_by))?.username || null,
+      toUsername: usersById.get(Number(row.user_id))?.username || null,
         createdAt: row.created_at,
         sentAt: row.updated_at,
         history,

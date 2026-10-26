@@ -31,7 +31,10 @@ export const appConfig = {
   apiBaseUrl: window.APP_CONFIG?.API_BASE_URL || process.env.REACT_APP_API_URL || 'https://drawtheprice.in/api',
   apiFallbackUrls: getArrayConfig('API_FALLBACK_URLS', []),
   offlineFirstEnabled: getBooleanConfig('OFFLINE_FIRST_ENABLED', true),
-  localOnlyEnabled: true,
+  // Electron has the SQLite bridge; a browser-hosted frontend does not.
+  // Keep desktop local-first while allowing localhost/browser development to
+  // use the configured backend for operations such as Create Seller.
+  localOnlyEnabled: getBooleanConfig('LOCAL_ONLY_ENABLED', Boolean(window.lotteryLocalDb)),
   localRetentionDays: getNumberConfig('LOCAL_RETENTION_DAYS', 365),
   syncBootstrapDays: getNumberConfig('SYNC_BOOTSTRAP_DAYS', 365),
   syncIntervalMs: getNumberConfig('SYNC_INTERVAL_MS', 30000)
