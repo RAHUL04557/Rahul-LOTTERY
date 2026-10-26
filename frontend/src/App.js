@@ -8,7 +8,7 @@ import AdminDashboard from './components/AdminDashboard';
 import SuperAdminDashboard from './components/SuperAdminDashboard';
 import EntrySelectionScreen from './components/EntrySelectionScreen';
 import { authService } from './services/api';
-import { bootstrapLocalData, flushSyncQueue } from './services/localSync';
+import { bootstrapLocalData, flushSyncQueue, pruneLocalRetention } from './services/localSync';
 import './styles/index.css';
 
 const isNetworkError = (error) => !error?.response;
@@ -113,6 +113,14 @@ function App() {
       console.warn('Offline queue sync failed:', syncError.message);
     });
 
+    // Covers a machine that stays open across midnight.  Database deletion is
+    // date based and idempotent, so this inexpensive daily check is safe.
+    const retentionIntervalId = window.setInterval(() => {
+      pruneLocalRetention().catch((error) => {
+        console.warn('Local retention cleanup failed:', error.message);
+      });
+    }, 60 * 60 * 1000);
+
     const intervalId = window.setInterval(() => {
       flushSyncQueue().catch((syncError) => {
         console.warn('Offline queue sync failed:', syncError.message);
@@ -131,6 +139,7 @@ function App() {
 
     return () => {
       window.clearInterval(intervalId);
+      window.clearInterval(retentionIntervalId);
       window.removeEventListener('online', handleOnline);
     };
   }, [user]);

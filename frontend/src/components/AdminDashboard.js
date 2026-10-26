@@ -761,7 +761,9 @@ const mapTraceRecord = (record) => ({
   status: record.status,
   sessionMode: record.sessionMode,
   createdAt: record.createdAt,
-  sentAt: record.sentAt
+  sentAt: record.sentAt,
+  history: record.history || [],
+  historyText: record.historyText || ''
 });
 
 const mapApiEntry = (entry) => ({
@@ -3566,6 +3568,22 @@ const AdminDashboard = ({
 
       const savedMemoDraftKey = buildAdminPurchaseDraftKey(effectiveMemoNumber);
       await saveDraftRows(savedMemoDraftKey, rowsWithMemo);
+      // Admin -> Seller is delivered immediately.  The same local memo draft
+      // remains available in Purchase, so editing it simply updates this memo.
+      for (const row of rowsWithMemo) {
+        await lotteryService.sendAdminPurchase({
+          sellerId: purchaseSellerId,
+          rangeStart: row.numberStart || row.from,
+          rangeEnd: row.numberEnd || row.to,
+          boxValue: row.semValue,
+          amount: row.bookingAmount || purchaseAmount,
+          memoNumber: effectiveMemoNumber,
+          bookingDate: row.drawDate || purchaseBookingDate,
+          sessionMode: row.resolvedSessionMode || purchaseSessionMode,
+          purchaseCategory: row.resolvedPurchaseCategory || purchaseCategory,
+          memoRowOrder: row.memoRowOrder
+        });
+      }
       if (adminLocalDraftKey !== savedMemoDraftKey) {
         await clearDraftRows(adminLocalDraftKey);
       }
@@ -3575,7 +3593,7 @@ const AdminDashboard = ({
       resetPurchaseSendEntryInputs();
       setPurchaseMemoNumber(null);
       setPurchaseMemoSelectionIndex(0);
-      setSuccess('Purchase local me save ho gaya. Send Purchase se bhejo.');
+      setSuccess('Seller ko purchase direct send ho gaya. Purchase memo se ise kabhi bhi edit kar sakte hain.');
       setPurchaseMemoPopupOpen(false);
       await loadLocalPurchaseMemoDrafts();
     } catch (err) {
@@ -6671,6 +6689,7 @@ const AdminDashboard = ({
               <th>Morning/Night</th>
               <th>Booked Time</th>
               <th>Sent Time</th>
+              <th>Number History</th>
             </tr>
           </thead>
           <tbody>
@@ -6717,6 +6736,7 @@ const AdminDashboard = ({
                     <td><strong>{record.sessionMode}</strong></td>
                     <td>{formatDisplayDateTime(record.createdAt)}</td>
                     <td>{formatDisplayDateTime(record.sentAt)}</td>
+                    <td style={{ whiteSpace: 'pre-line', minWidth: '240px' }}>{record.historyText || '-'}</td>
                   </tr>
                 );
               });
@@ -6822,7 +6842,6 @@ const AdminDashboard = ({
         {
           number: trimmedNumber,
           uniqueCode: trimmedNumber,
-          date: summaryDate,
           sessionMode: summarySessionMode,
           amount: traceAmount,
           sem: traceSem
