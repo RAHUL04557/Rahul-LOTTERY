@@ -1370,6 +1370,7 @@ const SubStokistDashboard = ({
       id: seller.id,
       username: seller.username,
       keyword: seller.keyword || '',
+      sellerType: seller.sellerType || '',
       rateAmount6: seller.rateAmount6 || 0,
       rateAmount12: seller.rateAmount12 || 0
     }))
@@ -3943,6 +3944,24 @@ const SubStokistDashboard = ({
 
       const savedMemoDraftKey = buildSellerPurchaseDraftKey(effectiveMemoNumber);
       await saveDraftRows(savedMemoDraftKey, rowsWithMemo);
+      const selectedTarget = activeAmountChildSellers.find((seller) => String(seller.id) === String(purchaseSendSellerId));
+      const isDirectSellerPurchase = normalizeSellerType(selectedTarget?.sellerType) === 'normal_seller';
+      if (isDirectSellerPurchase) {
+        for (const row of rowsWithMemo) {
+          await lotteryService.sendPurchase({
+            sellerId: purchaseSendSellerId,
+            rangeStart: row.numberStart || row.from,
+            rangeEnd: row.numberEnd || row.to,
+            boxValue: row.semValue,
+            amount: row.bookingAmount || amount,
+            memoNumber: effectiveMemoNumber,
+            bookingDate: row.drawDate || bookingDate,
+            sessionMode: row.resolvedSessionMode || sessionMode,
+            purchaseCategory: row.resolvedPurchaseCategory || activePurchaseCategory,
+            memoRowOrder: row.memoRowOrder
+          });
+        }
+      }
       if (sellerLocalDraftKey !== savedMemoDraftKey) {
         await clearDraftRows(sellerLocalDraftKey);
       }
@@ -3953,7 +3972,9 @@ const SubStokistDashboard = ({
       setRetroToInput('');
       setPurchaseSendMemoNumber(null);
       setPurchaseSendMemoSelectionIndex(0);
-      setSuccess('Purchase local me save ho gaya. Send Purchase se bhejo.');
+      setSuccess(isDirectSellerPurchase
+        ? 'Seller ko purchase direct send ho gaya. Purchase memo se ise kabhi bhi edit kar sakte hain.'
+        : 'Purchase local me save ho gaya. Send Purchase se bhejo.');
       setPurchaseSendMemoPopupOpen(false);
       await loadLocalPurchaseMemoDrafts();
       focusPurchaseSellerSelectAfterSave();
@@ -6242,7 +6263,6 @@ const SubStokistDashboard = ({
       const response = await lotteryService.traceNumber({
         number: numbersToTrace.join(','),
         uniqueCode: traceMode === 'single' ? trimmedNumber : '',
-        date: traceDate,
         sessionMode,
         amount: traceAmount,
         sem: traceSem
@@ -6522,6 +6542,7 @@ const SubStokistDashboard = ({
               <th>Morning/Night</th>
               <th>Booked Time</th>
               <th>Sent Time</th>
+              <th>Number History</th>
             </tr>
           </thead>
           <tbody>
@@ -6568,6 +6589,7 @@ const SubStokistDashboard = ({
                     <td><strong>{record.sessionMode}</strong></td>
                     <td>{formatDisplayDateTime(record.createdAt)}</td>
                     <td>{formatDisplayDateTime(record.sentAt)}</td>
+                    <td style={{ whiteSpace: 'pre-line', minWidth: '240px' }}>{record.historyText || '-'}</td>
                   </tr>
                 );
               });

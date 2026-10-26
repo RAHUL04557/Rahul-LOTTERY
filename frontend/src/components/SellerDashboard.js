@@ -6237,7 +6237,6 @@ const SellerDashboard = ({
       const response = await lotteryService.traceNumber({
         number: numbersToTrace.join(','),
         uniqueCode: traceMode === 'single' ? trimmedNumber : '',
-        date: traceDate,
         sessionMode,
         amount: traceAmount,
         sem: traceSem
@@ -6517,6 +6516,7 @@ const SellerDashboard = ({
               <th>Morning/Night</th>
               <th>Booked Time</th>
               <th>Sent Time</th>
+              <th>Number History</th>
             </tr>
           </thead>
           <tbody>
@@ -6563,6 +6563,7 @@ const SellerDashboard = ({
                     <td><strong>{record.sessionMode}</strong></td>
                     <td>{formatDisplayDateTime(record.createdAt)}</td>
                     <td>{formatDisplayDateTime(record.sentAt)}</td>
+                    <td style={{ whiteSpace: 'pre-line', minWidth: '240px' }}>{record.historyText || '-'}</td>
                   </tr>
                 );
               });

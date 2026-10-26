@@ -35,6 +35,11 @@ const normalizeSince = (value) => {
   return parsed.toISOString();
 };
 
+const normalizeFromDate = (value) => {
+  const text = String(value || '').slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+};
+
 const mapLotteryEntry = (row) => ({
   id: row.id,
   userId: row.user_id,
@@ -105,6 +110,7 @@ const getPrizeOwnerId = (user) => (
 const bootstrapLocalData = async (req, res) => {
   const days = normalizeBootstrapDays(req.query.days);
   const since = normalizeSince(req.query.since);
+  const fromDate = normalizeFromDate(req.query.fromDate);
 
   const usersResult = await query(
     `
@@ -136,6 +142,9 @@ const bootstrapLocalData = async (req, res) => {
   }
 
   const purchaseParams = [[PURCHASE_ENTRY_SOURCE, ADMIN_PURCHASE_ENTRY_SOURCE], days, visibleUserIds];
+  const fromDateFilter = fromDate
+    ? `AND le.booking_date >= $${purchaseParams.push(fromDate)}::date`
+    : '';
   const incrementalFilter = since
     ? `AND COALESCE(le.sent_at, le.created_at) > $${purchaseParams.push(since)}::timestamp`
     : '';
@@ -153,6 +162,7 @@ const bootstrapLocalData = async (req, res) => {
       LEFT JOIN users forwarded_user ON forwarded_user.id = le.forwarded_by
       WHERE le.entry_source = ANY($1::varchar[])
         AND le.booking_date >= (CURRENT_DATE - ($2::int * INTERVAL '1 day'))
+        ${fromDateFilter}
         ${incrementalFilter}
         AND (
           le.user_id = ANY($3::int[])
@@ -166,6 +176,9 @@ const bootstrapLocalData = async (req, res) => {
 
   const prizeOwnerId = getPrizeOwnerId(req.user);
   const prizeParams = [prizeOwnerId, days];
+  const prizeFromDateFilter = fromDate
+    ? `AND pr.result_for_date >= $${prizeParams.push(fromDate)}::date`
+    : '';
   const prizeIncrementalFilter = since
     ? `AND COALESCE(pr.result_date, pr.created_at) > $${prizeParams.push(since)}::timestamp`
     : '';
@@ -175,6 +188,7 @@ const bootstrapLocalData = async (req, res) => {
       FROM prize_results pr
       WHERE pr.uploaded_by = $1
         AND pr.result_for_date >= (CURRENT_DATE - ($2::int * INTERVAL '1 day'))
+        ${prizeFromDateFilter}
         ${prizeIncrementalFilter}
       ORDER BY pr.result_for_date DESC, pr.session_mode ASC, pr.prize_amount DESC, pr.created_at DESC
     `,
@@ -184,6 +198,7 @@ const bootstrapLocalData = async (req, res) => {
   res.json({
     serverTime: new Date().toISOString(),
     days,
+    fromDate,
     since,
     purchases: purchasesResult.rows.map(mapLotteryEntry),
     prizeResults: prizeResults.rows.map(mapPrizeResult),

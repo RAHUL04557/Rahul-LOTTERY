@@ -8,6 +8,19 @@ const api = axios.create({
   baseURL: API_BASE_URL
 });
 
+// In local-only builds axios must never open a network connection.  Write
+// operations are handled below by SQLite; reads use their existing local
+// fallbacks.  This adapter is deliberately installed at creation time so an
+// accidental new api.get/post cannot leak application data to the server.
+if (appConfig.localOnlyEnabled) {
+  api.defaults.adapter = async (config) => {
+    const error = new Error('This installation is local-only');
+    error.config = config;
+    error.isLocalOnly = true;
+    throw error;
+  };
+}
+
 const getApiBaseUrls = () => [
   API_BASE_URL,
   ...(Array.isArray(appConfig.apiFallbackUrls) ? appConfig.apiFallbackUrls : [])
@@ -35,15 +48,9 @@ const queueOfflineOperation = async (operationType, payload) => {
   const localDb = getLocalDb();
   const currentUser = getCurrentUser();
 
-  if (!localDb?.enqueueSync || !currentUser?.id) {
-    throw new Error('Local sync queue available nahi hai');
+  if (!currentUser?.id) {
+    throw new Error('Local user session available nahi hai');
   }
-
-  const queued = await localDb.enqueueSync({
-    userId: currentUser.id,
-    operationType,
-    payload
-  });
 
   let localMutationResult = null;
   if (localDb.applyOfflinePurchaseMutation) {
@@ -56,6 +63,28 @@ const queueOfflineOperation = async (operationType, payload) => {
       return null;
     });
   }
+
+  if (appConfig.localOnlyEnabled) {
+    return {
+      data: {
+        message: 'Entry sirf local database mein save ho gayi.',
+        localOnly: true,
+        ...(localMutationResult?.seller && { seller: localMutationResult.seller }),
+        ...(localMutationResult?.entries && { entries: localMutationResult.entries }),
+        ...(localMutationResult?.results && { results: localMutationResult.results })
+      }
+    };
+  }
+
+  if (!localDb?.enqueueSync) {
+    throw new Error('Local sync queue available nahi hai');
+  }
+
+  const queued = await localDb.enqueueSync({
+    userId: currentUser.id,
+    operationType,
+    payload
+  });
 
   return {
     data: {
@@ -73,6 +102,9 @@ const postWithOfflineQueue = async (url, payload, operationType) => {
 };
 
 const requestWithOfflineQueue = async ({ method = 'POST', url, data, config = {} }, operationType) => {
+  if (appConfig.localOnlyEnabled) {
+    return queueOfflineOperation(operationType, { url, method, body: data, params: config.params });
+  }
   try {
     const response = await api.request({
       ...config,
@@ -161,11 +193,6 @@ const getPurchasesFromLocalDb = async (params = {}) => {
     return null;
   }
 
-  const bootstrapState = localDb.getMetadata ? await localDb.getMetadata('lastBootstrapAt') : null;
-  if (!bootstrapState) {
-    return null;
-  }
-
   const currentUser = getCurrentUser();
   const scopedParams = { ...params };
   if (!scopedParams.sellerId && currentUser?.role === 'seller' && currentUser?.id) {
@@ -202,8 +229,7 @@ const canUseLocalRead = async () => {
     return false;
   }
 
-  const bootstrapState = localDb.getMetadata ? await localDb.getMetadata('lastBootstrapAt') : null;
-  return Boolean(bootstrapState);
+  return true;
 };
 
 const getLocalPurchaseBillSummary = async (params = {}) => {
@@ -698,6 +724,17 @@ export const syncService = {
       ...(since && { since })
     },
     withSessionMode: false
+  }),
+  // This is the sole network exception in a local-only build: a one-time,
+  // read-only import of the user's legacy server data on first launch.
+  bootstrapInitialMigration: ({ fromDate } = {}) => axios.get(`${API_BASE_URL}/sync/bootstrap`, {
+    params: {
+      days: 730,
+      ...(fromDate && { fromDate })
+    },
+    headers: {
+      ...(localStorage.getItem('token') ? { Authorization: `Bearer ${localStorage.getItem('token')}` } : {})
+    }
   })
 };
 
