@@ -55,39 +55,25 @@ function setupAutoUpdates(mainWindow) {
   // locked and NSIS displays “cannot be closed”. A detached helper waits for
   // this process to exit before it launches the installer.
   autoUpdater.autoInstallOnAppQuit = false;
+  let updateInstallStarted = false;
 
   const restartAndInstallUpdate = () => {
-    const installerPath = autoUpdater.installerPath;
-    if (!installerPath) {
-      dialog.showErrorBox(
-        'Update could not start',
-        'The downloaded update file was not found. Please download the update again.'
-      );
+    if (updateInstallStarted) {
       return;
     }
 
-    const quotePowerShell = (value) => `'${value.replace(/'/g, "''")}'`;
-    const script = [
-      `Wait-Process -Id ${process.pid} -ErrorAction SilentlyContinue`,
-      `Start-Process -FilePath ${quotePowerShell(installerPath)} -ArgumentList @('--updated', '/S', '--force-run')`
-    ].join('; ');
-    const encodedScript = Buffer.from(script, 'utf16le').toString('base64');
-    const launcher = require('child_process').spawn(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', encodedScript],
-      { detached: true, stdio: 'ignore', windowsHide: true }
-    );
-
-    launcher.once('spawn', () => {
-      launcher.unref();
-      app.quit();
-    });
-    launcher.once('error', () => {
+    updateInstallStarted = true;
+    try {
+      // electron-updater coordinates the NSIS installer with Electron's
+      // shutdown. Passing true reopens Lottery Booking after installation.
+      autoUpdater.quitAndInstall(false, true);
+    } catch (error) {
+      updateInstallStarted = false;
       dialog.showErrorBox(
         'Update could not start',
-        'Windows could not start the update installer. Please try again.'
+        `Windows could not start the update installer. Please try again.\n\n${error.message}`
       );
-    });
+    }
   };
 
   autoUpdater.on('update-available', async (info) => {
