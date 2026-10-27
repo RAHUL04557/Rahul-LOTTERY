@@ -63,17 +63,40 @@ function setupAutoUpdates(mainWindow) {
     }
 
     updateInstallStarted = true;
-    try {
-      // electron-updater coordinates the NSIS installer with Electron's
-      // shutdown. Passing true reopens Lottery Booking after installation.
-      autoUpdater.quitAndInstall(false, true);
-    } catch (error) {
+    const installerPath = autoUpdater.installerPath;
+    if (!installerPath || !require('fs').existsSync(installerPath)) {
       updateInstallStarted = false;
       dialog.showErrorBox(
         'Update could not start',
-        `Windows could not start the update installer. Please try again.\n\n${error.message}`
+        'The downloaded update file was not found. Please download the update again.'
       );
+      return;
     }
+
+    // The app is installed per-machine, so run the installer after Electron
+    // has completely exited and explicitly request elevation. This avoids an
+    // installer that exits silently because Lottery Booking.exe is locked.
+    const quotePowerShell = (value) => `'${String(value).replace(/'/g, "''")}'`;
+    const script = [
+      '$ErrorActionPreference = "Stop"',
+      `Wait-Process -Id ${process.pid} -ErrorAction SilentlyContinue`,
+      'Start-Sleep -Milliseconds 750',
+      `Start-Process -FilePath ${quotePowerShell(installerPath)} -ArgumentList @('--updated', '--force-run') -Verb RunAs`
+    ].join('; ');
+    const launcher = require('child_process').spawn(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+      { detached: true, stdio: 'ignore', windowsHide: true }
+    );
+
+    launcher.once('error', (error) => {
+      updateInstallStarted = false;
+      dialog.showErrorBox('Update could not start', `Windows could not start the update installer.\n\n${error.message}`);
+    });
+    launcher.once('spawn', () => {
+      launcher.unref();
+      app.quit();
+    });
   };
 
   autoUpdater.on('update-available', async (info) => {
