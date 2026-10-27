@@ -101,6 +101,30 @@ async function main() {
   call('save-draft', { type: 'unsold', draftKey: 'old-only', userId: 1, bookingDate: oldDate, rows: [{ number: 'old' }] });
   assert.equal(db.prepare("SELECT COUNT(*) AS n FROM local_unsold_drafts WHERE draft_key = 'old-only'").get().n, 0);
 
+  // A locally accepted unsold row must immediately become accepted after Unsold Remove.
+  // Otherwise both the Unsold memo and F10 summary keep showing the removed piece.
+  call('upsert-purchases', [{
+    ...purchase(6, protectedDate, '2026-10-09T10:00:00Z'),
+    status: 'unsold_accepted',
+    memoNumber: 1,
+    purchaseMemoNumber: 1
+  }]);
+  call('apply-offline-purchase-mutation', {
+    operationType: 'unsold_remove',
+    userId: 1,
+    payload: {
+      bookingDate: protectedDate,
+      sessionMode: 'DAY',
+      purchaseCategory: 'M',
+      amount: '7',
+      boxValue: '1',
+      rangeStart: '12345',
+      rangeEnd: '12345',
+      memoNumber: 1
+    }
+  });
+  assert.equal(db.prepare('SELECT status FROM local_purchase_entries WHERE server_id = 6').get().status, 'accepted');
+
   // Restart is simulated on the same connection by dropping TEMP guards.
   for (const row of db.prepare("SELECT name FROM sqlite_temp_master WHERE type = 'trigger'").all()) db.exec(`DROP TRIGGER ${row.name}`);
   const deletionTarget = path.resolve(root, protectedDate);

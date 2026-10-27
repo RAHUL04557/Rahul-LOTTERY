@@ -22,3 +22,5 @@ frontend/release/win-unpacked/
 frontend/release/*.nsis.7z
 frontend/release/*.incomplete
 frontend/release-ci/
+
+frontend/release/

@@ -2139,7 +2139,7 @@ const setupLocalDbIpc = (ipcMain) => {
               updated_at = ?,
               sync_status = 'pending'
           WHERE ${conditions.join(' AND ')}
-            AND LOWER(TRIM(status)) IN ('unsold_saved', 'unsold_sent', 'unsold')
+            AND LOWER(TRIM(status)) IN ('unsold_saved', 'unsold_sent', 'unsold_accepted', 'unsold')
         `)
         .run(now, ...params);
     }

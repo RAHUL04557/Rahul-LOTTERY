@@ -2584,8 +2584,10 @@ const AdminDashboard = ({
 
       if (requestSeq === adminPurchaseLoadSeqRef.current) {
         setPurchaseEntries(normalizeAdminSelectedSellerEntries(assignedResponse.data || [], selectedSellerId));
-        setUnsoldPurchaseEntries(normalizeAdminSelectedSellerEntries(unsoldResponse.data || [], selectedSellerId)
-          .filter((entry) => activeTab === 'unsold-remove' ? isRemovableUnsoldEntry(entry) : true));
+        const normalizedUnsoldEntries = normalizeAdminSelectedSellerEntries(unsoldResponse.data || [], selectedSellerId)
+          .filter((entry) => activeTab === 'unsold-remove' ? isRemovableUnsoldEntry(entry) : true);
+        setUnsoldPurchaseEntries(normalizedUnsoldEntries);
+        return normalizedUnsoldEntries;
       }
     } catch (err) {
       if (requestSeq === adminPurchaseLoadSeqRef.current) {
@@ -4056,7 +4058,6 @@ const AdminDashboard = ({
 
       setSuccess(mode === 'remove' ? `Unsold removed successfully in memo ${effectiveMemoNumber}` : `Unsold saved successfully in memo ${effectiveMemoNumber}`);
       if (mode === 'remove') {
-        setPurchaseMemoNumber(nextAdminUnsoldMemoNumber);
         setPurchaseRemoveMemoNumber(effectiveMemoNumber + 1);
       } else if (editingExistingAdminUnsoldMemo) {
         setPurchaseMemoNumber(effectiveMemoNumber);
@@ -4072,13 +4073,17 @@ const AdminDashboard = ({
       setPurchaseActiveRowIndex(0);
       setPurchaseEditorVisible(true);
       resetPurchaseSendEntryInputs();
-      await Promise.all([
+      const [refreshedUnsoldEntries] = await Promise.all([
         loadPurchaseEntries(purchaseBookingDate, purchaseSessionMode, purchaseSellerId),
         loadAdminUnsoldRemoveMemoEntries(purchaseBookingDate, purchaseSessionMode, purchaseSellerId)
       ]);
+      if (mode === 'remove') {
+        const remainingUnsoldMemos = buildAdminUnsoldMemoSummaries(refreshedUnsoldEntries || []);
+        setPurchaseMemoNumber(remainingUnsoldMemos.at(-1)?.memoNumber || 1);
+      }
       const derivedRefreshTasks = [];
       if (pieceSummaryOpen) {
-        derivedRefreshTasks.push(loadPieceSummary());
+        derivedRefreshTasks.push(loadPieceSummary(purchaseBookingDate));
       }
       if (activeTab === 'generate-bill') {
         derivedRefreshTasks.push(loadBillPreviewData(getBillFilters()));
@@ -5087,7 +5092,7 @@ const AdminDashboard = ({
 
   useFunctionShortcuts(true, {
     F10: () => {
-      loadPieceSummary();
+      loadPieceSummary(purchaseBookingDate);
     }
   });
 
@@ -7155,7 +7160,7 @@ const AdminDashboard = ({
             onSelect={(item) => handleTabToggle(item.tab)}
             onAction={(item) => {
               if (item.id === 'piece-summary') {
-                loadPieceSummary();
+                loadPieceSummary(purchaseBookingDate);
               }
             }}
             onExit={requestExitConfirmation}

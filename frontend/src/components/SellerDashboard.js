@@ -2277,11 +2277,11 @@ const SellerDashboard = ({
     }
   };
 
-  const refreshUnsoldDerivedViews = async () => {
+  const refreshUnsoldDerivedViews = async ({ summaryDate = '' } = {}) => {
     const refreshTasks = [];
 
     if (pieceSummaryOpen) {
-      refreshTasks.push(loadPieceSummary());
+      refreshTasks.push(loadPieceSummary(summaryDate, { open: false }));
     }
 
     if (unsoldSendOpen) {
@@ -4209,7 +4209,7 @@ const SellerDashboard = ({
 
   useFunctionShortcuts(!billOnlyMode, {
     F10: () => {
-      loadPieceSummary();
+      loadPieceSummary(bookingDate);
     },
     F11: () => {
       loadUnsoldSendSummary();
@@ -4807,7 +4807,6 @@ const SellerDashboard = ({
 
       setSuccess(`Unsold removed successfully in memo ${effectiveMemoNumber}`);
       clearDraftRows(sellerLocalDraftKey);
-      setUnsoldMemoNumber(null);
       setUnsoldRemoveMemoNumber(effectiveMemoNumber + 1);
       setUnsoldMemoSelectionIndex(0);
       setUnsoldMemoPopupOpen(false);
@@ -4820,14 +4819,17 @@ const SellerDashboard = ({
       setUnsoldNumber('');
       setUnsoldRangeEndNumber('');
       focusActiveSellerSelect();
-      await Promise.all([
+      const [, refreshedUnsoldEntries] = await Promise.all([
         loadPurchaseEntries(),
         loadUnsoldMemoEntries(unsoldPartyId, bookingDate),
         loadUnsoldRemoveMemoEntries(unsoldPartyId, bookingDate),
         loadTransferHistory(getHistoryFilters()),
         loadPieceSummary(bookingDate, { open: false })
       ]);
-      await refreshUnsoldDerivedViews();
+      const remainingUnsoldMemoSummaries = buildUnsoldMemoSummaries(refreshedUnsoldEntries || []);
+      const latestRemainingUnsoldMemo = remainingUnsoldMemoSummaries.at(-1);
+      setUnsoldMemoNumber(latestRemainingUnsoldMemo?.memoNumber || nextUnsoldMemoNumber);
+      await refreshUnsoldDerivedViews({ summaryDate: bookingDate });
       focusActiveSellerSelect();
     } catch (err) {
       setError(err.response?.data?.message || 'Error removing unsold');
@@ -6847,7 +6849,7 @@ const SellerDashboard = ({
             onSelect={(item) => handleTabToggle(item.tab)}
             onAction={(item) => {
               if (item.id === 'piece-summary') {
-                loadPieceSummary();
+                loadPieceSummary(bookingDate);
               }
               if (item.id === 'send-unsold') {
                 loadUnsoldSendSummary();
