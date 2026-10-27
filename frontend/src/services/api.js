@@ -40,6 +40,34 @@ const getApiBaseUrls = () => [
   ...(Array.isArray(appConfig.apiFallbackUrls) ? appConfig.apiFallbackUrls : [])
 ].filter(Boolean);
 
+// Result upload is intentionally server-authoritative, even in a local-only
+// desktop session.  The local database receives a copy only after the server
+// has accepted the result, so billing always uses a verified result.
+const requestServerOnly = async ({ method = 'GET', url, data, params } = {}) => {
+  const token = localStorage.getItem('token');
+  const request = {
+    method,
+    url,
+    data,
+    params,
+    headers: token ? { Authorization: `Bearer ${token}` } : {}
+  };
+  let lastError;
+
+  for (const baseURL of getApiBaseUrls()) {
+    try {
+      return await axios.request({ ...request, baseURL });
+    } catch (error) {
+      lastError = error;
+      if (!isNetworkError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  throw lastError || new Error('Result server is unavailable');
+};
+
 const getLocalDb = () => {
   if (typeof window === 'undefined') {
     return null;
@@ -294,6 +322,99 @@ const getLocalMySentEntries = async (params = {}) => {
 const getLocalReceivedEntries = async (params = {}) => {
   const currentUser = getCurrentUser();
   return getPurchasesFromLocalDb({ ...params, sellerId: currentUser?.id });
+};
+
+const getLocalSentEntries = async (params = {}) => {
+  const currentUser = getCurrentUser();
+  const localDb = getLocalDb();
+  if (!localDb?.listPurchases || !(await canUseLocalRead()) || !currentUser?.id) {
+    return null;
+  }
+
+  const rows = await localDb.listPurchases({
+    bookingDate: params.date || params.bookingDate,
+    sessionMode: params.sessionMode,
+    purchaseCategory: params.purchaseCategory,
+    currentUserId: currentUser.id,
+    user: currentUser
+  });
+
+  // Today's Summary needs booked rows, not a network-only history record.
+  // The local entries are the source of truth while the desktop is offline.
+  return { data: Array.isArray(rows) ? rows : [] };
+};
+
+const getLocalSellerPurchaseView = async (params = {}) => {
+  const currentUser = getCurrentUser();
+  const localDb = getLocalDb();
+  if (!localDb?.listPurchases || !(await canUseLocalRead()) || !currentUser?.id) {
+    return null;
+  }
+
+  const targetUserId = Number(params.sellerId || currentUser.id);
+  const filters = {
+    bookingDate: params.bookingDate,
+    sessionMode: params.sessionMode,
+    purchaseCategory: params.purchaseCategory,
+    amount: params.amount,
+    sellerId: targetUserId,
+    currentUserId: currentUser.id,
+    user: currentUser
+  };
+  const [allRows, availableRows, sentRows] = await Promise.all([
+    localDb.listPurchases(filters),
+    localDb.listPurchases({ ...filters, status: 'accepted' }),
+    localDb.listPurchases({
+      bookingDate: params.bookingDate,
+      sessionMode: params.sessionMode,
+      purchaseCategory: params.purchaseCategory,
+      amount: params.amount,
+      forwardedBy: targetUserId,
+      currentUserId: currentUser.id,
+      user: currentUser
+    })
+  ]);
+  const historyRow = (row, fromUserId, toUserId) => ({
+    ...row,
+    id: row.id || row.localId,
+    entryId: row.id || row.localId,
+    fromUserId,
+    toUserId,
+    actionType: 'purchase_sent',
+    statusAfter: row.status
+  });
+
+  return {
+    data: {
+      received: (Array.isArray(allRows) ? allRows : [])
+        .filter((row) => Number(row.forwardedBy || 0) && Number(row.forwardedBy) !== targetUserId)
+        .map((row) => historyRow(row, row.forwardedBy, targetUserId)),
+      sent: (Array.isArray(sentRows) ? sentRows : [])
+        .map((row) => historyRow(row, targetUserId, row.userId)),
+      available: (Array.isArray(availableRows) ? availableRows : [])
+        .filter((row) => !(Number(row.forwardedBy) === targetUserId && row.memoNumber !== null && row.memoNumber !== undefined))
+    }
+  };
+};
+
+const getLocalAdminPurchaseSentHistory = async (params = {}) => {
+  const currentUser = getCurrentUser();
+  const localDb = getLocalDb();
+  if (!localDb?.listPurchases || !(await canUseLocalRead()) || !currentUser?.id) {
+    return null;
+  }
+
+  return {
+    data: await localDb.listPurchases({
+      bookingDate: params.bookingDate,
+      sessionMode: params.sessionMode,
+      purchaseCategory: params.purchaseCategory,
+      amount: params.amount,
+      forwardedBy: currentUser.id,
+      currentUserId: currentUser.id,
+      user: currentUser
+    })
+  };
 };
 
 const getLocalTransferHistory = async (params = {}) => {
@@ -778,7 +899,11 @@ export const userService = {
   },
   changeAdminPassword: (userId, newPassword) => api.patch(`/users/admins/${userId}/password`, { newPassword }),
   changeAdminResultUploadPassword: (userId, newPassword) => api.patch(`/users/admins/${userId}/result-upload-password`, { newPassword }),
-  verifyResultUploadPassword: (password) => api.post('/users/result-upload-password/verify', { password }),
+  verifyResultUploadPassword: (password) => requestServerOnly({
+    method: 'POST',
+    url: '/users/result-upload-password/verify',
+    data: { password }
+  }),
   getChildSellers: async () => {
     try {
       return await api.get('/users/child-sellers');
@@ -923,29 +1048,35 @@ export const lotteryService = {
   addEntry: (payload) => requestWithOfflineQueue({ method: 'POST', url: '/lottery/add-entry', data: payload }, 'add_entry'),
   addAdminPurchase: (payload) => requestWithOfflineQueue({ method: 'POST', url: '/lottery/admin-purchases', data: payload }, 'add_admin_purchase'),
   replaceAdminPurchaseMemo: (payload) => requestWithOfflineQueue({ method: 'PUT', url: '/lottery/admin-purchases/memo', data: payload }, 'replace_admin_purchase_memo'),
-  getAdminPurchases: ({ bookingDate, sessionMode, amount, boxValue, purchaseCategory } = {}, requestOptions = {}) =>
-    api.get('/lottery/admin-purchases', {
-      ...requestOptions,
-      params: {
-        ...(bookingDate && { bookingDate }),
-        ...(sessionMode && { sessionMode }),
-        ...(amount && { amount }),
-        ...(boxValue && { boxValue }),
-        ...(purchaseCategory && { purchaseCategory })
-      }
-    }),
-  getAdminPurchaseSentHistory: ({ bookingDate, sessionMode, sellerId, amount, boxValue, purchaseCategory } = {}, requestOptions = {}) =>
-    api.get('/lottery/admin-purchases/sent-history', {
-      ...requestOptions,
-      params: {
-        ...(bookingDate && { bookingDate }),
-        ...(sessionMode && { sessionMode }),
-        ...(sellerId && { sellerId }),
-        ...(amount && { amount }),
-        ...(boxValue && { boxValue }),
-        ...(purchaseCategory && { purchaseCategory })
-      }
-    }),
+  getAdminPurchases: async ({ bookingDate, sessionMode, amount, boxValue, purchaseCategory } = {}, requestOptions = {}) => {
+    const params = {
+      ...(bookingDate && { bookingDate }),
+      ...(sessionMode && { sessionMode }),
+      ...(amount && { amount }),
+      ...(boxValue && { boxValue }),
+      ...(purchaseCategory && { purchaseCategory })
+    };
+    const localResult = await getPurchasesFromLocalDb({ ...params, entrySource: 'admin_purchase' });
+    if (localResult) {
+      return localResult;
+    }
+    return api.get('/lottery/admin-purchases', { ...requestOptions, params });
+  },
+  getAdminPurchaseSentHistory: async ({ bookingDate, sessionMode, sellerId, amount, boxValue, purchaseCategory } = {}, requestOptions = {}) => {
+    const params = {
+      ...(bookingDate && { bookingDate }),
+      ...(sessionMode && { sessionMode }),
+      ...(sellerId && { sellerId }),
+      ...(amount && { amount }),
+      ...(boxValue && { boxValue }),
+      ...(purchaseCategory && { purchaseCategory })
+    };
+    const localResult = await getLocalAdminPurchaseSentHistory(params);
+    if (localResult) {
+      return localResult;
+    }
+    return api.get('/lottery/admin-purchases/sent-history', { ...requestOptions, params });
+  },
   sendAdminPurchase: (payload) => postWithOfflineQueue('/lottery/purchases/send', payload, 'purchase_send'),
   replacePurchaseSendMemo: (payload) => requestWithOfflineQueue({ method: 'PUT', url: '/lottery/purchases/memo', data: payload }, 'replace_purchase_send_memo'),
   sendPurchase: (payload) => postWithOfflineQueue('/lottery/purchases/send', payload, 'purchase_send'),
@@ -990,17 +1121,20 @@ export const lotteryService = {
       throw error;
     }
   },
-  getSellerPurchaseView: ({ bookingDate, sessionMode, sellerId, purchaseCategory, amount } = {}, requestOptions = {}) =>
-    api.get('/lottery/purchases/seller-view', {
-      ...requestOptions,
-      params: {
-        ...(bookingDate && { bookingDate }),
-        ...(sessionMode && { sessionMode }),
-        ...(sellerId && { sellerId }),
-        ...(purchaseCategory && { purchaseCategory }),
-        ...(amount && { amount })
-      }
-    }),
+  getSellerPurchaseView: async ({ bookingDate, sessionMode, sellerId, purchaseCategory, amount } = {}, requestOptions = {}) => {
+    const params = {
+      ...(bookingDate && { bookingDate }),
+      ...(sessionMode && { sessionMode }),
+      ...(sellerId && { sellerId }),
+      ...(purchaseCategory && { purchaseCategory }),
+      ...(amount && { amount })
+    };
+    const localResult = await getLocalSellerPurchaseView(params);
+    if (localResult) {
+      return localResult;
+    }
+    return api.get('/lottery/purchases/seller-view', { ...requestOptions, params });
+  },
   getPurchasePieceSummary: async ({ bookingDate, sessionMode, purchaseCategory, amount } = {}, requestOptions = {}) => {
     const params = {
       ...(bookingDate && { bookingDate }),
@@ -1099,17 +1233,20 @@ export const lotteryService = {
       ...(amount && { amount })
     }
   }, 'send_entries'),
-  getSentEntries: ({ date, fromDate, toDate, sessionMode, purchaseCategory } = {}, requestOptions = {}) =>
-    api.get('/lottery/sent-entries', {
-      ...requestOptions,
-      params: {
-        ...(date && { date }),
-        ...(fromDate && { fromDate }),
-        ...(toDate && { toDate }),
-        ...(sessionMode && { sessionMode }),
-        ...(purchaseCategory && { purchaseCategory })
-      }
-    }),
+  getSentEntries: async ({ date, fromDate, toDate, sessionMode, purchaseCategory } = {}, requestOptions = {}) => {
+    const params = {
+      ...(date && { date }),
+      ...(fromDate && { fromDate }),
+      ...(toDate && { toDate }),
+      ...(sessionMode && { sessionMode }),
+      ...(purchaseCategory && { purchaseCategory })
+    };
+    const localResult = await getLocalSentEntries(params);
+    if (localResult) {
+      return localResult;
+    }
+    return api.get('/lottery/sent-entries', { ...requestOptions, params });
+  },
   getMySentEntries: ({ sessionMode, bookingDate, amount } = {}, requestOptions = {}) =>
     getLocalMySentEntries({ sessionMode, bookingDate, amount }).then((localResult) => localResult || api.get('/lottery/my-sent-entries', {
       ...requestOptions,
@@ -1212,24 +1349,43 @@ export const lotteryService = {
 
 export const priceService = {
   uploadPrice: async ({ entries, sessionMode, purchaseCategory, resultForDate, resultUploadPassword }) => {
-    return requestWithOfflineQueue({
+    const response = await requestServerOnly({
       method: 'POST',
       url: '/prices/upload',
       data: { entries, sessionMode, purchaseCategory, resultForDate, resultUploadPassword }
-    }, 'price_upload');
+    });
+    const localDb = getLocalDb();
+    if (localDb?.upsertPrizeResults && Array.isArray(response.data?.results)) {
+      await localDb.upsertPrizeResults(response.data.results);
+    }
+    return response;
   },
-  updatePrizeResult: (id, winningNumber, resultUploadPassword) => requestWithOfflineQueue({
-    method: 'PATCH',
-    url: `/prices/${id}`,
-    data: { winningNumber, resultUploadPassword }
-  }, 'update_prize_result'),
-  deletePrizeResult: (id, resultUploadPassword) => requestWithOfflineQueue({
-    method: 'DELETE',
-    url: `/prices/${id}`,
-    data: { resultUploadPassword }
-  }, 'delete_prize_result'),
-  deletePrizeResults: ({ resultForDate, sessionMode, purchaseCategory, resultUploadPassword }) =>
-    requestWithOfflineQueue({
+  updatePrizeResult: async (id, winningNumber, resultUploadPassword) => {
+    const response = await requestServerOnly({
+      method: 'PATCH',
+      url: `/prices/${id}`,
+      data: { winningNumber, resultUploadPassword }
+    });
+    const localDb = getLocalDb();
+    if (localDb?.upsertPrizeResults && response.data?.result) {
+      await localDb.upsertPrizeResults([response.data.result]);
+    }
+    return response;
+  },
+  deletePrizeResult: async (id, resultUploadPassword) => {
+    const response = await requestServerOnly({
+      method: 'DELETE',
+      url: `/prices/${id}`,
+      data: { resultUploadPassword }
+    });
+    const localDb = getLocalDb();
+    if (localDb?.removePrizeResults && response.data?.result) {
+      await localDb.removePrizeResults({ results: [response.data.result] });
+    }
+    return response;
+  },
+  deletePrizeResults: async ({ resultForDate, sessionMode, purchaseCategory, resultUploadPassword }) => {
+    const response = await requestServerOnly({
       method: 'DELETE',
       url: '/prices/bulk-delete',
       data: {
@@ -1238,7 +1394,22 @@ export const priceService = {
         purchaseCategory,
         resultUploadPassword
       }
-    }, 'delete_prize_results'),
+    });
+    const localDb = getLocalDb();
+    const currentUser = getCurrentUser();
+    if (localDb?.removePrizeResults) {
+      await localDb.removePrizeResults({
+        results: response.data?.results || [],
+        filters: {
+          resultForDate,
+          sessionMode,
+          purchaseCategory,
+          uploadedBy: currentUser?.id
+        }
+      });
+    }
+    return response;
+  },
   checkPrize: async ({ number, date, sessionMode, purchaseCategory, amount, sem }) => {
     const params = {
       ...(number && { number }),

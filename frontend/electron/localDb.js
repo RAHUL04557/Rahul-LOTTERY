@@ -1611,7 +1611,12 @@ const setupLocalDbIpc = (ipcMain) => {
 
   ipcMain.handle('local-db:list-purchases', (_event, filters = {}) => {
     const params = [];
-    const conditions = ["entry_source = 'purchase'"];
+    const requestedEntrySource = String(filters.entrySource || 'purchase').trim();
+    const conditions = [];
+    if (requestedEntrySource) {
+      params.push(requestedEntrySource);
+      conditions.push('entry_source = ?');
+    }
     const currentUser = filters.user || {};
     const currentUserId = Number(filters.currentUserId || currentUser.id || 0);
     const users = getSavedVisibleUsers();
@@ -1687,7 +1692,7 @@ const setupLocalDbIpc = (ipcMain) => {
     const mappedRows = rows.map(mapLocalPurchaseEntry);
     const requestedStatus = String(filters.status || '').trim().toLowerCase();
 
-    if (currentUserId && !filters.latestSentOnly && (!requestedStatus || requestedStatus === 'unsold' || requestedStatus === 'unsold_accepted')) {
+    if (requestedEntrySource === 'purchase' && currentUserId && !filters.latestSentOnly && (!requestedStatus || requestedStatus === 'unsold' || requestedStatus === 'unsold_accepted')) {
       const manualParams = [currentUserId];
       const manualConditions = ['actor_user_id = ?'];
 
