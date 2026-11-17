@@ -1251,6 +1251,7 @@ const SubStokistDashboard = ({
   };
 
   const AMOUNT_OPTIONS = ['7', '12'];
+  const STANDARD_SEM_OPTIONS = ['5', '10', '15', '20', '25', '30', '35', '50', '100', '200'];
   const sellerRateAmount6 = Number(user?.rateAmount6 || 0);
   const sellerRateAmount12 = Number(user?.rateAmount12 || 0);
   const amountBookingAvailability = {
@@ -1273,10 +1274,10 @@ const SubStokistDashboard = ({
 
   const getAvailableSemOptions = () => {
     if (amount === '7') {
-      return ['5', '10', '25', '50', '100', '200'];
+      return ['5', '10', '15', '20', '25', '30', '35', '50', '100', '200'];
     }
     if (amount === '12') {
-      return ['5', '10', '15', '20', '30', '50', '100', '200'];
+      return ['5', '10', '15', '20', '25', '30', '35', '50', '100', '200'];
     }
     return [];
   };
@@ -1285,18 +1286,18 @@ const SubStokistDashboard = ({
     if (traceAmount === '') {
       const semOptions = new Set();
       if (amountBookingAvailability['7']) {
-        ['5', '10', '25', '50', '100', '200'].forEach((option) => semOptions.add(option));
+        STANDARD_SEM_OPTIONS.forEach((option) => semOptions.add(option));
       }
       if (amountBookingAvailability['12']) {
-        ['5', '10', '15', '20', '30', '50', '100', '200'].forEach((option) => semOptions.add(option));
+        STANDARD_SEM_OPTIONS.forEach((option) => semOptions.add(option));
       }
       return Array.from(semOptions);
     }
     if (traceAmount === '7') {
-      return ['5', '10', '25', '50', '100', '200'];
+      return STANDARD_SEM_OPTIONS;
     }
     if (traceAmount === '12') {
-      return ['5', '10', '15', '20', '30', '50', '100', '200'];
+      return STANDARD_SEM_OPTIONS;
     }
     return [];
   };
@@ -1305,18 +1306,18 @@ const SubStokistDashboard = ({
     if (sellerPrizeAmount === '') {
       const semOptions = new Set();
       if (amountBookingAvailability['7']) {
-        ['5', '10', '25', '50', '100', '200'].forEach((option) => semOptions.add(option));
+        STANDARD_SEM_OPTIONS.forEach((option) => semOptions.add(option));
       }
       if (amountBookingAvailability['12']) {
-        ['5', '10', '15', '20', '30', '50', '100', '200'].forEach((option) => semOptions.add(option));
+        STANDARD_SEM_OPTIONS.forEach((option) => semOptions.add(option));
       }
       return Array.from(semOptions);
     }
     if (sellerPrizeAmount === '7') {
-      return ['5', '10', '25', '50', '100', '200'];
+      return STANDARD_SEM_OPTIONS;
     }
     if (sellerPrizeAmount === '12') {
-      return ['5', '10', '15', '20', '30', '50', '100', '200'];
+      return STANDARD_SEM_OPTIONS;
     }
     return [];
   };
@@ -1325,18 +1326,18 @@ const SubStokistDashboard = ({
     if (myPrizeAmount === '') {
       const semOptions = new Set();
       if (amountBookingAvailability['7']) {
-        ['5', '10', '25', '50', '100', '200'].forEach((option) => semOptions.add(option));
+        STANDARD_SEM_OPTIONS.forEach((option) => semOptions.add(option));
       }
       if (amountBookingAvailability['12']) {
-        ['5', '10', '15', '20', '30', '50', '100', '200'].forEach((option) => semOptions.add(option));
+        STANDARD_SEM_OPTIONS.forEach((option) => semOptions.add(option));
       }
       return Array.from(semOptions);
     }
     if (myPrizeAmount === '7') {
-      return ['5', '10', '25', '50', '100', '200'];
+      return STANDARD_SEM_OPTIONS;
     }
     if (myPrizeAmount === '12') {
-      return ['5', '10', '15', '20', '30', '50', '100', '200'];
+      return STANDARD_SEM_OPTIONS;
     }
     return [];
   };

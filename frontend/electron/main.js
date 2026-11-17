@@ -50,54 +50,7 @@ function setupAutoUpdates(mainWindow) {
 
   const { autoUpdater } = require('electron-updater');
   autoUpdater.autoDownload = false;
-  // `quitAndInstall()` starts the NSIS installer before Electron has finished
-  // shutting down. On some Windows machines that leaves Lottery Booking.exe
-  // locked and NSIS displays “cannot be closed”. A detached helper waits for
-  // this process to exit before it launches the installer.
-  autoUpdater.autoInstallOnAppQuit = false;
-  let updateInstallStarted = false;
-
-  const restartAndInstallUpdate = () => {
-    if (updateInstallStarted) {
-      return;
-    }
-
-    updateInstallStarted = true;
-    const installerPath = autoUpdater.installerPath;
-    if (!installerPath || !require('fs').existsSync(installerPath)) {
-      updateInstallStarted = false;
-      dialog.showErrorBox(
-        'Update could not start',
-        'The downloaded update file was not found. Please download the update again.'
-      );
-      return;
-    }
-
-    // The app is installed per-machine, so run the installer after Electron
-    // has completely exited and explicitly request elevation. This avoids an
-    // installer that exits silently because Lottery Booking.exe is locked.
-    const quotePowerShell = (value) => `'${String(value).replace(/'/g, "''")}'`;
-    const script = [
-      '$ErrorActionPreference = "Stop"',
-      `Wait-Process -Id ${process.pid} -ErrorAction SilentlyContinue`,
-      'Start-Sleep -Milliseconds 750',
-      `Start-Process -FilePath ${quotePowerShell(installerPath)} -ArgumentList @('--updated', '--force-run') -Verb RunAs`
-    ].join('; ');
-    const launcher = require('child_process').spawn(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
-      { detached: true, stdio: 'ignore', windowsHide: true }
-    );
-
-    launcher.once('error', (error) => {
-      updateInstallStarted = false;
-      dialog.showErrorBox('Update could not start', `Windows could not start the update installer.\n\n${error.message}`);
-    });
-    launcher.once('spawn', () => {
-      launcher.unref();
-      app.quit();
-    });
-  };
+  autoUpdater.autoInstallOnAppQuit = true;
 
   autoUpdater.on('update-available', async (info) => {
     const result = await dialog.showMessageBox(mainWindow, {
@@ -127,7 +80,7 @@ function setupAutoUpdates(mainWindow) {
     });
 
     if (result.response === 0) {
-      restartAndInstallUpdate();
+      autoUpdater.quitAndInstall();
     }
   });
 

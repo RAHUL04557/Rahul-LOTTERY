@@ -12,8 +12,8 @@ const UNSOLD_LOCAL_STATUS = 'unsold_saved';
 const UNSOLD_SENT_STATUS = 'unsold_sent';
 const UNSOLD_ACCEPTED_STATUS = 'unsold';
 const PURCHASE_SEM_OPTIONS_BY_AMOUNT = {
-  '7': ['5', '10', '25', '50', '100', '200'],
-  '12': ['5', '10', '15', '20', '30', '50', '100', '200']
+  '7': ['5', '10', '15', '20', '25', '30', '35', '50', '100', '200'],
+  '12': ['5', '10', '15', '20', '25', '30', '35', '50', '100', '200']
 };
 const SELLER_TYPE_SELLER = 'seller';
 const SELLER_TYPE_SUB_SELLER = 'sub_seller';

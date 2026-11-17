@@ -93,10 +93,10 @@ const buildBookingCode = (shift, semValue) => `${getPurchaseCategory(shift)}${St
 
 const getAvailableSemOptions = (selectedAmount) => {
   if (String(selectedAmount) === '7') {
-    return ['5', '10', '25', '50', '100', '200'];
+    return ['5', '10', '15', '20', '25', '30', '35', '50', '100', '200'];
   }
   if (String(selectedAmount) === '12') {
-    return ['5', '10', '15', '20', '30', '50', '100', '200'];
+    return ['5', '10', '15', '20', '25', '30', '35', '50', '100', '200'];
   }
   return [];
 };
