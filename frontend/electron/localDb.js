@@ -632,6 +632,36 @@ const upsertLocalUsers = (users = []) => {
   return { ok: true, saved: normalizedUsers.length };
 };
 
+const purgeLocalUsers = (userIds = []) => {
+  const ids = [...new Set((Array.isArray(userIds) ? userIds : [])
+    .map((userId) => Number(userId))
+    .filter((userId) => Number.isInteger(userId) && userId > 0))];
+
+  if (ids.length === 0) {
+    return { ok: true, deletedCount: 0 };
+  }
+
+  const database = initLocalDb();
+  const placeholders = ids.map(() => '?').join(', ');
+  const runDelete = (sql, repeatCount = 1) => database.prepare(sql).run(
+    ...Array.from({ length: repeatCount }).flatMap(() => ids)
+  );
+
+  database.transaction(() => {
+    runDelete(`DELETE FROM local_purchase_entries WHERE user_id IN (${placeholders}) OR owner_user_id IN (${placeholders}) OR forwarded_by IN (${placeholders}) OR sent_to_parent IN (${placeholders})`, 4);
+    runDelete(`DELETE FROM local_prize_results WHERE uploaded_by IN (${placeholders})`);
+    runDelete(`DELETE FROM local_purchase_send_drafts WHERE user_id IN (${placeholders}) OR target_seller_id IN (${placeholders})`, 2);
+    runDelete(`DELETE FROM local_unsold_drafts WHERE user_id IN (${placeholders}) OR target_seller_id IN (${placeholders})`, 2);
+    runDelete(`DELETE FROM local_unsold_remove_drafts WHERE user_id IN (${placeholders}) OR target_seller_id IN (${placeholders})`, 2);
+    runDelete(`DELETE FROM local_manual_unsold_entries WHERE user_id IN (${placeholders}) OR actor_user_id IN (${placeholders})`, 2);
+    runDelete(`DELETE FROM sync_queue WHERE user_id IN (${placeholders})`);
+    runDelete(`DELETE FROM local_generated_bills WHERE user_id IN (${placeholders})`);
+    runDelete(`DELETE FROM local_users WHERE id IN (${placeholders}) OR owner_admin_id IN (${placeholders}) OR parent_id IN (${placeholders})`, 3);
+  })();
+
+  return { ok: true, deletedCount: ids.length };
+};
+
 const getPrizeMultiplier = (amountValue, semValue) => {
   const amount = Number(amountValue);
   const sem = Number(semValue);
@@ -898,7 +928,10 @@ const buildLocalUserTree = (currentUser = {}) => {
       children: [],
       canDelete: String(currentUser.role || '').toLowerCase() === 'admin'
         ? Number(user.id) !== currentUserId && String(user.role || '').toLowerCase() !== 'admin'
-        : Number(user.parentId) === currentUserId
+        : Number(user.parentId) === currentUserId,
+      canEditRate: String(currentUser.role || '').toLowerCase() === 'admin'
+        && Number(user.id) !== currentUserId
+        && String(user.role || '').toLowerCase() === 'seller'
     }
   ]));
   const root = nodes.get(currentUserId) || {
@@ -1422,33 +1455,7 @@ const setupLocalDbIpc = (ipcMain) => {
   ipcMain.handle('local-db:list-users', () => getSavedVisibleUsers());
 
   ipcMain.handle('local-db:purge-users', (_event, { userIds } = {}) => {
-    const ids = [...new Set((Array.isArray(userIds) ? userIds : [])
-      .map((userId) => Number(userId))
-      .filter((userId) => Number.isInteger(userId) && userId > 0))];
-
-    if (ids.length === 0) {
-      return { ok: true, deletedCount: 0 };
-    }
-
-    const database = initLocalDb();
-    const placeholders = ids.map(() => '?').join(', ');
-    const runDelete = (sql, repeatCount = 1) => database.prepare(sql).run(
-      ...Array.from({ length: repeatCount }).flatMap(() => ids)
-    );
-
-    database.transaction(() => {
-      runDelete(`DELETE FROM local_purchase_entries WHERE user_id IN (${placeholders}) OR owner_user_id IN (${placeholders}) OR forwarded_by IN (${placeholders}) OR sent_to_parent IN (${placeholders})`, 4);
-      runDelete(`DELETE FROM local_prize_results WHERE uploaded_by IN (${placeholders})`);
-      runDelete(`DELETE FROM local_purchase_send_drafts WHERE user_id IN (${placeholders}) OR target_seller_id IN (${placeholders})`, 2);
-      runDelete(`DELETE FROM local_unsold_drafts WHERE user_id IN (${placeholders}) OR target_seller_id IN (${placeholders})`, 2);
-      runDelete(`DELETE FROM local_unsold_remove_drafts WHERE user_id IN (${placeholders}) OR target_seller_id IN (${placeholders})`, 2);
-      runDelete(`DELETE FROM local_manual_unsold_entries WHERE user_id IN (${placeholders}) OR actor_user_id IN (${placeholders})`, 2);
-      runDelete(`DELETE FROM sync_queue WHERE user_id IN (${placeholders})`);
-      runDelete(`DELETE FROM local_generated_bills WHERE user_id IN (${placeholders})`);
-      runDelete(`DELETE FROM local_users WHERE id IN (${placeholders}) OR owner_admin_id IN (${placeholders}) OR parent_id IN (${placeholders})`, 3);
-    })();
-
-    return { ok: true, deletedCount: ids.length };
+    return purgeLocalUsers(userIds);
   });
 
   ipcMain.handle('local-db:get-user-tree', (_event, { user } = {}) => buildLocalUserTree(user));
@@ -2049,6 +2056,37 @@ const setupLocalDbIpc = (ipcMain) => {
       }
 
       return { ok: true, seller };
+    }
+
+    if (operationType === 'update_seller_rates') {
+      const sellerId = Number(payload.userId || payload.sellerId || 0);
+      const existingSeller = getSavedVisibleUsers().find((entry) => Number(entry.id) === sellerId);
+      if (!existingSeller) {
+        throw new Error('Seller local data not found');
+      }
+
+      const seller = {
+        ...existingSeller,
+        rateAmount6: Number(payload.rateAmount6),
+        rateAmount12: Number(payload.rateAmount12),
+        updatedAt: now
+      };
+      upsertLocalUsers([seller]);
+      return { ok: true, seller };
+    }
+
+    if (operationType === 'delete_user') {
+      const targetUserId = Number(payload.userId || payload.sellerId || 0);
+      const usersById = new Map(getSavedVisibleUsers().map((entry) => [Number(entry.id), entry]));
+      const deletedUserIds = targetUserId && usersById.has(targetUserId)
+        ? getBranchUserIds(targetUserId, usersById)
+        : [];
+
+      if (deletedUserIds.length > 0) {
+        purgeLocalUsers(deletedUserIds);
+      }
+
+      return { ok: true, deletedUserIds };
     }
 
     if (operationType === 'price_upload') {

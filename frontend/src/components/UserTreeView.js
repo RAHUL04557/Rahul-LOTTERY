@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 const SELLER_TYPE_LABELS = {
   seller: 'STOKIST',
@@ -6,7 +6,7 @@ const SELLER_TYPE_LABELS = {
   normal_seller: 'SELLER'
 };
 
-const TreeNode = ({ node, onDelete, deletingUserId, shouldShowNode }) => {
+const TreeNode = ({ node, onDelete, deletingUserId, onEditRate, editingRateUserId, shouldShowNode }) => {
   if (!node) {
     return null;
   }
@@ -26,6 +26,16 @@ const TreeNode = ({ node, onDelete, deletingUserId, shouldShowNode }) => {
                 ? `${SELLER_TYPE_LABELS[node.sellerType] || 'SELLER'}${node.canLogin === false ? ' / NO LOGIN' : ''}`
                 : String(node.role || '').toUpperCase()}
             </span>
+            {node.canEditRate && onEditRate && (
+              <button
+                type="button"
+                className="tree-edit-rate-btn"
+                onClick={() => onEditRate(node)}
+                disabled={editingRateUserId === node.id}
+              >
+                {editingRateUserId === node.id ? 'Saving...' : 'Edit Rate'}
+              </button>
+            )}
             {node.canDelete && onDelete && (
               <button
                 type="button"
@@ -53,6 +63,8 @@ const TreeNode = ({ node, onDelete, deletingUserId, shouldShowNode }) => {
               node={child}
               onDelete={onDelete}
               deletingUserId={deletingUserId}
+              onEditRate={onEditRate}
+              editingRateUserId={editingRateUserId}
               shouldShowNode={shouldShowNode}
             />
           ))}
@@ -62,10 +74,44 @@ const TreeNode = ({ node, onDelete, deletingUserId, shouldShowNode }) => {
   );
 };
 
-const UserTreeView = ({ treeData, emptyMessage, onDelete, deletingUserId, shouldShowNode }) => {
+const UserTreeView = ({ treeData, emptyMessage, onDelete, deletingUserId, onEditRate, editingRateUserId, shouldShowNode }) => {
+  const [editingNode, setEditingNode] = useState(null);
+  const [rateAmount6, setRateAmount6] = useState('');
+  const [rateAmount12, setRateAmount12] = useState('');
+
   if (!treeData) {
     return <p>{emptyMessage || 'No tree data found'}</p>;
   }
+
+  const openRateEditor = (node) => {
+    setEditingNode(node);
+    setRateAmount6(String(node.rateAmount6 ?? 0));
+    setRateAmount12(String(node.rateAmount12 ?? 0));
+  };
+
+  const closeRateEditor = () => {
+    if (editingRateUserId) {
+      return;
+    }
+    setEditingNode(null);
+  };
+
+  const saveRates = async (event) => {
+    event.preventDefault();
+    if (!editingNode || !onEditRate) {
+      return;
+    }
+
+    try {
+      await onEditRate(editingNode, {
+        rateAmount6,
+        rateAmount12
+      });
+      setEditingNode(null);
+    } catch (error) {
+      // The parent dashboard shows the server/local validation message.
+    }
+  };
 
   return (
     <div className="tree-wrapper">
@@ -74,9 +120,46 @@ const UserTreeView = ({ treeData, emptyMessage, onDelete, deletingUserId, should
           node={treeData}
           onDelete={onDelete}
           deletingUserId={deletingUserId}
+          onEditRate={onEditRate ? openRateEditor : null}
+          editingRateUserId={editingRateUserId}
           shouldShowNode={shouldShowNode}
         />
       </ul>
+      {editingNode && (
+        <form className="tree-rate-editor" onSubmit={saveRates}>
+          <strong>Edit rate: {editingNode.username}</strong>
+          <label>
+            Rate 7
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={rateAmount6}
+              onChange={(event) => setRateAmount6(event.target.value)}
+              required
+              autoFocus
+            />
+          </label>
+          <label>
+            Rate 12
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={rateAmount12}
+              onChange={(event) => setRateAmount12(event.target.value)}
+              required
+            />
+          </label>
+          <button type="submit" disabled={editingRateUserId === editingNode.id}>
+            {editingRateUserId === editingNode.id ? 'Saving...' : 'Save Rate'}
+          </button>
+          <button type="button" className="tree-rate-cancel-btn" onClick={closeRateEditor} disabled={Boolean(editingRateUserId)}>
+            Cancel
+          </button>
+          <span>Bill latest saved rate se calculate hoga.</span>
+        </form>
+      )}
     </div>
   );
 };

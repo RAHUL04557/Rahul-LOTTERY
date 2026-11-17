@@ -1447,6 +1447,7 @@ const AdminDashboard = ({
   const [resultUploadPasswordValue, setResultUploadPasswordValue] = useState('');
   const [resultUploadPasswordLoading, setResultUploadPasswordLoading] = useState(false);
   const [deletingUserId, setDeletingUserId] = useState(null);
+  const [editingRateUserId, setEditingRateUserId] = useState(null);
   const [traceNumber, setTraceNumber] = useState('');
   const [traceAmount, setTraceAmount] = useState(initialAmount || '7');
   const [traceSem, setTraceSem] = useState('');
@@ -4640,6 +4641,38 @@ const AdminDashboard = ({
     }
   };
 
+  const handleEditSellerRates = async (node, rates) => {
+    const rateAmount6 = Number(rates?.rateAmount6);
+    const rateAmount12 = Number(rates?.rateAmount12);
+
+    if (!Number.isFinite(rateAmount6) || rateAmount6 < 0 || !Number.isFinite(rateAmount12) || rateAmount12 < 0) {
+      setError('Rate 7 aur Rate 12 valid non-negative number hone chahiye');
+      throw new Error('Invalid rates');
+    }
+
+    if (rateAmount6 <= 0 && rateAmount12 <= 0) {
+      setError('Kam se kam ek rate zero se bada hona chahiye');
+      throw new Error('At least one rate is required');
+    }
+
+    setEditingRateUserId(node.id);
+    setError('');
+    setSuccess('');
+
+    try {
+      const response = await userService.updateSellerRates(node.id, { rateAmount6, rateAmount12 });
+      const pendingSyncMessage = response.data?.offlineQueued ? ' Rate local me save ho gaya; internet aate hi sync hoga.' : '';
+      setSuccess(`Rate updated for ${node.username}.${pendingSyncMessage}`);
+      await Promise.all([loadTree(), loadBillPreviewData(getBillFilters())]);
+    } catch (err) {
+      const message = err.response?.data?.message || err.message || 'Rate update nahi ho saka';
+      setError(message);
+      throw err;
+    } finally {
+      setEditingRateUserId(null);
+    }
+  };
+
   function resetAdminMemoOptionState(tabName) {
     if (tabName === 'purchase') {
       setAdminStockDraftRows([]);
@@ -7595,6 +7628,8 @@ const AdminDashboard = ({
                 emptyMessage="No tree found"
                 onDelete={handleDeleteUser}
                 deletingUserId={deletingUserId}
+                onEditRate={handleEditSellerRates}
+                editingRateUserId={editingRateUserId}
                 shouldShowNode={shouldShowAmountTreeNode}
               />
             </div>

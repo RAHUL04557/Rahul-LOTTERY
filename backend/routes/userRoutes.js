@@ -11,6 +11,7 @@ const {
   getAllSellers,
   getVisibleUserTree,
   deleteSeller,
+  updateSellerRates,
   changeChildPassword
 } = require('../controllers/userController');
 const { authenticateToken, authorizeRole } = require('../middleware/auth');
@@ -38,6 +39,9 @@ router.get('/all-sellers', authenticateToken, authorizeRole(['admin']), getAllSe
 
 // Get visible user tree for current user
 router.get('/tree', authenticateToken, getVisibleUserTree);
+
+// Admin can correct rates for any seller in their own tree
+router.patch('/:userId/rates', authenticateToken, authorizeRole(['admin']), updateSellerRates);
 
 // Change password for direct child seller/sub-seller
 router.patch('/:userId/password', authenticateToken, changeChildPassword);

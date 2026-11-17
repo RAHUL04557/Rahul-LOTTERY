@@ -50,6 +50,7 @@ const buildTree = (rows, rootId, currentUser) => {
           currentUser.role === 'admin'
             ? row.id !== currentUser.id && row.role !== 'admin'
             : row.parent_id === currentUser.id,
+        canEditRate: currentUser.role === 'admin' && row.id !== currentUser.id && row.role === 'seller',
         children: []
       }
     ])
@@ -165,10 +166,93 @@ const deleteSeller = async (req, res) => {
 
     res.json({
       message: 'Seller deleted successfully',
-      deletedCount: branchIds.length
+      deletedCount: branchIds.length,
+      deletedUserIds: branchIds
     });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
+  }
+};
+
+const updateSellerRates = async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ message: 'Only admin can edit seller rates' });
+    }
+
+    const targetUserId = Number(req.params.userId);
+    const rawRateAmount6 = req.body?.rateAmount6;
+    const rawRateAmount12 = req.body?.rateAmount12;
+
+    if (!targetUserId) {
+      return res.status(400).json({ message: 'Valid seller id required' });
+    }
+
+    const parseRate = (value, label) => {
+      if (value === undefined || value === null || String(value).trim() === '') {
+        throw new Error(`${label} is required`);
+      }
+
+      const parsed = Number(value);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        throw new Error(`${label} must be a valid non-negative number`);
+      }
+
+      return parsed;
+    };
+
+    let rateAmount6;
+    let rateAmount12;
+    try {
+      rateAmount6 = parseRate(rawRateAmount6, 'Rate 7');
+      rateAmount12 = parseRate(rawRateAmount12, 'Rate 12');
+    } catch (validationError) {
+      return res.status(400).json({ message: validationError.message });
+    }
+
+    if (rateAmount6 <= 0 && rateAmount12 <= 0) {
+      return res.status(400).json({ message: 'At least one rate must be greater than zero' });
+    }
+
+    const targetUserResult = await query(
+      `WITH RECURSIVE admin_branch AS (
+        SELECT id FROM users WHERE id = $1
+        UNION ALL
+        SELECT u.id FROM users u
+        INNER JOIN admin_branch ab ON u.parent_id = ab.id
+      )
+      SELECT u.id, u.username, u.keyword, u.role, u.seller_type, u.parent_id, u.owner_admin_id,
+             u.can_login, u.rate_amount_6, u.rate_amount_12, u.created_at
+      FROM users u
+      WHERE u.id = $2 AND u.id IN (SELECT id FROM admin_branch)
+      LIMIT 1`,
+      [req.user.id, targetUserId]
+    );
+
+    if (targetUserResult.rows.length === 0) {
+      return res.status(404).json({ message: 'Seller not found in your tree' });
+    }
+
+    const targetUser = targetUserResult.rows[0];
+    if (targetUser.role !== 'seller') {
+      return res.status(403).json({ message: 'Only seller rates can be edited' });
+    }
+
+    const updatedSellerResult = await query(
+      `UPDATE users
+       SET rate_amount_6 = $1, rate_amount_12 = $2
+       WHERE id = $3
+       RETURNING id, username, keyword, role, seller_type, parent_id, owner_admin_id,
+                 can_login, rate_amount_6, rate_amount_12, created_at`,
+      [rateAmount6, rateAmount12, targetUser.id]
+    );
+
+    return res.json({
+      message: `Rates updated successfully for ${targetUser.username}`,
+      seller: mapSeller(updatedSellerResult.rows[0])
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Server error', error: error.message });
   }
 };
 
@@ -720,5 +804,6 @@ module.exports = {
   getAllSellers,
   getVisibleUserTree,
   deleteSeller,
+  updateSellerRates,
   changeChildPassword
 };

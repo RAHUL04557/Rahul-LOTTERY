@@ -106,6 +106,13 @@ const queueOfflineOperation = async (operationType, payload) => {
     });
   }
 
+  if (localMutationResult?.seller) {
+    await mergeLocalVisibleUsers([localMutationResult.seller]);
+  }
+  if (Array.isArray(localMutationResult?.deletedUserIds) && localMutationResult.deletedUserIds.length > 0) {
+    await purgeDeletedUsersLocally(localMutationResult.deletedUserIds);
+  }
+
   if (isLocalOnlySession()) {
     return {
       data: {
@@ -216,6 +223,11 @@ const requestWithOfflineQueue = async ({ method = 'POST', url, data, config = {}
     }
     if (responseUsers.length > 0) {
       await mergeLocalVisibleUsers(responseUsers);
+    }
+    if (operationType === 'delete_user') {
+      const deletedUserIds = response.data?.deletedUserIds
+        || (data?.userId ? [data.userId] : []);
+      await purgeDeletedUsersLocally(deletedUserIds);
     }
 
     return response;
@@ -965,9 +977,15 @@ export const userService = {
     url: `/users/${userId}/password`,
     data: { newPassword }
   }, 'change_child_password'),
+  updateSellerRates: (userId, { rateAmount6, rateAmount12 }) => requestWithOfflineQueue({
+    method: 'PATCH',
+    url: `/users/${userId}/rates`,
+    data: { userId, rateAmount6, rateAmount12 }
+  }, 'update_seller_rates'),
   deleteUser: (userId) => requestWithOfflineQueue({
     method: 'DELETE',
-    url: `/users/${userId}`
+    url: `/users/${userId}`,
+    data: { userId }
   }, 'delete_user')
 };
 
